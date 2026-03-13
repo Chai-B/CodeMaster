@@ -1,0 +1,21 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+
+# Generated at runtime
+repo_map.json
+activity_history.json
+logs/
+core/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp

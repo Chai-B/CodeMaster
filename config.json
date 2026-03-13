@@ -1,0 +1,6 @@
+{
+  "max_files": 3,
+  "max_fns": 3,
+  "max_debug": 2,
+  "claude_cmd": "claude"
+}
