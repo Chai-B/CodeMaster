@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #020205;
+    --surface: #08080f;
+    --surface2: #0e0e18;
+    --border: rgba(255, 255, 255, 0.07);
+    --blue: #4f8ef7;
+    --blue-dim: rgba(79, 142, 247, 0.15);
+    --blue-mid: rgba(79, 142, 247, 0.4);
+    --purple: #7c55f5;
+    --text: #f0f0f8;
+    --muted: #6b7280;
+    --green: #34d399;
+    --red: #f87171;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #020205;
+    color: #f0f0f8;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #020205;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(79, 142, 247, 0.3);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(79, 142, 247, 0.5);
+  }
+
+  ::selection {
+    background: rgba(79, 142, 247, 0.3);
+    color: #f0f0f8;
+  }
+}
+
+@layer utilities {
+  .dot-grid {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .text-gradient {
+    background: linear-gradient(90deg, #f0f0f8 0%, #4f8ef7 40%, #7c55f5 60%, #f0f0f8 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient-shift 4s ease infinite;
+  }
+
+  .glow-blue {
+    box-shadow: 0 0 20px rgba(79, 142, 247, 0.15), 0 0 40px rgba(79, 142, 247, 0.05);
+  }
+
+  .glow-blue-strong {
+    box-shadow: 0 0 30px rgba(79, 142, 247, 0.3), 0 0 60px rgba(79, 142, 247, 0.1);
+  }
+
+  .frosted {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+}
+
+/* Keyframes */
+@keyframes gradient-shift {
+  0% { background-position: 0% center; }
+  50% { background-position: 100% center; }
+  100% { background-position: 0% center; }
+}
+
+@keyframes shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes float-up {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes beam-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* Terminal blinking cursor */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor-blink {
+  animation: blink 1.2s step-end infinite;
+}
