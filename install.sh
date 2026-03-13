@@ -10,7 +10,7 @@
 set -euo pipefail
 
 INSTALL_DIR="$HOME/.codemaster"
-REPO_URL="https://github.com/YOUR_USERNAME/codemaster"
+REPO_URL="https://github.com/Chai-B/CodeMaster"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; RESET='\033[0m'
