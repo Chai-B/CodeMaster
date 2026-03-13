@@ -44,8 +44,11 @@ export function classifyLine(raw: string): Omit<LogEntry, 'id'> {
   // Diff output (show as-is, distinct type)
   if (/^(---|\+\+\+|@@|[-+] )/.test(line)) return { type: 'tool', text: line };
 
+  // Agent call arrows: → coder  (413 tokens)  /  ← coder  (1.2k tokens)
+  if (/^[→←]/.test(line)) return { type: 'tool', text: line };
+
   // Tool/pipeline activity
-  if (/^(Found|Searching|Refreshing|Calling|Claude|Building|Scoring|Simulating|Minimizing|Review|Patch|Step\s+\d|→)/.test(line)) return { type: 'tool', text: line };
+  if (/^(Found|Searching|Refreshing|Calling|Claude|Building|Expanding|Scoring|Simulating|Minimizing|Running|Applying|Low risk|Review|Patch|Auto-fixed|Step\s+\d)/.test(line)) return { type: 'tool', text: line };
 
   return { type: 'plain', text: line };
 }

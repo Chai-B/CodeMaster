@@ -242,6 +242,9 @@ function App() {
   const [acIndex, setAcIndex] = useState(0);
   const [mode, setMode] = useState<'normal' | 'config' | 'agents'>('normal');
   const proc = useRef<ChildProcessWithoutNullStreams | null>(null);
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIdxRef   = useRef(-1);
+  const savedInputRef   = useRef('');
   const cwd = process.cwd();
 
   const log = useCallback((type: LogType, text: string) => dispatch({ type: 'add', entry: { type, text } }), []);
@@ -257,10 +260,29 @@ function App() {
       if (key.downArrow) setAcIndex(i => (i >= acOptions.length - 1 ? 0 : i + 1));
       if (key.return && acIndex < acOptions.length) { setInput(acOptions[acIndex].cmd + ' '); setAcOptions([]); }
       if (key.escape) setAcOptions([]);
+    } else if (!running) {
+      if (key.upArrow) {
+        const hist = inputHistoryRef.current;
+        if (!hist.length) return;
+        if (historyIdxRef.current === -1) savedInputRef.current = input;
+        const next = Math.min(historyIdxRef.current + 1, hist.length - 1);
+        historyIdxRef.current = next;
+        setInput(hist[hist.length - 1 - next] ?? '');
+      }
+      if (key.downArrow) {
+        if (historyIdxRef.current === -1) return;
+        const next = historyIdxRef.current - 1;
+        historyIdxRef.current = next;
+        setInput(next < 0 ? savedInputRef.current : (inputHistoryRef.current[inputHistoryRef.current.length - 1 - next] ?? ''));
+        if (next < 0) historyIdxRef.current = -1;
+      }
     }
   });
 
+  const PIPELINE_CMDS = new Set(['/fix', '/refactor', '/test', '/generate', '/explain', '/docs', '/git', '/files', '/context', '/model']);
+
   function handleInputChange(val: string) {
+    historyIdxRef.current = -1;
     setInput(val);
     if (val.startsWith('/')) {
       const m = val.toLowerCase();
@@ -276,16 +298,36 @@ function App() {
     setInput(''); setAcOptions([]);
     const text = raw.trim();
     if (!text) return;
+
+    inputHistoryRef.current.push(text);
+    historyIdxRef.current = -1;
+    savedInputRef.current = '';
+
     if (text.startsWith('@claude ')) {
       runClaude(text.slice(8).trim());
-    } else if (text.startsWith('/')) {
-      runSlash(text.split(' ')[0]!.toLowerCase());
-    } else {
-      log('user', text);
-      appendHistory(text);
-      setHistory(readHistory());
-      runTask(text);
+      return;
     }
+    if (text.startsWith('/')) {
+      const parts = text.split(' ');
+      const cmd = parts[0]!.toLowerCase();
+      if (PIPELINE_CMDS.has(cmd)) {
+        if (parts.length < 2 || !parts.slice(1).join(' ').trim()) {
+          log('warn', `Usage: ${cmd} <description of what to do>`);
+          return;
+        }
+        log('user', text);
+        appendHistory(text);
+        setHistory(readHistory());
+        runTask(text);
+        return;
+      }
+      runSlash(cmd);
+      return;
+    }
+    log('user', text);
+    appendHistory(text);
+    setHistory(readHistory());
+    runTask(text);
   }, [acOptions, running, cfg]);
 
   function runSlash(cmd: string) {
@@ -356,6 +398,7 @@ function App() {
     if (running) { log('warn', 'Already running'); return; }
     spawnProc(['python3', path.join(BASE_DIR, 'codemaster.py'), '--root', cwd, task], {
       ...process.env, FORCE_COLOR: '0', TERM: 'dumb', COLUMNS: '100',
+      PYTHONUNBUFFERED: '1',
       CM_MAX_FILES: String(cfg.max_files), CM_MAX_FNS: String(cfg.max_fns),
       CM_MAX_DEBUG: String(cfg.max_debug), CM_CLAUDE_CMD: String(cfg.claude_cmd),
     });

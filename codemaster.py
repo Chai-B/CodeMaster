@@ -120,30 +120,31 @@ def call_claude(agent_file, user_content):
     system_prompt = (AGENTS / agent_file).read_text().strip()
     full_prompt   = f"{system_prompt}\n\n{user_content}"
     pt = int(len(full_prompt.split()) * 1.3)
-    tui.tokens(f"sending ~{pt:,} tokens ({agent_file})")
+    agent_name = agent_file.replace(".md", "")
+    tui.info(f"→ {agent_name}  (~{pt:,} tokens)")
 
     try:
-        proc = subprocess.Popen(
+        result = subprocess.run(
             [CLAUDE_CMD, "-p", full_prompt, "--output-format", "text"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=120,
         )
-        chunks = []
-        for line in proc.stdout:  # type: ignore
-            stripped = line.rstrip()
-            if stripped:
-                print(f"  {stripped}", flush=True)
-                chunks.append(line)
-        proc.wait()
-        output = "".join(chunks).strip()
-        if proc.returncode != 0 and not output:
-            err = proc.stderr.read().strip()[:200]  # type: ignore
-            tui.warn(f"claude exited {proc.returncode}: {err}")
-        METRICS.record(agent_file.replace(".md", ""), full_prompt, output)
+        output = result.stdout.strip()
+        if result.returncode != 0 and not output:
+            tui.error(f"{agent_name} failed (exit {result.returncode})")
+            err = result.stderr.strip()[:400]
+            if err:
+                tui.error(f"  {err}")
+            return ""
         rt = int(len(output.split()) * 1.3)
-        tui.tokens(f"received ~{rt:,} tokens")
+        METRICS.record(agent_name, full_prompt, output)
+        tui.info(f"← {agent_name}  (~{rt:,} tokens)")
         return output
+    except subprocess.TimeoutExpired:
+        tui.error(f"{agent_name} timed out after 120s")
+        return ""
     except FileNotFoundError:
-        tui.error(f"'{CLAUDE_CMD}' not found. Is Claude Code installed?")
+        tui.error(f"'{CLAUDE_CMD}' not found — is Claude Code installed?")
         sys.exit(1)
 
 
@@ -342,10 +343,13 @@ def process_task(task, command=None):
         tui.info("No relevant code found — new file mode")
 
     # Context
+    tui.info("Building context...")
     ctx = build_context(task, results)
 
     # Dependency expansion — enrich context with imports/calls from target files
     dep_parts = []
+    if results:
+        tui.info("Expanding dependencies...")
     for r in results:
         fp = Path(r["file"])
         if fp.suffix == ".py" and fp.exists():
@@ -390,6 +394,7 @@ def process_task(task, command=None):
 
     # Patch simulation (syntax check)
     tui.section("PATCH SIMULATION")
+    tui.info("Simulating patch (syntax check)...")
     sim = patch_simulator.simulate(diff, PROJECT_ROOT)
     if not sim["valid"]:
         tui.error("Patch simulation failed:")
@@ -400,15 +405,18 @@ def process_task(task, command=None):
             return
 
     # Minimize
+    tui.info("Minimizing patch...")
     diff = patch_minimizer.minimize(diff) or diff
 
     # Static analysis
+    tui.info("Running static analysis...")
     lint_output = run_static_analysis(diff)
     if lint_output:
         tui.section("LINT")
         tui.warn(lint_output)
 
     # Risk scoring
+    tui.info("Scoring risk...")
     risk = risk_scorer.score(diff)
     tui.section("RISK")
     tui.info(f"Score: {risk['score']}  Level: {risk['level'].upper()}")
@@ -417,6 +425,8 @@ def process_task(task, command=None):
     logger.event("risk_score", risk)
 
     reviewer_required = risk["level"] in ("medium", "high") or bool(lint_output)
+    if not reviewer_required:
+        tui.info("Low risk — skipping reviewer")
 
     # Review loop
     if reviewer_required:
@@ -457,6 +467,7 @@ def process_task(task, command=None):
     choice = tui.prompt("Apply changes? [y/n/copy/settings]", default="y").strip().lower()
 
     if choice == "y":
+        tui.info("Applying patch...")
         applied, errors = apply_diff_python(diff)
         for msg in applied:
             tui.success(msg)
