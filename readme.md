@@ -17,13 +17,13 @@ It's designed to be fast and cheap: simple fixes use a single AI call, complex t
 **One command:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/codemaster/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Chai-B/CodeMaster/main/install.sh | bash
 ```
 
 Or clone and install manually:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/codemaster
+git clone https://github.com/Chai-B/CodeMaster
 cd codemaster
 bash install.sh
 ```
@@ -208,8 +208,8 @@ Every run is logged to `logs/` in the install directory:
 ## Tips
 
 - **Be specific.** The more precise the task, the better the search.
-  - ✅ `fix divide by zero in calculate_average in utils/math.py`
-  - ❌ `fix the math`
+  - Correct- `fix divide by zero in calculate_average in utils/math.py`
+  - Incorrect- `fix the math`
 
 - **Simple tasks are cheap.** A bug fix uses 1 LLM call. Only complex tasks trigger the planner.
 
@@ -235,7 +235,6 @@ The diff is shown and you can choose not to apply it. The raw patch is in `logs/
 ## Status
 
 Work in progress — core pipeline is stable and functional. Planned improvements:
-- Multi-language context expansion (JS/TS/Go)
 - Smarter repo map caching
 - Session replay from logs
 
@@ -243,4 +242,3 @@ Contributions welcome.
 
 ---
 
-*Powered by [Claude Code](https://claude.ai/code)*
