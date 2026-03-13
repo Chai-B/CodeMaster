@@ -391,14 +391,16 @@ function App() {
     if (running) { log('warn', 'Already running'); return; }
     log('tool', `claude · "${query.slice(0, 70)}"`);
     spawnProc([cfg.claude_cmd, '-p', query, '--output-format', 'text'],
-      { ...process.env, FORCE_COLOR: '0', TERM: 'dumb' });
+      { ...process.env });
   }
 
   function runTask(task: string) {
     if (running) { log('warn', 'Already running'); return; }
     spawnProc(['python3', path.join(BASE_DIR, 'codemaster.py'), '--root', cwd, task], {
-      ...process.env, FORCE_COLOR: '0', TERM: 'dumb', COLUMNS: '100',
+      ...process.env,
       PYTHONUNBUFFERED: '1',
+      PYTHON_COLORS: '0',
+      COLUMNS: '100',
       CM_MAX_FILES: String(cfg.max_files), CM_MAX_FNS: String(cfg.max_fns),
       CM_MAX_DEBUG: String(cfg.max_debug), CM_CLAUDE_CMD: String(cfg.claude_cmd),
     });

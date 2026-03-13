@@ -6,6 +6,8 @@ import os
 import re
 import json
 import subprocess
+import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -123,28 +125,56 @@ def call_claude(agent_file, user_content):
     agent_name = agent_file.replace(".md", "")
     tui.info(f"→ {agent_name}  (~{pt:,} tokens)")
 
+    # Find the binary — resolves if not in PATH
+    claude_bin = shutil.which(CLAUDE_CMD) or CLAUDE_CMD
+
+    # Build a clean env: strip vars that break claude when called as a subprocess
+    claude_env = os.environ.copy()
+    for key in ("FORCE_COLOR", "NO_COLOR", "PYTHON_COLORS", "CLAUDECODE"):
+        claude_env.pop(key, None)
+    if not claude_env.get("TERM") or claude_env["TERM"] == "dumb":
+        claude_env["TERM"] = "xterm-256color"
+
     try:
-        result = subprocess.run(
-            [CLAUDE_CMD, "-p", full_prompt, "--output-format", "text"],
+        proc = subprocess.Popen(
+            [claude_bin, "-p", full_prompt, "--output-format", "text"],
             stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=120,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=claude_env,
         )
-        output = result.stdout.strip()
-        if result.returncode != 0 and not output:
-            tui.error(f"{agent_name} failed (exit {result.returncode})")
-            err = result.stderr.strip()[:400]
-            if err:
-                tui.error(f"  {err}")
+
+        # Show a heartbeat so the user knows we're waiting
+        def _slow_warn():
+            tui.info(f"  {agent_name} still running... (claude is generating)")
+        timer = threading.Timer(15.0, _slow_warn)
+        timer.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=120)
+        finally:
+            timer.cancel()
+
+        output = stdout.strip()
+        if proc.returncode != 0 and not output:
+            tui.error(f"{agent_name} failed (exit {proc.returncode})")
+            for line in stderr.strip()[:600].splitlines():
+                tui.error(f"  {line}")
             return ""
+        if not output and stderr.strip():
+            tui.warn(f"{agent_name} returned empty — stderr: {stderr.strip()[:300]}")
+            return ""
+
         rt = int(len(output.split()) * 1.3)
         METRICS.record(agent_name, full_prompt, output)
         tui.info(f"← {agent_name}  (~{rt:,} tokens)")
         return output
+
     except subprocess.TimeoutExpired:
-        tui.error(f"{agent_name} timed out after 120s")
+        proc.kill()
+        tui.error(f"{agent_name} timed out after 120s — check your Claude CLI and network")
         return ""
     except FileNotFoundError:
-        tui.error(f"'{CLAUDE_CMD}' not found — is Claude Code installed?")
+        tui.error(f"'{CLAUDE_CMD}' not found — is Claude Code installed and in PATH?")
+        tui.error(f"  Searched for: {claude_bin}")
         sys.exit(1)
 
 
