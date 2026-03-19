@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+logs/
+.env
+config.json
+activity_history.json
+repo_map.json
+.DS_Store
+.input_history.json

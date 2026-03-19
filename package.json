@@ -1,0 +1,25 @@
+{
+  "name": "codemaster",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Token-efficient AI coding orchestrator — React/Ink TUI on top of Claude Code CLI",
+  "scripts": {
+    "start": "tsx src/index.tsx",
+    "dev": "tsx watch src/index.tsx"
+  },
+  "bin": {
+    "codemaster": "./bin/codemaster"
+  },
+  "dependencies": {
+    "ink": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.0",
+    "strip-ansi": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0"
+  }
+}
