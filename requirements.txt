@@ -1,0 +1,2 @@
+# No third-party Python dependencies required.
+# CodeMaster's pipeline uses only the standard library.

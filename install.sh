@@ -24,13 +24,13 @@ chmod +x bin/codemaster
 # Link to global bin
 npm link
 
-# Python deps (optional — skip if pip not available)
-if command -v pip3 &>/dev/null; then
-  pip3 install -q -r requirements.txt
-elif command -v pip &>/dev/null; then
-  pip install -q -r requirements.txt
-else
-  echo "Warning: pip not found — skipping Python dependencies. Run: pip install -r $INSTALL_DIR/requirements.txt"
+# Python deps (optional — skip if pip or requirements.txt not available)
+if [ -f requirements.txt ] && [ -s requirements.txt ]; then
+  if command -v pip3 &>/dev/null; then
+    pip3 install -q -r requirements.txt
+  elif command -v pip &>/dev/null; then
+    pip install -q -r requirements.txt
+  fi
 fi
 
 echo ""
