@@ -9,7 +9,8 @@ echo "Installing CodeMaster..."
 # Clone or update
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing install at $INSTALL_DIR"
-  git -C "$INSTALL_DIR" pull --ff-only
+  git -C "$INSTALL_DIR" fetch origin
+  git -C "$INSTALL_DIR" reset --hard origin/main
 else
   git clone --depth=1 "$REPO" "$INSTALL_DIR"
 fi
