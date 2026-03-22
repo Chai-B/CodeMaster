@@ -36,12 +36,12 @@ PROMPTS_FILE = BENCH_DIR / "prompts.json"
 
 def find_codemaster() -> Path:
     candidates = [
-        Path(os.environ.get("CODEMASTER_PATH", "")),
+        Path(os.environ["CODEMASTER_PATH"]) if os.environ.get("CODEMASTER_PATH") else None,
         BENCH_DIR.parent / "codemaster.py",               # running from repo root
         Path.home() / ".codemaster" / "codemaster.py",   # installed via install.sh
     ]
     for p in candidates:
-        if p and p.exists():
+        if p and p.is_file():
             return p.resolve()
     sys.exit(
         "ERROR: codemaster.py not found.\n"
@@ -240,12 +240,18 @@ def judge_outputs(task: str, cm: RunResult, cl: RunResult,
 
 # ── report ────────────────────────────────────────────────────────────────────
 
-def _w(a: float, b: float, lower_is_better: bool = False) -> str:
-    if a == b:
+def _parse_num(s: object) -> Optional[float]:
+    """Extract the first number from a display string like '1.1s', '7/10', '1,234'."""
+    m = re.search(r"[\d.]+", str(s).replace(",", ""))
+    return float(m.group()) if m else None
+
+def _w(a: object, b: object, lower: bool = False) -> str:
+    av, bv = _parse_num(a), _parse_num(b)
+    if av is None or bv is None or av == bv:
         return "─ tie"
-    if lower_is_better:
-        return "CM ◀" if a < b else "CL ◀"
-    return "CM ◀" if a > b else "CL ◀"
+    if lower:
+        return "CM ◀" if av < bv else "CL ◀"
+    return "CM ◀" if av > bv else "CL ◀"
 
 def print_report(results: list[dict], totals: dict) -> None:
     W = 92
@@ -266,8 +272,7 @@ def print_report(results: list[dict], totals: dict) -> None:
         print(f"  │  {'─'*28} {'─'*14} {'─'*14} {'─'*8}")
 
         def row(label: str, a, b, lower: bool = False):
-            win = _w(float(str(a).rstrip("s/10").replace(",","")),
-                     float(str(b).rstrip("s/10").replace(",","")), lower)
+            win = _w(a, b, lower)
             print(f"  │  {label:<28} {str(a):>14} {str(b):>14} {win:>8}")
 
         row("Wall time",         f"{cm['wall_time']:.1f}s",    f"{cl['wall_time']:.1f}s",    lower=True)
