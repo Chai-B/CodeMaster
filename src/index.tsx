@@ -89,21 +89,25 @@ function listAgents(): string[] {
 }
 
 // ── commands ─────────────────────────────────────────────────────────────────
-const PIPELINE_CMDS = new Set(['/fix', '/refactor', '/generate', '/test', '/docs', '/explain']);
+const PIPELINE_CMDS = new Set(['/fix', '/refactor', '/feature', '/generate', '/test', '/docs', '/explain']);
 
 const BASE_COMMANDS: Cmd[] = [
-  { cmd: '/fix',       desc: 'Fix bugs in code' },
-  { cmd: '/refactor',  desc: 'Refactor code' },
-  { cmd: '/generate',  desc: 'Generate new code' },
+  { cmd: '/fix',       desc: 'Fix a bug in code' },
+  { cmd: '/refactor',  desc: 'Refactor code (runs planner first)' },
+  { cmd: '/feature',   desc: 'Implement a new feature (runs planner first)' },
+  { cmd: '/generate',  desc: 'Generate new code or files' },
   { cmd: '/test',      desc: 'Write or fix tests' },
   { cmd: '/docs',      desc: 'Generate documentation' },
   { cmd: '/explain',   desc: 'Explain code' },
+  { cmd: '/run',       desc: 'Run a shell command in the project directory' },
+  { cmd: '/git',       desc: 'Run a git command in the project directory' },
+  { cmd: '/diff',      desc: 'Show current git diff (uncommitted changes)' },
+  { cmd: '/scan',      desc: 'Index current project for search' },
   { cmd: '/config',    desc: 'Edit pipeline parameters' },
   { cmd: '/prompts',   desc: 'Edit agent prompt templates' },
   { cmd: '/status',    desc: 'Show session metrics & context' },
   { cmd: '/cost',      desc: 'Show token usage & estimated cost' },
   { cmd: '/model',     desc: 'Show current Claude model info' },
-  { cmd: '/diff',      desc: 'Show last generated patch' },
   { cmd: '/clear',     desc: 'Clear the log' },
   { cmd: '/clearall',  desc: 'Clear log, metrics, context & maps' },
   { cmd: '/cc',        desc: 'Open Claude Code (returns here on exit)' },
@@ -162,6 +166,7 @@ function InputArea({ value, onChange, onSubmit, active, placeholder }: {
 
 function StatusBar({ running, cwd, metrics, elapsed }: { running: boolean; cwd: string; metrics: Metrics | null; elapsed: number }) {
   const tokens = metrics ? `${metrics.total_tokens.toLocaleString()} tokens` : '';
+  const hasMap = fs.existsSync(path.join(cwd, 'repo_map.json'));
   return (
     <Box justifyContent="space-between" paddingX={1}>
       <Text color={MUTED} dimColor>
@@ -170,7 +175,7 @@ function StatusBar({ running, cwd, metrics, elapsed }: { running: boolean; cwd: 
           : 'ready  ·  Ctrl+Q quit  ·  ↑↓ history  ·  / commands'}
       </Text>
       <Text color={MUTED} dimColor>
-        {tokens ? `${tokens}  ·  ` : ''}codemaster v{VERSION}  ·  {path.basename(cwd)}
+        {tokens ? `${tokens}  ·  ` : ''}codemaster v{VERSION}  ·  {path.basename(cwd)}{hasMap ? '' : ' [no map]'}
       </Text>
     </Box>
   );
@@ -318,6 +323,15 @@ function App() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [running]);
 
+  // ── auto-scan on startup if no repo map ──────────────────────────────────
+  useEffect(() => {
+    if (!fs.existsSync(path.join(cwd, 'repo_map.json'))) {
+      log('dim', 'No repo map found — scanning project…');
+      // Defer slightly so the TUI renders first
+      setTimeout(() => runScan(), 100);
+    }
+  }, []);
+
   // ── process spawning ─────────────────────────────────────────────────────
   function spawnProc(args: string[], env: NodeJS.ProcessEnv) {
     setRunning(true);
@@ -387,6 +401,16 @@ function App() {
     });
   }
 
+  // ── repo scan ─────────────────────────────────────────────────────────────
+  function runScan() {
+    if (running) { log('warn', 'Already running'); return; }
+    log('tool', `Scanning ${shortCwd}…`);
+    spawnProc(['python3', path.join(BASE_DIR, 'pipeline', 'repo_builder.py'), '--root', cwd], {
+      ...process.env,
+      PYTHONUNBUFFERED: '1',
+    });
+  }
+
   // ── slash commands ────────────────────────────────────────────────────────
   function runSlash(cmd: string, rest: string) {
     log('user', cmd + (rest ? ' ' + rest : ''));
@@ -394,8 +418,13 @@ function App() {
       case '/help':
         log('step', 'Pipeline Commands');
         BASE_COMMANDS.filter(c => PIPELINE_CMDS.has(c.cmd)).forEach(c => log('nested', `${c.cmd.padEnd(14)}${c.desc}`));
-        log('step', 'Claude Code Features');
-        ['/cc', '/model', '/cost', '/status', '/diff'].forEach(cmd => {
+        log('step', 'Shell & Git');
+        ['/run', '/git', '/diff', '/scan'].forEach(cmd => {
+          const c = BASE_COMMANDS.find(b => b.cmd === cmd);
+          if (c) log('nested', `${c.cmd.padEnd(14)}${c.desc}`);
+        });
+        log('step', 'Claude Code');
+        ['/cc', '/model', '/cost', '/status'].forEach(cmd => {
           const c = BASE_COMMANDS.find(b => b.cmd === cmd);
           if (c) log('nested', `${c.cmd.padEnd(14)}${c.desc}`);
         });
@@ -408,11 +437,10 @@ function App() {
         log('nested', 'Ctrl+Q        Quit');
         log('nested', 'Ctrl+L        Clear log');
         log('nested', 'Ctrl+C        Interrupt running task');
-        log('nested', '↑ / ↓         Browse prompt history');
-        log('nested', 'Enter         Select autocomplete / submit');
-        log('nested', 'Esc           Dismiss autocomplete');
+        log('nested', '↑ / ↓         Browse input history');
+        log('nested', 'Tab / Enter   Autocomplete command');
         log('step', 'Direct Claude');
-        log('nested', '@claude <q>   Ask Claude directly (non-pipeline)');
+        log('nested', '@claude <q>   Ask Claude a question (no file changes)');
         break;
 
       case '/clear':
@@ -485,14 +513,30 @@ function App() {
         break;
       }
 
-      case '/diff': {
-        if (!lastDiff) { log('dim', 'No patch generated yet this session'); break; }
-        log('step', 'Last Patch');
-        for (const ln of lastDiff.split('\n')) {
-          if (ln.trim()) log('tool', ln);
-        }
+      case '/run': {
+        if (!rest) { log('warn', 'Usage: /run <command>'); break; }
+        log('tool', `$ ${rest}`);
+        spawnProc(['sh', '-c', rest], { ...process.env });
         break;
       }
+
+      case '/git': {
+        if (!rest) { log('warn', 'Usage: /git <command>  e.g. /git status'); break; }
+        log('tool', `git ${rest}`);
+        spawnProc(['sh', '-c', `git ${rest}`], { ...process.env });
+        break;
+      }
+
+      case '/diff': {
+        // Show live git diff — always reflects current actual state
+        log('tool', 'git diff HEAD');
+        spawnProc(['git', 'diff', 'HEAD'], { ...process.env });
+        break;
+      }
+
+      case '/scan':
+        runScan();
+        break;
 
       case '/cc':
         log('tool', 'Launching Claude Code… (will return here on exit)');

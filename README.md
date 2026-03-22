@@ -1,120 +1,242 @@
 # CodeMaster
 
-An AI-powered coding assistant that combines a multi-stage analysis pipeline with an interactive terminal UI to help you understand, fix, and improve code.
+A token-efficient AI coding orchestrator built on [Claude Code CLI](https://github.com/anthropics/claude-code). Runs a multi-stage pipeline from your terminal — search, plan, edit, validate — while keeping LLM calls minimal and precise.
 
-## How It Works
-
-CodeMaster routes your requests through a pipeline of specialized stages:
-
-1. **Classify** — determines the task type (fix, refactor, explain, etc.)
-2. **Search** — finds relevant files in your codebase
-3. **Expand** — resolves dependencies and imports
-4. **Context** — builds a minimal, focused context for Claude
-5. **Analyze** — runs static analysis on the target code
-6. **Fix** — applies auto-fixers for common issues
-7. **Validate** — simulates patches and checks syntax
-8. **Score** — computes a risk score before applying changes
-9. **Generate** — calls Claude to produce the final diff
+---
 
 ## Prerequisites
 
-- Python 3.10+
-- Node.js 18+
-- [Claude Code CLI](https://github.com/anthropics/claude-code) (`claude` on your PATH)
+- **Node.js** 18+
+- **Python** 3.10+
+- **Claude Code CLI** — `claude` must be on your PATH ([install guide](https://docs.anthropic.com/en/docs/claude-code))
+
+Verify your setup:
+```bash
+node --version    # v18+
+python3 --version # 3.10+
+claude --version  # any version
+```
+
+---
 
 ## Installation
 
 ```bash
-# Clone the repo
-git clone https://github.com/your-org/codemaster.git
-cd codemaster
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Install and build the terminal UI
+git clone https://github.com/Chai-B/CodeMaster.git
+cd CodeMaster
 npm install
-npm run build
+npm link
 ```
 
-Or use the install script:
+`npm link` creates a global `codemaster` command. You can now run `codemaster` from any directory.
 
+Install Python dependencies (used by the pipeline backend):
 ```bash
-bash install.sh
+pip install -r requirements.txt
 ```
+
+---
 
 ## Usage
 
-### Interactive UI
+Navigate into any project and run:
 
 ```bash
-node bin/codemaster
+cd ~/your-project
+codemaster
 ```
 
-The UI is a full-screen terminal application built with [Ink](https://github.com/vadimdemedes/ink). Type a task and press Enter. Use Tab for command autocomplete.
+The TUI launches in your terminal. Your current working directory is the project CodeMaster will read and edit. All file operations run relative to where you called it from.
 
-### Python CLI
+### Running tasks
 
-```bash
-python codemaster.py "<your task>" [target_file_or_directory]
+Type a command and press Enter:
+
+```
+/fix the null check is missing in auth.py
+/refactor extract the validation logic into its own module
+/feature add rate limiting to the API endpoints
+/explain how the retry logic works in client.py
+/test write unit tests for the parser module
+/docs generate docstrings for all public functions in utils/
 ```
 
-**Examples:**
+Commands prefixed with `/` are routed through the full pipeline. Plain text is treated as a `/fix` task by default.
 
-```bash
-# Fix a bug
-python codemaster.py "fix the null pointer in auth.py" src/auth.py
+### Shell and git integration
 
-# Explain code
-python codemaster.py "explain how the retry logic works" src/client.py
+Run any shell command without leaving the TUI:
 
-# Refactor
-python codemaster.py "extract the validation logic into a separate function" src/models.py
 ```
+/run pytest -x
+/run npm run build
+/git status
+/git log --oneline -10
+/diff
+```
+
+`/diff` shows a live `git diff HEAD` of all changes made in the current session.
+
+---
+
+## Commands Reference
+
+| Command | Type | Description |
+|---|---|---|
+| `/fix <description>` | Bug fix | Locate and fix a specific bug or error |
+| `/refactor <description>` | Refactor | Restructure code without changing behaviour |
+| `/feature <description>` | Feature | Implement a new feature (runs planner first) |
+| `/generate <description>` | Generate | Create new files or boilerplate |
+| `/test <description>` | Tests | Write or update tests |
+| `/docs <description>` | Docs | Generate or update documentation |
+| `/explain <description>` | Explain | Explain how something works (read-only) |
+| `/scan` | Utility | Index the current project into `repo_map.json` |
+| `/run <command>` | Shell | Run any shell command in the project directory |
+| `/git <command>` | Git | Run a git command in the project directory |
+| `/diff` | Git | Show `git diff HEAD` |
+| `/cc` | Claude | Drop into a raw `claude` session |
+| `/help` | Meta | Show all available commands |
+
+---
+
+## How the Pipeline Works
+
+Every task goes through a deterministic preprocessing pipeline before any LLM call is made. This keeps token usage low and results precise.
+
+```
+Router → Search → Deps → [Planner] → Coder → Changes → Analysis → Validator → Reviewer
+```
+
+| Stage | Type | What it does |
+|---|---|---|
+| **Router** | Deterministic | Classifies task type (FIX, REFACTOR, FEATURE, etc.) |
+| **Search** | Deterministic | Finds relevant files using grep, glob, and the repo map |
+| **Deps** | Deterministic | Traces imports to surface related modules |
+| **Planner** | LLM | For FEATURE/REFACTOR — produces a numbered execution plan |
+| **Coder** | LLM | Edits files directly using Claude's native Read/Write/Edit/Bash tools |
+| **Changes** | Deterministic | Runs `git diff` to capture exactly what changed |
+| **Analysis** | Deterministic | Runs linters, type checkers, and test commands |
+| **Validator** | Deterministic | If errors found, triggers a targeted fix loop |
+| **Reviewer** | LLM | Reviews the diff, flags issues, approves or rejects |
+
+LLM stages (Planner, Coder, Reviewer) are called with `--dangerously-skip-permissions` so they run non-interactively. The Coder has full tool access — it reads, writes, and edits files natively.
+
+For large tasks, the Coder will continue across multiple passes until the work is complete (`NEEDS_CONTINUATION` protocol).
+
+---
 
 ## Configuration
 
-CodeMaster is configured via environment variables:
+Set these environment variables to tune behaviour:
 
 | Variable | Default | Description |
 |---|---|---|
-| `CM_MAX_FILES` | `2` | Max files included in context |
-| `CM_MAX_FNS` | `2` | Max functions included per file |
-| `CM_MAX_DEBUG` | `1` | Debug verbosity level |
-| `CM_CLAUDE_CMD` | `claude` | Path or command name for the Claude CLI |
+| `CM_MAX_FILES` | `8` | Max files included in context |
+| `CM_MAX_FNS` | `6` | Max symbols shown per file |
+| `CM_MAX_DEBUG` | `1` | Debug verbosity (0 = silent, 2 = verbose) |
+| `CM_CLAUDE_CMD` | `claude` | Path or alias for the Claude CLI |
+| `CM_MAX_PASSES` | `5` | Max continuation passes per task |
+
+Example:
+```bash
+CM_MAX_FILES=12 CM_MAX_PASSES=8 codemaster
+```
+
+---
 
 ## Project Structure
 
 ```
-codemaster/
-├── codemaster.py          # Main entry point and pipeline orchestrator
+CodeMaster/
+├── bin/
+│   └── codemaster          # CLI entry point (Node.js ESM)
+├── src/
+│   └── index.tsx           # React/Ink TUI
+├── codemaster.py           # Pipeline orchestrator
 ├── pipeline/
-│   ├── command_router.py  # Routes commands to the right handler
-│   ├── task_classifier.py # Classifies task type
-│   ├── searcher.py        # Finds relevant files
+│   ├── command_router.py   # Routes task types
+│   ├── task_classifier.py  # Classifies intent
+│   ├── searcher.py         # File search
 │   ├── dependency_expander.py
-│   ├── context_builder.py
-│   ├── static_analysis.py
-│   ├── auto_fixer.py
-│   ├── patch_simulator.py
-│   └── risk_scorer.py
-└── src/                   # Terminal UI (TypeScript + Ink)
-    ├── index.tsx           # App shell, config, history
-    ├── components/
-    │   ├── Autocomplete.tsx
-    │   ├── Header.tsx
-    │   └── MessageList.tsx
-    └── utils/parser.ts     # Log and diff parsing
+│   ├── context_builder.py  # Builds compact directives (~30 tokens/file)
+│   ├── static_analysis.py  # Linters, type checks
+│   ├── auto_fixer.py       # Pre-LLM fixers
+│   ├── patch_simulator.py  # Syntax validation
+│   ├── risk_scorer.py      # Risk score before apply
+│   └── repo_builder.py     # AST scanner → repo_map.json
+├── agents/
+│   ├── planner.md          # Planner system prompt
+│   ├── coder.md            # Coder system prompt
+│   ├── reviewer.md         # Reviewer system prompt
+│   └── patcher.md          # Patch-fix system prompt
+├── web/                    # Marketing website (Next.js)
+├── requirements.txt
+└── package.json
 ```
 
-## Commands (UI)
+---
 
-| Command | Description |
+## repo_map.json
+
+On first run, CodeMaster auto-scans your project and writes `repo_map.json` to the project root. This is a compact index of all files and their exported symbols — used by the Search and Context stages to build precise, low-token context.
+
+To manually regenerate:
+```
+/scan
+```
+
+Or from the shell:
+```bash
+python3 /path/to/CodeMaster/pipeline/repo_builder.py --root .
+```
+
+The file is project-specific and should be gitignored:
+```bash
+echo "repo_map.json" >> .gitignore
+```
+
+---
+
+## Logs
+
+All pipeline logs are written to `CodeMaster/logs/` (the installation directory, not your project):
+
+| File | Contents |
 |---|---|
-| `/fix` | Fix a bug or error |
-| `/explain` | Explain selected code |
-| `/refactor` | Suggest a refactor |
-| `/review` | Review for issues |
-| `/plan` | Outline an implementation plan |
+| `logs/codemaster.log` | Full pipeline trace for each run |
+| `logs/calls.jsonl` | LLM call log with token counts |
+| `logs/last_patch.diff` | Diff from the most recent task |
 
-Type `/` to see the full autocomplete list.
+---
+
+## Troubleshooting
+
+**`codemaster: command not found`**
+Run `npm link` again from the CodeMaster directory. If it still fails, check that your npm global bin is on PATH (`npm bin -g`).
+
+**`claude: command not found`**
+Install Claude Code CLI and ensure `claude` is on your PATH.
+
+**Pipeline hangs or times out**
+Claude calls have a 120s timeout. For large tasks, increase `CM_MAX_PASSES`. If a stage hangs, check `logs/codemaster.log` for the last completed step.
+
+**Wrong files being edited**
+Run `/scan` to regenerate the repo map. If CodeMaster is editing the wrong directory, ensure you launched it from the correct project root.
+
+**`repo_map.json` not found**
+The TUI auto-scans on startup if no map exists. You can also run `/scan` manually.
+
+---
+
+## Uninstall
+
+```bash
+cd ~/path/to/CodeMaster
+npm unlink
+```
+
+---
+
+## License
+
+MIT
