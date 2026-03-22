@@ -22,16 +22,16 @@ claude --version  # any version
 ## Installation
 
 ```bash
-git clone https://github.com/Chai-B/CodeMaster.git
-cd CodeMaster
-npm install
-npm link
+curl -fsSL https://raw.githubusercontent.com/Chai-B/CodeMaster/main/install.sh | bash
 ```
 
-`npm link` creates a global `codemaster` command. You can now run `codemaster` from any directory.
+This clones CodeMaster to `~/.codemaster`, installs all dependencies, and links the `codemaster` command globally. Run `codemaster` from any directory when done.
 
-Install Python dependencies (used by the pipeline backend):
+**Manual install** (if you prefer):
 ```bash
+git clone https://github.com/Chai-B/CodeMaster.git
+cd CodeMaster
+npm install && npm link
 pip install -r requirements.txt
 ```
 
@@ -212,7 +212,7 @@ All pipeline logs are written to `CodeMaster/logs/` (the installation directory,
 ## Troubleshooting
 
 **`codemaster: command not found`**
-Run `npm link` again from the CodeMaster directory. If it still fails, check that your npm global bin is on PATH (`npm bin -g`).
+Run `npm link` again from the CodeMaster directory (or `~/.codemaster` if installed via the script). If it still fails, check that your npm global bin is on PATH (`npm bin -g`).
 
 **`claude: command not found`**
 Install Claude Code CLI and ensure `claude` is on your PATH.
@@ -231,8 +231,9 @@ The TUI auto-scans on startup if no map exists. You can also run `/scan` manuall
 ## Uninstall
 
 ```bash
-cd ~/path/to/CodeMaster
+cd ~/.codemaster
 npm unlink
+rm -rf ~/.codemaster
 ```
 
 ---
