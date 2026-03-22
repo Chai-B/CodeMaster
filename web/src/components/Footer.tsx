@@ -6,7 +6,6 @@ export default function Footer() {
           {/* Left */}
           <div className="flex flex-col items-center sm:items-start gap-1">
             <div className="flex items-center gap-2">
-              <span className="text-lg">🐙</span>
               <span className="font-mono text-sm font-semibold text-[#F5F5F5]">
                 CodeMaster
               </span>
