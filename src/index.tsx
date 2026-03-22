@@ -28,21 +28,29 @@ interface Config {
   max_fns: number;
   max_debug: number;
   claude_cmd: string;
+  complexity: string;   // simple | standard | thorough
+  plan_types: string;   // comma-separated task types that trigger the planner
   [key: string]: string | number;
 }
 
 const CONFIG_SCHEMA = [
-  { key: 'max_files', label: 'Max files per context', type: 'number' },
-  { key: 'max_fns',   label: 'Max functions per file', type: 'number' },
-  { key: 'max_debug', label: 'Max debug cycles',       type: 'number' },
-  { key: 'claude_cmd', label: 'Claude CLI command',    type: 'string' },
+  { key: 'max_files',   label: 'Max files per context',    type: 'number' },
+  { key: 'max_fns',     label: 'Max functions per file',   type: 'number' },
+  { key: 'max_debug',   label: 'Max debug cycles',         type: 'number' },
+  { key: 'claude_cmd',  label: 'Claude CLI command',       type: 'string' },
+  { key: 'complexity',  label: 'Complexity preset',        type: 'string' },
+  { key: 'plan_types',  label: 'Task types with planner',  type: 'string' },
 ];
+
+const DEFAULT_CONFIG: Config = {
+  max_files: 5, max_fns: 5, max_debug: 2, claude_cmd: 'claude',
+  complexity: 'standard', plan_types: 'FEATURE,REFACTOR',
+};
 
 function readConfig(): Config {
   try {
-    return { max_files: 3, max_fns: 3, max_debug: 2, claude_cmd: 'claude',
-             ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
-  } catch { return { max_files: 3, max_fns: 3, max_debug: 2, claude_cmd: 'claude' }; }
+    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
+  } catch { return { ...DEFAULT_CONFIG }; }
 }
 
 function writeConfig(cfg: Config) {
@@ -394,10 +402,12 @@ function App() {
       PYTHONUNBUFFERED: '1',
       PYTHON_COLORS: '0',
       COLUMNS: String(process.stdout.columns || 100),
-      CM_MAX_FILES: String(cfg.max_files),
-      CM_MAX_FNS: String(cfg.max_fns),
-      CM_MAX_DEBUG: String(cfg.max_debug),
+      CM_MAX_FILES:  String(cfg.max_files),
+      CM_MAX_FNS:    String(cfg.max_fns),
+      CM_MAX_DEBUG:  String(cfg.max_debug),
       CM_CLAUDE_CMD: String(cfg.claude_cmd),
+      CM_COMPLEXITY: String(cfg.complexity),
+      CM_PLAN_TYPES: String(cfg.plan_types),
     });
   }
 
@@ -471,6 +481,8 @@ function App() {
         log('nested', `Max files:      ${cfg.max_files}`);
         log('nested', `Max functions:  ${cfg.max_fns}`);
         log('nested', `Max debug:      ${cfg.max_debug}`);
+        log('nested', `Complexity:     ${cfg.complexity}`);
+        log('nested', `Plan types:     ${cfg.plan_types}`);
         if (metrics) {
           log('step', 'Metrics');
           log('nested', `API calls:      ${metrics.calls}`);

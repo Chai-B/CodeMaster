@@ -1,0 +1,22 @@
+[
+  {
+    "type": "BUG_FIX",
+    "task": "/fix the divide function in calculator.py crashes with ZeroDivisionError when b is 0 — add a guard that raises ValueError instead"
+  },
+  {
+    "type": "FEATURE",
+    "task": "/feature add a sqrt(n) function to calculator.py that raises ValueError for negative inputs and returns the square root"
+  },
+  {
+    "type": "DOCS",
+    "task": "/docs add Google-style docstrings to every public function in calculator.py — include Args, Returns, and Raises sections"
+  },
+  {
+    "type": "TEST",
+    "task": "/test write comprehensive pytest tests for calculator.py covering zero-division, negative power, empty average, and type edge cases"
+  },
+  {
+    "type": "REFACTOR",
+    "task": "/refactor add input type validation to calculator.py — raise TypeError with a clear message if either argument is not int or float"
+  }
+]

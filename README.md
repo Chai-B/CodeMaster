@@ -127,20 +127,62 @@ For large tasks, the Coder will continue across multiple passes until the work i
 
 ## Configuration
 
-Set these environment variables to tune behaviour:
+### Complexity preset (quickest way to tune)
+
+Set `CM_COMPLEXITY` or edit it in `/config`:
+
+| Preset | max_files | max_fns | max_debug | Plan types |
+|---|---|---|---|---|
+| `simple` | 3 | 3 | 1 | _(none — no planner)_ |
+| `standard` _(default)_ | 5 | 5 | 2 | FEATURE, REFACTOR |
+| `thorough` | 8 | 8 | 3 | FEATURE, REFACTOR, BUG_FIX, TEST |
+
+```bash
+CM_COMPLEXITY=thorough codemaster
+```
+
+### Fine-grained env vars
+
+Individual variables override the preset:
 
 | Variable | Default | Description |
 |---|---|---|
-| `CM_MAX_FILES` | `8` | Max files included in context |
-| `CM_MAX_FNS` | `6` | Max symbols shown per file |
-| `CM_MAX_DEBUG` | `1` | Debug verbosity (0 = silent, 2 = verbose) |
+| `CM_COMPLEXITY` | `standard` | Preset: `simple`, `standard`, or `thorough` |
+| `CM_PLAN_TYPES` | `FEATURE,REFACTOR` | Task types that trigger the planner stage |
+| `CM_MAX_FILES` | _(from preset)_ | Max files included in context |
+| `CM_MAX_FNS` | _(from preset)_ | Max symbols shown per file |
+| `CM_MAX_DEBUG` | _(from preset)_ | Max reviewer→patcher cycles |
 | `CM_CLAUDE_CMD` | `claude` | Path or alias for the Claude CLI |
-| `CM_MAX_PASSES` | `5` | Max continuation passes per task |
 
-Example:
+Example — thorough preset, override to cap files at 6:
 ```bash
-CM_MAX_FILES=12 CM_MAX_PASSES=8 codemaster
+CM_COMPLEXITY=thorough CM_MAX_FILES=6 codemaster
 ```
+
+### In-TUI config editor
+
+Run `/config` inside CodeMaster to edit all settings interactively. Changes are saved to `config.json` and take effect on the next task.
+
+---
+
+## Benchmark: CodeMaster vs Claude Code
+
+Run the automated benchmark to measure token efficiency, speed, and output quality:
+
+```bash
+./benchmark/run             # full run — 5 prompts
+./benchmark/run --quick     # smoke test — 1 prompt
+./benchmark/run --no-judge  # skip LLM quality scoring (faster)
+```
+
+Each prompt runs both tools against an identical sample Python project. The benchmark measures:
+
+- **Wall time** — how long each tool takes
+- **Token usage** — estimated tokens sent/received per tool
+- **Files changed** — concrete output of each tool
+- **Quality score** — LLM judge rates correctness, completeness, and code quality (0–10)
+
+Results are saved to `benchmark/results_<timestamp>.json`.
 
 ---
 

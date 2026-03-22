@@ -41,12 +41,24 @@ _base_dir: Path = Path(__file__).parent
 
 # ── config ────────────────────────────────────────────────────────────────────
 
+# Complexity presets: tune all knobs at once by choosing simple/standard/thorough.
+# Individual env vars (CM_MAX_FILES etc.) still override preset values.
+_COMPLEXITY_PRESETS: dict[str, dict] = {
+    "simple":   {"max_files": 3, "max_fns": 3, "max_debug": 1, "plan_types": ""},
+    "standard": {"max_files": 5, "max_fns": 5, "max_debug": 2, "plan_types": "FEATURE,REFACTOR"},
+    "thorough": {"max_files": 8, "max_fns": 8, "max_debug": 3, "plan_types": "FEATURE,REFACTOR,BUG_FIX,TEST"},
+}
+
 def load_config() -> dict:
+    preset_name = os.environ.get("CM_COMPLEXITY", "standard")
+    preset = _COMPLEXITY_PRESETS.get(preset_name, _COMPLEXITY_PRESETS["standard"])
     return {
-        "max_files":  int(os.environ.get("CM_MAX_FILES",  "3")),
-        "max_fns":    int(os.environ.get("CM_MAX_FNS",    "3")),
-        "max_debug":  int(os.environ.get("CM_MAX_DEBUG",  "2")),
+        "max_files":  int(os.environ.get("CM_MAX_FILES",  str(preset["max_files"]))),
+        "max_fns":    int(os.environ.get("CM_MAX_FNS",    str(preset["max_fns"]))),
+        "max_debug":  int(os.environ.get("CM_MAX_DEBUG",  str(preset["max_debug"]))),
         "claude_cmd": os.environ.get("CM_CLAUDE_CMD", "claude"),
+        "complexity": preset_name,
+        "plan_types": os.environ.get("CM_PLAN_TYPES", preset["plan_types"]),
     }
 
 # ── stage skip rules ──────────────────────────────────────────────────────────
@@ -371,8 +383,6 @@ def _run_coder_with_continuation(
 
 # ── main pipeline ─────────────────────────────────────────────────────────────
 
-_PLAN_TASK_TYPES = {"FEATURE", "REFACTOR"}
-
 def run_pipeline(task_raw: str, root: Path, base_dir: Path) -> None:
     cfg = load_config()
 
@@ -446,7 +456,8 @@ def run_pipeline(task_raw: str, root: Path, base_dir: Path) -> None:
     plan_section = ""
     subtasks: list[str] = []
 
-    if task_type in _PLAN_TASK_TYPES:
+    plan_types = {t.strip().upper() for t in cfg["plan_types"].split(",") if t.strip()}
+    if task_type in plan_types:
         step("PLANNER")
         directive = build_directive(files, root, repo_map)
         plan_prompt = load_prompt("planner", base_dir, task=task_desc, context=directive)
