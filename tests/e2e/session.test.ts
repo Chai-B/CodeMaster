@@ -60,7 +60,7 @@ test('IR processing applies new files, persists reasoning, and checkpoints resto
   const res = await processIR(ir, session, task, sm.cfg);
 
   assert.deepEqual(res.apply.created, ['e2e_demo.txt']);
-  assert.equal(fs.readFileSync(path.join(TMP, 'e2e_demo.txt'), 'utf8'), 'hello');
+  assert.equal(fs.readFileSync(path.join(TMP, 'e2e_demo.txt'), 'utf8'), 'hello\n');
   assert.ok(Reasoning.forSession(session.id).length >= 1);
   assert.ok(ir.raw_output === undefined, 'raw output archived to cold storage');
 

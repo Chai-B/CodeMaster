@@ -16,7 +16,7 @@
   "files": [
     "bin/",
     "src/",
-    "README.md"
+    "readme.md"
   ],
   "bin": {
     "codemaster": "./bin/codemaster.js"
