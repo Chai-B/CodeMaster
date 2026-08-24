@@ -16,6 +16,7 @@
   "files": [
     "bin/",
     "src/",
+    "tsconfig.json",
     "readme.md"
   ],
   "bin": {
@@ -43,5 +44,6 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "license": "MIT"
 }

@@ -17,8 +17,8 @@ const USAGE = `codemaster — persistent reasoning layer for AI coding agents
 
   codemaster                        interactive TUI
   codemaster run [objective]        plan and execute an objective, then exit
-  codemaster mcp [--repo <path>]     MCP stdio server for other agents
-  codemaster proxy [--port <n>]      OpenAI-compatible endpoint on 127.0.0.1
+  codemaster mcp [--repo <path>]    MCP stdio server for other agents
+  codemaster proxy [--port <n>]     OpenAI-compatible endpoint on 127.0.0.1
   codemaster --version
 
 Options for run:
