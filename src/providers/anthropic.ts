@@ -1,7 +1,7 @@
 // Anthropic provider adapter (spec §13.5).
 
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnSync } from 'child_process';
+import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import { parseIR } from '../workers/outputParser.js';
 import { CredentialManager } from './credentials.js';
 import type {
@@ -162,6 +162,31 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+interface CliResult {
+  result?: string;
+  subtype?: string;
+  is_error?: boolean;
+  api_error_status?: string | null;
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+}
+
+/**
+ * The CLI reports usage limits and API errors in its JSON body while exiting
+ * non-zero, so an exit code alone explains nothing. Prefer the body, and fall
+ * back to the process-level facts when there is no parseable output.
+ */
+function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): string {
+  const body = d ? d.api_error_status || d.result || d.subtype : null;
+  const proc = [
+    r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
+    r.signal ? `signal ${r.signal}` : null,
+    r.status ? `exit ${r.status}` : null,
+    r.stdout ? null : 'empty stdout',
+    r.stderr ? `stderr: ${r.stderr.slice(0, 400)}` : null,
+  ].filter(Boolean).join('; ');
+  return [body ? String(body).slice(0, 400) : null, proc].filter(Boolean).join(' \u00b7 ') || 'no diagnostic available';
+}
+
 function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
   const started = Date.now();
   const args = [
@@ -172,42 +197,35 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
     '--exclude-dynamic-system-prompt-sections',
     '--output-format', 'json',
   ];
+  const run = (): SpawnSyncReturns<string> =>
+    spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+
   // Empty stdout is a transient CLI-overload symptom that a short retry clears.
-  // Retry in-process so one flaky call doesn't fail an otherwise-healthy task.
-  let r = spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  for (let attempt = 0; (r.status !== 0 || !r.stdout) && attempt < 3; attempt++) {
+  // A structured error body is not transient — a usage limit will not lift in
+  // seventeen seconds — so retry only when the CLI produced no output at all.
+  let r = run();
+  for (let attempt = 0; !r.stdout && attempt < 3; attempt++) {
     sleepSync([2000, 5000, 10000][attempt]!);
-    r = spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    r = run();
   }
-  if (r.status !== 0 || !r.stdout) {
-    // Report what actually happened. "transient overload" was a guess that hid
-    // spawn errors, signals and non-zero exits behind one indistinguishable
-    // message, leaving nothing to debug when a run failed.
-    const why = [
-      r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
-      r.signal ? `signal ${r.signal}` : null,
-      r.status !== 0 && r.status !== null ? `exit ${r.status}` : null,
-      r.stdout ? null : 'empty stdout',
-      r.stderr ? `stderr: ${r.stderr.slice(0, 400)}` : null,
-    ].filter(Boolean).join('; ');
-    throw new Error(`claude CLI failed (${why || 'no diagnostic available'})`);
+
+  let d: CliResult | null = null;
+  try {
+    if (r.stdout) d = JSON.parse(r.stdout) as CliResult;
+  } catch {
+    d = null;
   }
-  const d = JSON.parse(r.stdout) as {
-    result?: string;
-    is_error?: boolean;
-    api_error_status?: string | null;
-    usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
-  };
-  if (d.is_error || d.api_error_status || !d.result) {
-    throw new Error(`claude CLI: ${d.api_error_status || 'empty result (transient overload)'}`);
+  if (!d || r.status !== 0 || d.is_error || d.api_error_status || !d.result) {
+    throw new Error(`claude CLI failed (${describeCliFailure(r, d)})`);
   }
+
   const u = d.usage ?? {};
   const cacheRead = u.cache_read_input_tokens ?? 0;
   const cacheWrite = u.cache_creation_input_tokens ?? 0;
   const input = (u.input_tokens ?? 0) + cacheRead + cacheWrite;
   const output = u.output_tokens ?? 0;
   return {
-    text: d.result ?? '',
+    text: d.result,
     usage: { input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, total_tokens: input + output },
     model: request.model,
     latency_ms: Date.now() - started,
