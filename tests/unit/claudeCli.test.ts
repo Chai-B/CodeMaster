@@ -7,8 +7,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { SpawnSyncReturns } from 'child_process';
 import { describeCliFailure, isMissingConversation, usageFromCliResult, type CliResult } from '../../src/providers/anthropic.js';
+import type { CliRun } from '../../src/providers/cliRun.js';
 
 // Recorded from: printf 'Reply with exactly: OK' | claude -p --output-format json --model sonnet
 const REAL = JSON.parse(
@@ -17,8 +17,8 @@ const REAL = JSON.parse(
     '"usage":{"input_tokens":3990,"cache_creation_input_tokens":11354,"cache_read_input_tokens":42718,"output_tokens":4}}',
 ) as CliResult;
 
-function spawned(over: Partial<SpawnSyncReturns<string>> = {}): SpawnSyncReturns<string> {
-  return { pid: 1, output: [], stdout: '', stderr: '', status: 0, signal: null, ...over } as SpawnSyncReturns<string>;
+function spawned(over: Partial<CliRun> = {}): CliRun {
+  return { stdout: '', stderr: '', status: 0, signal: null, ...over };
 }
 
 test('billed input is the sum of fresh, cache-read and cache-write tokens', () => {
