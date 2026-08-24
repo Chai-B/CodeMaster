@@ -3,11 +3,11 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { WIKI_DIR } from '../config.js';
+import { wikiDir } from '../config.js';
 import type { WikiEntry, WikiFrontMatter } from '../types/index.js';
 
 export function wikiFilePath(key: string): string {
-  return path.join(WIKI_DIR, `${key}.md`);
+  return path.join(wikiDir(), `${key}.md`);
 }
 
 export function renderEntry(entry: WikiEntry): string {
@@ -22,7 +22,7 @@ export function writeMarkdown(entry: WikiEntry): void {
 }
 
 export function writeVersion(key: string, content: string, stamp: string): void {
-  const dir = path.join(WIKI_DIR, '.versions', key);
+  const dir = path.join(wikiDir(), '.versions', key);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `${stamp.replace(/[:.]/g, '')}.md`), content, 'utf8');
 }

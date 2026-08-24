@@ -1,18 +1,56 @@
-// Global configuration (spec §27). Loaded from ~/.codemaster/config.yaml.
+// Global configuration (spec §27). Loaded from $XDG_CONFIG_HOME/codemaster/config.yaml.
+//
+// State is split in two: machine-global (config, credentials, logs, plugins) and
+// per-repository (sessions, reasoning, wiki, checkpoints). Per-repo state lives
+// under DATA_DIR/repos/<slug> rather than inside the repo, so `git clean -fdx`
+// cannot destroy a session's memory.
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import yaml from 'js-yaml';
 import type { ModelSpec } from './types/index.js';
 
-export const DATA_DIR = process.env.CODEMASTER_DATA_DIR || path.join(os.homedir(), '.codemaster');
+const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+export const DATA_DIR = process.env.CODEMASTER_DATA_DIR || path.join(XDG_CONFIG, 'codemaster');
+/** Pre-0.1 location, shared with the abandoned Python v1 checkout. Migrated once. */
+export const LEGACY_DATA_DIR = path.join(os.homedir(), '.codemaster');
+
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.yaml');
-export const DB_PATH = path.join(DATA_DIR, 'codemaster.db');
-export const WIKI_DIR = path.join(DATA_DIR, 'wiki');
-export const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 export const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');
 export const LOGS_DIR = path.join(DATA_DIR, 'logs');
+export const REPOS_DIR = path.join(DATA_DIR, 'repos');
+
+let activeRepo = process.cwd();
+
+/** Scope all per-repo state to this repository. Call once at startup. */
+export function setActiveRepo(repoPath: string): void {
+  activeRepo = path.resolve(repoPath);
+}
+export function activeRepoPath(): string {
+  return activeRepo;
+}
+
+/** Stable, human-readable, collision-free directory for one repository's state. */
+export function repoSlug(repoPath: string = activeRepo): string {
+  const abs = path.resolve(repoPath);
+  const hash = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 8);
+  const name = path.basename(abs).replace(/[^A-Za-z0-9._-]/g, '_') || 'repo';
+  return `${name}-${hash}`;
+}
+export function repoDataDir(repoPath: string = activeRepo): string {
+  return path.join(REPOS_DIR, repoSlug(repoPath));
+}
+export function dbPath(repoPath: string = activeRepo): string {
+  return path.join(repoDataDir(repoPath), 'state.db');
+}
+export function wikiDir(repoPath: string = activeRepo): string {
+  return path.join(repoDataDir(repoPath), 'wiki');
+}
+export function sessionsDir(repoPath: string = activeRepo): string {
+  return path.join(repoDataDir(repoPath), 'sessions');
+}
 
 export interface ProviderModels {
   models: ModelSpec[];
@@ -54,7 +92,6 @@ export interface Config {
     max_files: number;
     file_compression_threshold: number;
     max_context_tokens: number;
-    session_token_budget: number;
   };
   verify: {
     maxIters: number;
@@ -68,9 +105,6 @@ export interface Config {
     openai: ProviderModels;
     google: ProviderModels;
     openai_codex: ProviderModels;
-  };
-  checkpoint: {
-    interval_minutes: number;
   };
   checkpointing: {
     enabled: boolean;
@@ -118,7 +152,6 @@ export const DEFAULT_CONFIG: Config = {
     max_files: 30,
     file_compression_threshold: 8000,
     max_context_tokens: 200_000,
-    session_token_budget: 500_000,
   },
   verify: {
     maxIters: 3,
@@ -153,7 +186,6 @@ export const DEFAULT_CONFIG: Config = {
       ],
     },
   },
-  checkpoint: { interval_minutes: 10 },
   checkpointing: {
     enabled: true,
     interval_minutes: 10,
@@ -189,9 +221,22 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
 }
 
 export function ensureDirs(): void {
-  for (const d of [DATA_DIR, WIKI_DIR, SESSIONS_DIR, CREDENTIALS_DIR, LOGS_DIR]) {
+  for (const d of [DATA_DIR, CREDENTIALS_DIR, LOGS_DIR, REPOS_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
+}
+
+/** Create the active repository's state directories. Idempotent. */
+export function ensureRepoDirs(repoPath: string = activeRepo): string {
+  const dir = repoDataDir(repoPath);
+  for (const d of [dir, wikiDir(repoPath), sessionsDir(repoPath)]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+  const marker = path.join(dir, 'repo.json');
+  if (!fs.existsSync(marker)) {
+    fs.writeFileSync(marker, JSON.stringify({ repository_path: path.resolve(repoPath) }, null, 2));
+  }
+  return dir;
 }
 
 export function loadConfig(): Config {
@@ -210,7 +255,12 @@ export function saveConfig(cfg: Config): void {
   fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg), 'utf8');
 }
 
+export function allModels(cfg: Config): ModelSpec[] {
+  const { default: _default, ...byProvider } = cfg.providers;
+  return Object.values(byProvider).flatMap((p) => p.models);
+}
+
 export function modelContextSize(cfg: Config, modelId: string): number {
-  const m = cfg.providers.anthropic.models.find((x) => x.id === modelId);
+  const m = allModels(cfg).find((x) => x.id === modelId);
   return m?.context_size ?? cfg.context.max_context_tokens;
 }

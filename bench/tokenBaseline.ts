@@ -1,8 +1,11 @@
 // Token-discipline baseline (plan §6). Reports the waste classes that are
 // currently measurable from recorded data, and states plainly which are not.
-// Run: node --import tsx bench/tokenBaseline.ts
+// Run: node --import tsx bench/tokenBaseline.ts [state.db ...]
+// With no arguments it aggregates every per-repo state database.
 import { DatabaseSync } from 'node:sqlite';
-import { DB_PATH } from '../src/config.js';
+import fs from 'fs';
+import path from 'path';
+import { REPOS_DIR } from '../src/config.js';
 
 interface UsageRow {
   input_tokens: number;
@@ -13,8 +16,18 @@ interface UsageRow {
   wasted_tokens: number | null;
 }
 
-const db = new DatabaseSync(DB_PATH);
-const rows = db.prepare('SELECT * FROM token_usage ORDER BY invocation_at').all() as unknown as UsageRow[];
+const dbs = process.argv.slice(2).length
+  ? process.argv.slice(2)
+  : (fs.existsSync(REPOS_DIR) ? fs.readdirSync(REPOS_DIR) : [])
+      .map((d) => path.join(REPOS_DIR, d, 'state.db'))
+      .filter((f) => fs.existsSync(f));
+
+const rows: UsageRow[] = [];
+for (const f of dbs) {
+  const db = new DatabaseSync(f, { readOnly: true });
+  rows.push(...(db.prepare('SELECT * FROM token_usage ORDER BY invocation_at').all() as unknown as UsageRow[]));
+  db.close();
+}
 if (rows.length === 0) {
   console.log('no token_usage rows; run a session or bench first');
   process.exit(0);

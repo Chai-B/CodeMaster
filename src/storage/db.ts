@@ -3,51 +3,44 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
-import { DB_PATH, ensureDirs } from '../config.js';
-import { PRIMARY_SCHEMA, REPO_INDEX_SCHEMA } from './schema.js';
+import { activeRepoPath, dbPath, ensureDirs, ensureRepoDirs } from '../config.js';
+import { applyPrimarySchema, REPO_INDEX_SCHEMA } from './schema.js';
+import { migrateLegacy } from './migrate.js';
 
 // Bump when the repo-index schema columns change so stale disposable indexes
 // are dropped and rebuilt rather than failing on renamed columns.
 const REPO_INDEX_VERSION = 2;
-
-// Additive migrations for the primary DB (CREATE TABLE IF NOT EXISTS cannot add
-// columns to pre-existing tables). Each is idempotent — duplicate-column errors
-// are ignored.
-const PRIMARY_MIGRATIONS = [
-  'ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER',
-  'ALTER TABLE token_usage ADD COLUMN cache_write_tokens INTEGER',
-  'ALTER TABLE token_usage ADD COLUMN wasted_tokens INTEGER',
-  'ALTER TABLE checkpoints ADD COLUMN git_commit TEXT',
-  'ALTER TABLE checkpoints ADD COLUMN repository_path TEXT',
-  'ALTER TABLE checkpoints ADD COLUMN storage_path TEXT',
-  'ALTER TABLE checkpoints ADD COLUMN size_bytes INTEGER',
-  'ALTER TABLE checkpoints ADD COLUMN tasks_completed INTEGER',
-  'ALTER TABLE checkpoints ADD COLUMN tasks_remaining INTEGER',
-];
 
 const REPO_INDEX_TABLES = [
   'file_index', 'symbols', 'symbol_references', 'dependency_edges', 'module_index',
   'calls', 'embeddings', 'coverage', 'rkg_nodes', 'rkg_edges',
 ];
 
-let primary: DatabaseSync | null = null;
+// State DBs are per-repository (one `state.db` per repo under DATA_DIR/repos),
+// keyed here by repo path so a process that switches repos does not reuse a
+// connection to the wrong file.
+const stateDbs = new Map<string, DatabaseSync>();
 const repoDbs = new Map<string, DatabaseSync>();
 
-export function getDb(): DatabaseSync {
-  if (primary) return primary;
+let migrated = false;
+
+export function getDb(repoPath: string = activeRepoPath()): DatabaseSync {
+  const existing = stateDbs.get(repoPath);
+  if (existing) return existing;
   ensureDirs();
-  primary = new DatabaseSync(DB_PATH);
-  primary.exec('PRAGMA journal_mode = WAL;');
-  primary.exec('PRAGMA foreign_keys = ON;');
-  primary.exec(PRIMARY_SCHEMA);
-  for (const m of PRIMARY_MIGRATIONS) {
-    try {
-      primary.exec(m);
-    } catch {
-      /* column already exists */
-    }
+  // Runs at most once per process, before any state DB is opened, so a pre-0.1
+  // install is partitioned rather than silently starting from empty.
+  if (!migrated) {
+    migrated = true;
+    migrateLegacy();
   }
-  return primary;
+  ensureRepoDirs(repoPath);
+  const db = new DatabaseSync(dbPath(repoPath));
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  applyPrimarySchema(db);
+  stateDbs.set(repoPath, db);
+  return db;
 }
 
 export function getRepoDb(repoPath: string): DatabaseSync {
@@ -81,8 +74,8 @@ function migrateRepoIndex(db: DatabaseSync): void {
 }
 
 export function closeAll(): void {
-  primary?.close();
-  primary = null;
+  for (const db of stateDbs.values()) db.close();
+  stateDbs.clear();
   for (const db of repoDbs.values()) db.close();
   repoDbs.clear();
 }

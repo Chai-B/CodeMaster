@@ -1,5 +1,7 @@
 // Primary database schema (spec §19.2).
 
+import type { DatabaseSync } from 'node:sqlite';
+
 export const PRIMARY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -322,3 +324,29 @@ CREATE TABLE IF NOT EXISTS repo_meta (
   value TEXT
 );
 `;
+
+// Additive migrations for the state DB (CREATE TABLE IF NOT EXISTS cannot add
+// columns to pre-existing tables). Each is idempotent — duplicate-column errors
+// are ignored.
+const PRIMARY_MIGRATIONS = [
+  'ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER',
+  'ALTER TABLE token_usage ADD COLUMN cache_write_tokens INTEGER',
+  'ALTER TABLE token_usage ADD COLUMN wasted_tokens INTEGER',
+  'ALTER TABLE checkpoints ADD COLUMN git_commit TEXT',
+  'ALTER TABLE checkpoints ADD COLUMN repository_path TEXT',
+  'ALTER TABLE checkpoints ADD COLUMN storage_path TEXT',
+  'ALTER TABLE checkpoints ADD COLUMN size_bytes INTEGER',
+  'ALTER TABLE checkpoints ADD COLUMN tasks_completed INTEGER',
+  'ALTER TABLE checkpoints ADD COLUMN tasks_remaining INTEGER',
+];
+
+export function applyPrimarySchema(db: DatabaseSync): void {
+  db.exec(PRIMARY_SCHEMA);
+  for (const m of PRIMARY_MIGRATIONS) {
+    try {
+      db.exec(m);
+    } catch {
+      /* column already exists */
+    }
+  }
+}

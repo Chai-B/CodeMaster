@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { SESSIONS_DIR } from '../config.js';
+import { sessionsDir } from '../config.js';
 import { Sessions, Tasks } from '../storage/sessions.js';
 import { Reasoning } from '../storage/reasoning.js';
 import { LongTerm } from '../storage/memory.js';
@@ -21,7 +21,7 @@ export async function createCheckpoint(
   trigger: CheckpointTrigger,
 ): Promise<CheckpointManifest> {
   const cpId = id('ckpt');
-  const dir = path.join(SESSIONS_DIR, session.id, 'checkpoints', cpId);
+  const dir = path.join(sessionsDir(), session.id, 'checkpoints', cpId);
   fs.mkdirSync(dir, { recursive: true });
 
   const tasks = Tasks.forSession(session.id);
