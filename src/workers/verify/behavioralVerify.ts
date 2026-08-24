@@ -5,6 +5,7 @@
 // discovered tests + the admitted repro — never an externally supplied oracle.
 
 import { staticAnalysis } from '../../analysis/api.js';
+import { unvisitedUseSites, describeUseSiteGaps } from '../../analysis/useSites.js';
 import { runTests, typeOrImportCheck, type RunOpts } from '../../analysis/testRunner.js';
 import type { VerifyFn } from '../solver.js';
 import type { Repro } from './reproGenerator.js';
@@ -37,7 +38,7 @@ export function makeBehavioralVerify(
 ): BehavioralVerify {
   let last: TestResults | null = null;
 
-  const verify: VerifyFn = () => {
+  const verify: VerifyFn = async () => {
     const changed = getChangedFiles();
 
     // 1. Crash guard — syntax/type/import errors on the changed files (hard gate).
@@ -64,6 +65,16 @@ export function makeBehavioralVerify(
     // Locus coverage: a change that never touched the files the task named was
     // not verified by any suite, no matter what the suite reports.
     const missedLocus = locus.length > 0 && !locus.some((f) => changed.includes(f));
+
+    // 4. Use-site coverage: a changed signature whose callers were never opened
+    // is broken code that a green suite cannot see. This is a hard gate, not a
+    // confidence flag — the callers really are wrong.
+    const gaps = await unvisitedUseSites(repoPath, changed);
+    if (gaps.length > 0) {
+      const detail = describeUseSiteGaps(gaps);
+      last = { ran: false, passed: 0, failed: 0, total: 0, framework: 'use-sites', guardOk: true, reproUsed: !!repro, discoveredTests: [], output: detail };
+      return { ok: false, output: detail };
+    }
 
     const tests = staticAnalysis(repoPath).relevantTests(changed).slice(0, opts.maxTestFiles ?? 30);
     if (tests.length === 0) {
