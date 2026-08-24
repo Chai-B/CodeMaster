@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 import { staticAnalysis } from '../analysis/api.js';
 import { selectFiles } from './fileSelector.js';
 import { resolveBudget } from './budget.js';
+import { Learning } from '../learning/reflector.js';
 import { readRelevantSections, readConventions, readArchitecture } from '../wiki/reader.js';
 import { Reasoning, Failures } from '../storage/reasoning.js';
 import { OUTPUT_FORMAT, SYSTEM_PROMPT } from './outputFormat.js';
@@ -31,7 +32,12 @@ export async function compileContext(
   opts: CompileOptions,
 ): Promise<CompiledPrompt> {
   const api = staticAnalysis(session.repository.path);
-  const { profileName, allocations, budget } = resolveBudget(task.type, opts.maxContextTokens, opts.tier ?? 0);
+  const { profileName, allocations, budget } = resolveBudget(
+    task.type,
+    opts.maxContextTokens,
+    opts.tier ?? 0,
+    Learning.componentWeights(session.repository.path, task.type),
+  );
   const kws = session.objective_parsed?.keywords ?? [];
   const taskKws = `${task.title} ${task.description}`.match(/[A-Za-z_][A-Za-z0-9_]{3,}/g)?.slice(0, 8) ?? [];
   const allKws = [...new Set([...kws, ...taskKws])];

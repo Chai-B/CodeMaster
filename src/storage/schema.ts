@@ -276,6 +276,18 @@ CREATE TABLE IF NOT EXISTS file_utility (
   updated_at TEXT
 );
 
+-- Which context components a task type actually uses. Same shape as
+-- file_utility: pure observation, no priors — a component nothing has ever
+-- referenced gets a smaller share of the next budget.
+CREATE TABLE IF NOT EXISTS component_utility (
+  task_type TEXT NOT NULL,
+  component TEXT NOT NULL,
+  included INTEGER NOT NULL DEFAULT 0,
+  referenced INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT,
+  PRIMARY KEY (task_type, component)
+);
+
 CREATE TABLE IF NOT EXISTS tier_outcomes (
   task_type TEXT NOT NULL,
   tier INTEGER NOT NULL,

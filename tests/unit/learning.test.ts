@@ -47,3 +47,33 @@ test('tiers that only ever failed do not raise the starting rung', () => {
   for (let i = 0; i < 5; i++) Learning.recordTier(repo, 'feature', 2, false);
   assert.equal(Learning.startTier(repo, 'feature'), 0);
 });
+
+// ── Third feedback edge: budget follows what the answers actually use ──
+
+const { resolveBudget } = await import('../../src/context/budget.js');
+
+test('a component with too few observations does not move the budget', () => {
+  Learning.recordComponents(repo, 'debug', [{ component: 'repository_map', referenced: false }]);
+  Learning.recordComponents(repo, 'debug', [{ component: 'repository_map', referenced: false }]);
+  assert.deepEqual(Learning.componentWeights(repo, 'debug'), {});
+});
+
+test('a component included repeatedly and never used is shrunk, and the rest grow', () => {
+  for (let i = 0; i < 5; i++) {
+    Learning.recordComponents(repo, 'refactor', [
+      { component: 'repository_map', referenced: false },
+      { component: 'relevant_files', referenced: true },
+    ]);
+  }
+  const w = Learning.componentWeights(repo, 'refactor');
+  assert.equal(w.repository_map, 0.4);
+  assert.equal(w.relevant_files, 1);
+
+  const base = resolveBudget('refactor', 200_000, 2);
+  const learned = resolveBudget('refactor', 200_000, 2, w);
+  assert.ok(learned.allocations.repository_map! < base.allocations.repository_map!);
+  assert.ok(learned.allocations.relevant_files! > base.allocations.relevant_files!);
+  // The budget is redistributed, not reduced: the same total is still spent.
+  const sum = (a: Record<string, number>): number => Object.values(a).reduce((x, y) => x + y, 0);
+  assert.ok(Math.abs(sum(learned.allocations) - sum(base.allocations)) < 20);
+});

@@ -31,6 +31,32 @@ export const Learning = {
     for (const p of included) stmt.run(p, referenced.has(p) ? 1 : 0, now());
   },
 
+  /** One observation per context component the compiler included, and whether
+   *  the response actually drew on it. */
+  recordComponents(repoPath: string, taskType: string, obs: Array<{ component: string; referenced: boolean }>): void {
+    const db = getRepoDb(repoPath);
+    const stmt = db.prepare(
+      `INSERT INTO component_utility (task_type, component, included, referenced, updated_at) VALUES (?,?,1,?,?)
+       ON CONFLICT(task_type, component) DO UPDATE SET included=included+1, referenced=referenced+excluded.referenced, updated_at=excluded.updated_at`,
+    );
+    for (const o of obs) stmt.run(taskType, o.component, o.referenced ? 1 : 0, now());
+  },
+
+  /**
+   * Budget multipliers per component for this task type. A component this
+   * repository has included repeatedly and drawn on never is shrunk; the share
+   * it gives up is redistributed to the ones that are used. Never zero — the
+   * next task may be the one that needs it.
+   */
+  componentWeights(repoPath: string, taskType: string): Record<string, number> {
+    const rows = getRepoDb(repoPath)
+      .prepare('SELECT component, included, referenced FROM component_utility WHERE task_type=? AND included >= ?')
+      .all(taskType, MIN_SAMPLES) as Array<{ component: string; included: number; referenced: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.component] = 0.4 + 0.6 * (r.referenced / r.included);
+    return out;
+  },
+
   /** The tier a task finished on, and whether that finish was a real verification. */
   recordTier(repoPath: string, taskType: string, tier: number, verified: boolean): void {
     getRepoDb(repoPath)

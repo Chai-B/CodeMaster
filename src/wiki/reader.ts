@@ -11,12 +11,15 @@ import type { WikiSection, TaskType } from '../types/index.js';
 // ever created — those live in the reasoning and failure stores, not the wiki.
 const NAMESPACE_PRIORITY: Record<TaskType, string[]> = {
   plan: ['architecture', 'modules', 'conventions', 'notes'],
-  implement: ['conventions', 'architecture', 'modules'],
+  implement: ['playbook', 'conventions', 'architecture', 'modules'],
   test: ['conventions', 'modules'],
   review: ['conventions', 'architecture', 'notes'],
   verify: ['conventions', 'architecture'],
-  refactor: ['architecture', 'conventions', 'modules'],
-  debug: ['modules', 'architecture', 'notes'],
+  refactor: ['playbook', 'architecture', 'conventions', 'modules'],
+  // `playbook` holds what this repository learned the hard way — the first
+  // attempt that failed and the change that actually worked. It leads for the
+  // task types that iterate, so the next attempt starts from the lesson.
+  debug: ['playbook', 'modules', 'architecture', 'notes'],
 };
 
 export function readRelevantSections(
