@@ -1,6 +1,7 @@
 // TaskExecutor — LLM-backed task execution + full IR processing (spec §12.2, §14.1).
 
 import { compileContext } from '../context/compiler.js';
+import { compileHandoffPackage, renderHandoffPackage, validateHandoffPackage } from './handoff.js';
 import { processIR } from './irProcessor.js';
 import { ParseError } from './outputParser.js';
 import { Tokens } from '../storage/tokens.js';
@@ -45,7 +46,27 @@ export async function executeTask(
   session.metadata = { ...(session.metadata ?? {}), last_context: compiled.body };
 
   // Invoke with automatic failover across healthy providers (spec §13, §26.7).
-  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, task.type);
+  // On a vendor switch the context is recompiled with a handoff package, so the
+  // new provider inherits the session's decisions and progress instead of
+  // starting cold — the one thing no other tool does mid-task.
+  const { sel, response } = await manager.invokeWithFailover(
+    compiled,
+    cfg.context.max_context_tokens,
+    task.type,
+    {
+      onVendorSwitch: async (from, to) => {
+        const pkg = await compileHandoffPackage(session);
+        const valid = validateHandoffPackage(pkg);
+        if (!valid.ok) bus.emit({ type: 'log', level: 'warn', message: `Handoff missing: ${valid.missing.join(', ')}` });
+        session.metadata = { ...(session.metadata ?? {}), pending_handoff: renderHandoffPackage(pkg) };
+        bus.emit({ type: 'log', level: 'info', message: `Carrying session state from ${from} to ${to}.` });
+        return compileContext(session, task, {
+          maxContextTokens: primary.spec.context_size,
+          fileCompressionThreshold: cfg.context.file_compression_threshold,
+        });
+      },
+    },
+  );
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
   bus.emit({ type: 'provider.response', provider_id: sel.adapter.provider_id, tokens: response.usage.total_tokens });

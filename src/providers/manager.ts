@@ -6,6 +6,7 @@ import { OpenAIAdapter } from './openai.js';
 import { GeminiAdapter } from './gemini.js';
 import { CodexAdapter } from './codex.js';
 import { CredentialManager } from './credentials.js';
+import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
 import type { Account, ProviderAdapter, ModelSpec, TaskType, CompiledPrompt, ProviderResponse } from '../types/index.js';
@@ -145,11 +146,12 @@ export class ProviderManager {
     const spec = this.modelSpec(modelId) ?? this.cfg.providers.anthropic.models[0]!;
     const adapter = this.adapters.get(providerId)!;
 
+    // Filtered on facts only: the account is not rate-limited or cooling down,
+    // and the model's window actually fits the request. The old filters divided
+    // by an invented 50M daily limit that no vendor ever reported.
     const candidates = this.accounts
       .filter((a) => a.provider_id === providerId)
-      .filter((a) => a.health.status === 'healthy')
-      .filter((a) => a.quota.tokens_used_today < a.quota.daily_token_limit * 0.95)
-      .filter((a) => a.quota.current_rpm < a.quota.rate_limit_rpm * 0.8)
+      .filter((a) => this.available(a))
       .filter((a) => a.quota.context_size >= requiredTokens);
 
     const scored = candidates
@@ -157,7 +159,6 @@ export class ProviderManager {
         a,
         score:
           this.capabilityMatch(providerId, taskType) *
-          (1 - a.quota.tokens_used_today / a.quota.daily_token_limit) *
           (1 / Math.max(1, a.health.avg_latency_ms || 1)),
       }))
       .sort((x, y) => y.score - x.score);
@@ -208,24 +209,32 @@ export class ProviderManager {
         order.push(m.id);
       }
     }
+    // Vendors that are usable right now go first, so a spent Claude window does
+    // not cost a failed call before Codex is tried. Ordering only — a blocked
+    // vendor stays in the list, and its own guard skips it.
+    const blocked = (modelId: string): number => {
+      const pid = this.providerOf(modelId);
+      const acct = this.accounts.find((a) => a.provider_id === pid);
+      return acct && !this.available(acct) ? 1 : 0;
+    };
+    order.sort((a, b) => blocked(a) - blocked(b));
     // Fallback: if nothing is credentialed, still try the default so the error is honest.
     return order.length ? order : [def];
   }
 
+  /** Ledger key for an account: stable across process restarts, unlike its id. */
+  private key(account: Account): string {
+    return `${account.provider_id}::${account.alias}`;
+  }
+
   /**
-   * An account disabled by an error becomes eligible again after a cooldown.
-   * Disabling permanently for the process lifetime meant one transient CLI
-   * hiccup during planning silently killed every later task in the run.
+   * Usable right now: not inside a vendor-reported rate limit and not inside a
+   * failure cooldown. State lives in the ledger, so a limit hit in one process
+   * is still known to the next — previously every restart forgot it, and a
+   * single error disabled an account for the whole process lifetime.
    */
   private available(account: Account): boolean {
-    if (account.health.status !== 'unavailable') return true;
-    const since = account.health.unavailable_since;
-    if (!since) return true;
-    if (Date.now() - Date.parse(since) < UNAVAILABLE_COOLDOWN_MS) return false;
-    account.health.status = 'healthy';
-    account.health.unavailable_since = undefined;
-    account.health.unavailable_reason = undefined;
-    return true;
+    return QuotaLedger.available(this.key(account), account.provider_id);
   }
 
   /**
@@ -236,24 +245,71 @@ export class ProviderManager {
     compiled: CompiledPrompt,
     requiredTokens: number,
     taskType?: TaskType,
+    opts?: { onVendorSwitch?: (from: string, to: string) => Promise<CompiledPrompt> },
   ): Promise<{ sel: SelectedProvider; response: ProviderResponse }> {
     let lastErr: unknown;
+    let prompt = compiled;
+    let lastProvider: string | undefined;
+    const tried: string[] = [];
+
     for (const model of this.failoverModelOrder()) {
       const sel = this.select(model, requiredTokens, taskType);
       if (!this.available(sel.account)) continue;
+      const pid = sel.adapter.provider_id;
+      const key = this.key(sel.account);
+
+      // Crossing a vendor boundary mid-task is exactly when the session's
+      // reasoning would otherwise be lost: the new vendor has none of the
+      // context the old one accumulated. Recompile with a handoff package so it
+      // resumes the task instead of restarting it.
+      if (lastProvider && lastProvider !== pid) {
+        bus.emit({ type: 'provider.switched', from: lastProvider, to: pid });
+        if (opts?.onVendorSwitch) {
+          try {
+            prompt = await opts.onVendorSwitch(lastProvider, pid);
+          } catch (e) {
+            bus.emit({ type: 'log', level: 'warn', message: `Handoff compilation failed, continuing without it: ${String(e)}` });
+          }
+        }
+      }
+      lastProvider = pid;
+      tried.push(pid);
+
       try {
-        const request = sel.adapter.format_prompt(compiled, sel.model);
+        const request = sel.adapter.format_prompt(prompt, sel.model);
         const response = await invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
+        QuotaLedger.recordSuccess(key, pid);
+        sel.account.health.status = 'healthy';
         return { sel, response };
       } catch (e) {
         lastErr = e;
-        sel.account.health.status = 'unavailable';
-        sel.account.health.unavailable_since = now();
+        sel.account.health.status = 'degraded';
         sel.account.health.unavailable_reason = String(e);
-        bus.emit({ type: 'provider.error', provider_id: sel.adapter.provider_id, error: String(e) });
+        const retryAfterMs = parseRetryAfterMs(e);
+        if (retryAfterMs !== null) {
+          this.markRateLimited(sel.account, retryAfterMs);
+          // A limit measured in hours is a spent subscription window, not a
+          // burst limit — the distinction decides whether waiting is worth it.
+          if (retryAfterMs > 10 * 60_000) bus.emit({ type: 'quota.exhausted', account_id: sel.account.id });
+        } else {
+          QuotaLedger.recordFailure(key, pid, String(e));
+        }
+        bus.emit({ type: 'provider.error', provider_id: pid, error: String(e) });
       }
     }
-    throw lastErr ?? new Error('No available provider account');
+
+    if (lastErr) throw lastErr;
+    // Nothing was even attempted: say which vendors are blocked and for how
+    // long, rather than the bare "no available provider account" that left a
+    // failed run with no explanation.
+    const blocked = this.accounts
+      .filter((a) => this.providerHasCredentials(a.provider_id) && !this.available(a))
+      .map((a) => `${a.provider_id} (${Math.ceil(QuotaLedger.blockedForMs(this.key(a), a.provider_id) / 1000)}s)`);
+    throw new Error(
+      blocked.length
+        ? `No provider available — rate-limited or cooling down: ${[...new Set(blocked)].join(', ')}`
+        : `No provider available${tried.length ? ` (tried ${tried.join(', ')})` : ' — no credentialed provider found'}`,
+    );
   }
 
   /** Health-check every account (spec §13 provider health monitoring). */
@@ -269,13 +325,15 @@ export class ProviderManager {
     account.health.avg_latency_ms = account.health.avg_latency_ms
       ? (account.health.avg_latency_ms + latencyMs) / 2
       : latencyMs;
-    if (account.quota.tokens_used_today > account.quota.daily_token_limit * 0.8) {
-      bus.emit({ type: 'quota.warning', account_id: account.id, percent_used: Math.round((account.quota.tokens_used_today / account.quota.daily_token_limit) * 100) });
-    }
+    // Persisted so a subscription window's spend survives a restart. There is
+    // no threshold warning here any more: the old one fired at 80% of an
+    // invented 50M daily limit, a number no vendor has ever reported.
+    QuotaLedger.recordUsage(this.key(account), account.provider_id, totalTokens);
   }
 
   markRateLimited(account: Account, retryAfterMs: number): void {
     account.health.status = 'degraded';
+    QuotaLedger.markRateLimited(this.key(account), account.provider_id, retryAfterMs);
     bus.emit({ type: 'provider.rate_limited', account_id: account.id, retry_after_ms: retryAfterMs });
   }
 
