@@ -33,7 +33,8 @@ export interface MigrationReport {
   migrated: boolean;
   reason?: string;
   repos: Array<{ repository_path: string; sessions: number; rows: number; wiki: number }>;
-  unattributedWiki: number;
+  /** Rows whose session no longer exists; kept in the __unattributed__ bucket. */
+  orphans: number;
 }
 
 /** Tables reachable from a session id, with the column that holds it. */
@@ -49,7 +50,7 @@ const BY_SESSION: Array<[string, string]> = [
 ];
 
 export function migrateLegacy(): MigrationReport {
-  const empty: MigrationReport = { migrated: false, repos: [], unattributedWiki: 0 };
+  const empty: MigrationReport = { migrated: false, repos: [], orphans: 0 };
   if (fs.existsSync(MARKER)) return { ...empty, reason: 'already migrated' };
   const legacyDb = path.join(LEGACY_DATA_DIR, 'codemaster.db');
   if (!fs.existsSync(legacyDb)) return { ...empty, reason: 'no legacy data' };
@@ -111,7 +112,15 @@ function partition(src: DatabaseSync): MigrationReport {
   }
 
   const repos: MigrationReport['repos'] = [];
-  for (const repo of new Set([...byRepo.keys(), ...wikiByRepo.keys()])) {
+  const allRepos = new Set([...byRepo.keys(), ...wikiByRepo.keys()]);
+  // Rows can reference a session id that was never inserted (e.g. a bench
+  // bootstrap). Sweep them into the unattributed bucket so the partition is
+  // lossless and nothing is silently dropped.
+  const orphanIds = orphanSessionIds(src, repoOf);
+  if (orphanIds.length > 0) allRepos.add(UNATTRIBUTED);
+
+  let orphans = 0;
+  for (const repo of allRepos) {
     const ids = byRepo.get(repo) ?? [];
     const keys = wikiByRepo.get(repo) ?? [];
     const dest = repo === UNATTRIBUTED ? path.join(DATA_DIR, 'repos', UNATTRIBUTED) : repoDataDir(repo);
@@ -128,6 +137,13 @@ function partition(src: DatabaseSync): MigrationReport {
       for (const [table, col] of BY_SESSION) rows += copyRows(src, db, table, col, ids);
       rows += copyRows(src, db, 'wiki_entries', 'wiki_key', keys);
       rows += copyRows(src, db, 'wiki_versions', 'wiki_key', keys);
+      if (repo === UNATTRIBUTED) {
+        for (const [table, col] of BY_SESSION) {
+          const n = copyRows(src, db, table, col, orphanIds);
+          rows += n;
+          orphans += n;
+        }
+      }
     } finally {
       db.close();
     }
@@ -138,7 +154,19 @@ function partition(src: DatabaseSync): MigrationReport {
     }
     repos.push({ repository_path: repo, sessions: ids.length, rows, wiki: keys.length });
   }
-  return { migrated: true, repos, unattributedWiki };
+  return { migrated: true, repos, orphans };
+}
+
+/** Session ids referenced by dependent tables but absent from `sessions`. */
+function orphanSessionIds(src: DatabaseSync, known: Map<string, string>): string[] {
+  const found = new Set<string>();
+  for (const [table, col] of BY_SESSION) {
+    const rows = src
+      .prepare(`SELECT DISTINCT ${col} AS sid FROM ${table} WHERE ${col} IS NOT NULL`)
+      .all() as Array<{ sid: string }>;
+    for (const r of rows) if (!known.has(r.sid)) found.add(r.sid);
+  }
+  return [...found];
 }
 
 /** Copy every row of `table` whose `col` is in `values`, preserving all columns. */

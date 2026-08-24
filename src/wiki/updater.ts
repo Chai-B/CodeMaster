@@ -6,10 +6,26 @@ import { now } from '../util/id.js';
 import { writeMarkdown, writeVersion } from './markdown.js';
 import type { WikiEntry, WikiUpdate, WikiFrontMatter } from '../types/index.js';
 
+const slug = (s: string): string =>
+  s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+/**
+ * Canonical wiki key: `<namespace>/<leaf>`, both slugified. A key with no
+ * namespace lands in `notes/` rather than making its own title a namespace —
+ * that bug produced sibling entries `Alias Handling` and `alias-handling`,
+ * each its own orphan namespace and neither reachable from NAMESPACE_PRIORITY.
+ */
+export function normalizeKey(key: string): string {
+  const parts = key.split('/').map(slug).filter(Boolean);
+  if (parts.length === 0) return 'notes/untitled';
+  if (parts.length === 1) return `notes/${parts[0]}`;
+  return parts.join('/');
+}
+
 function deriveMeta(key: string): { namespace: string; title: string } {
-  const parts = key.split('/');
-  const namespace = parts[0] ?? 'general';
-  const leaf = parts[parts.length - 1] ?? key;
+  const parts = normalizeKey(key).split('/');
+  const namespace = parts[0]!;
+  const leaf = parts[parts.length - 1]!;
   const title = leaf.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   return { namespace, title };
 }
@@ -44,6 +60,7 @@ export function applyWikiUpdate(
   sessionId?: string,
   conflictStrategy: 'queue' | 'auto_merge' | 'reject' = 'queue',
 ): ApplyResult {
+  update = { ...update, key: normalizeKey(update.key) };
   const existing = Wiki.get(update.key);
   const stamp = now();
 

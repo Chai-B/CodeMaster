@@ -190,8 +190,8 @@ export class CommandRouter {
     const s = this.requireSession();
     if (!s) return;
     this.out('heading', 'Planning');
-    if (!process.env.ANTHROPIC_API_KEY) {
-      this.out('warn', 'ANTHROPIC_API_KEY not set — planning needs an LLM. Session created; set the key and run /plan.');
+    if (!this.sm.manager.hasAnyProvider()) {
+      this.out('warn', 'No provider credentials — planning needs an LLM. Session created; set an API key, run `claude setup-token`, or /account add, then run /plan.');
       return;
     }
     const tasks = await this.sm.plan(s);
@@ -229,7 +229,7 @@ export class CommandRouter {
   private async run(all: boolean): Promise<void> {
     const s = this.requireSession();
     if (!s) return;
-    if (!process.env.ANTHROPIC_API_KEY) return this.out('warn', 'ANTHROPIC_API_KEY not set.');
+    if (!this.sm.manager.hasAnyProvider()) return this.out('warn', 'No provider credentials — set an API key, run `claude setup-token`, or /account add.');
     if (all) {
       await this.sm.runAll(s);
       this.out('success', `Done. ${s.progress.completed}/${s.progress.total} completed, ${s.progress.failed} failed`);
@@ -281,7 +281,8 @@ export class CommandRouter {
       return this.out(acct ? 'success' : 'error', acct ? `Added account ${args[2]} (${args[1]})` : `Unknown provider ${args[1]}`);
     }
     if (args[0] === 'remove' && args[1]) {
-      return this.out(this.sm.manager.removeAccount(args[1]) ? 'success' : 'warn', `Account ${args[1]} ${this.sm.manager.removeAccount(args[1]) ? 'removed' : 'not found'}`);
+      const removed = this.sm.manager.removeAccount(args[1]);
+      return this.out(removed ? 'success' : 'warn', `Account ${args[1]} ${removed ? 'removed' : 'not found'}`);
     }
     this.out('heading', 'Accounts');
     for (const a of this.sm.manager.listAccounts()) {

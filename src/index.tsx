@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useReducer, useRef, useState } from 'rea
 import { Box, render, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
+import { createRequire } from 'module';
 import path from 'path';
 
 import { Header } from './components/Header.js';
@@ -17,7 +18,8 @@ import { COMMANDS } from './commands/catalog.js';
 import { Tasks } from './storage/sessions.js';
 import { Tokens } from './storage/tokens.js';
 
-const VERSION = '0.1.0';
+const require_ = createRequire(import.meta.url);
+const VERSION = (require_('../package.json') as { version: string }).version;
 const AC_COMMANDS: Cmd[] = COMMANDS.map((c) => ({ cmd: c.cmd, desc: c.desc }));
 
 const daemon = new Daemon();
@@ -124,12 +126,11 @@ function App() {
     });
     log('heading', 'CodeMaster Next');
     log('dim', 'Persistent reasoning OS. /new <objective> to begin, /help for commands.');
-    const hasCreds =
-      process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY ||
-      process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN;
-    if (!hasCreds)
+    if (!sm.manager.hasAnyProvider())
       log('warn', 'No provider credentials — set an API key or run `claude setup-token` for account login. Deterministic commands still work.');
-    void daemon.start().then(({ incomplete }) => {
+    void daemon.start().then(({ incomplete, reaped, plugins }) => {
+      if (plugins > 0) log('dim', `${plugins} plugin(s) loaded.`);
+      if (reaped > 0) log('dim', `${reaped} abandoned session(s) closed.`);
       if (incomplete > 0) log('warn', `${incomplete} incomplete session(s) detected — run /recover to restore.`);
     });
     setStatus(computeStatus());
