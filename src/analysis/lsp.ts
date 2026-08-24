@@ -10,6 +10,7 @@ import {
 } from 'vscode-jsonrpc/node';
 import { pathToFileURL } from 'url';
 import fs from 'fs';
+import path from 'path';
 
 interface ServerSpec {
   cmd: string;
@@ -70,8 +71,11 @@ class LspClient {
   }
 
   private async openDoc(file: string): Promise<string> {
-    const uri = pathToFileURL(file).toString();
-    const text = fs.readFileSync(file, 'utf8');
+    // Callers pass repo-relative paths; resolving against cwd instead of the
+    // repository made every request throw and silently fall back.
+    const abs = path.isAbsolute(file) ? file : path.join(this.repoPath, file);
+    const uri = pathToFileURL(abs).toString();
+    const text = fs.readFileSync(abs, 'utf8');
     this.conn!.sendNotification('textDocument/didOpen', {
       textDocument: { uri, languageId: this.language, version: 1, text },
     });
@@ -154,14 +158,21 @@ function normalizeLocations(res: any): Location[] {
 }
 
 const clients = new Map<string, LspClient>();
+// Absence is cached too: without this, a repo whose language server is not
+// installed pays a `which` probe for every symbol the selector looks up.
+const unavailable = new Set<string>();
 
 export async function lspClient(repoPath: string, language: string): Promise<LspClient | null> {
   const key = `${repoPath}:${language}`;
   const existing = clients.get(key);
   if (existing) return existing;
+  if (unavailable.has(key)) return null;
   const client = new LspClient(repoPath, language);
   const ok = await client.start();
-  if (!ok) return null;
+  if (!ok) {
+    unavailable.add(key);
+    return null;
+  }
   clients.set(key, client);
   return client;
 }
@@ -169,4 +180,5 @@ export async function lspClient(repoPath: string, language: string): Promise<Lsp
 export function stopAllLsp(): void {
   for (const c of clients.values()) c.stop();
   clients.clear();
+  unavailable.clear();
 }

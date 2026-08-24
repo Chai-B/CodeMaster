@@ -126,11 +126,37 @@ export class StaticAnalysisAPI {
     if (def && lang && def.line) {
       const client = await lspClient(this.repoPath, lang).catch(() => null);
       if (client) {
-        const locs = await client.references(def.file, def.line, 1).catch(() => []);
-        if (locs.length) return [...new Set(locs.map((l) => l.file))];
+        // The request must point at the symbol's own column: column 1 is the
+        // `def`/`export` keyword, and a server asked about a keyword answers
+        // with nothing.
+        const col = this.symbolColumn(def.file, def.line, symbol);
+        const locs = await client.references(def.file, def.line, col).catch(() => []);
+        const rel = [...new Set(locs.map((l) => this.toRepoRelative(l.file)))].filter(
+          (f): f is string => f !== null,
+        );
+        if (rel.length) return rel;
       }
     }
     return [...new Set(this.findReferences(symbol).map((r) => r.file))];
+  }
+
+  /** 1-based column of `symbol` on its definition line, 1 when not found. */
+  private symbolColumn(file: string, line: number, symbol: string): number {
+    try {
+      const text = fs.readFileSync(path.join(this.repoPath, file), 'utf8').split('\n')[line - 1] ?? '';
+      const i = text.indexOf(symbol);
+      return i >= 0 ? i + 1 : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /** Language servers answer with absolute paths; everything else in the engine
+   *  speaks repo-relative, so an unconverted hit was being dropped as missing. */
+  private toRepoRelative(file: string): string | null {
+    if (!path.isAbsolute(file)) return file;
+    const rel = path.relative(this.repoPath, file);
+    return rel && !rel.startsWith('..') ? rel : null;
   }
 
   /** Key symbols (functions/classes/methods/types) defined in a file — used to

@@ -5,6 +5,7 @@ import { compileHandoffPackage, renderHandoffPackage, validateHandoffPackage } f
 import { processIR } from './irProcessor.js';
 import { ParseError } from './outputParser.js';
 import { Tokens } from '../storage/tokens.js';
+import { PromptCache, promptHash } from '../storage/promptCache.js';
 import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
 import { throwIfCancelled } from '../util/cancel.js';
@@ -84,6 +85,34 @@ export async function executeTask(
   session.metadata = { ...(session.metadata ?? {}), last_context: compiled.body };
 
   throwIfCancelled();
+  // Already answered? The key is this exact compiled prompt, so a hit means the
+  // task, the selected files and their contents are all unchanged since the
+  // last time this question was bought. Re-asking would spend tokens to be told
+  // the same thing (token discipline W4).
+  const cacheKey = promptHash(compiled.body, primary.model);
+  const cached = PromptCache.get(cacheKey);
+  if (cached) {
+    bus.emit({
+      type: 'log',
+      level: 'success',
+      message: `Reused a stored answer for this exact context — ${cached.tokens} tokens not spent.`,
+    });
+    const reused: IntermediateRepresentation = { ...cached.ir, session_id: session.id, task_id: task.id };
+    const rproc = await processIR(reused, session, task, cfg);
+    const rms = Date.now() - started;
+    bus.emit({ type: 'task.completed', task_id: task.id, tokens: 0, ms: rms });
+    return {
+      ir: reused,
+      tokens: 0,
+      ms: rms,
+      applied: rproc.apply.applied,
+      created: rproc.apply.created,
+      failed: rproc.apply.failed,
+      reasoningStored: rproc.reasoningStored,
+      wikiUpdated: rproc.wikiUpdated,
+    };
+  }
+
   // Invoke with automatic failover across healthy providers (spec §13, §26.7).
   // On a vendor switch the context is recompiled with a handoff package, so the
   // new provider inherits the session's decisions and progress instead of
@@ -150,6 +179,10 @@ export async function executeTask(
       throw e;
     }
   }
+
+  // Store the answer against the prompt that bought it, so an identical
+  // question later is free. Only clean results are worth keeping.
+  if (ir.status !== 'failed') PromptCache.put(cacheKey, sel.model, ir, response.usage.total_tokens);
 
   bus.emit({ type: 'worker.started', worker: 'IRProcessor', detail: 'applying patches + reasoning' });
   const proc = await processIR(ir, session, task, cfg);
