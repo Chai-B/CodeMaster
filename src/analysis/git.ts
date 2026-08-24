@@ -1,0 +1,155 @@
+// GitWorker — deterministic temporal/authorship context (spec §5.2.6, §12.2).
+
+import { simpleGit, type SimpleGit } from 'simple-git';
+
+export interface ChangedFile {
+  path: string;
+  status: string;
+}
+
+export class GitWorker {
+  private git: SimpleGit;
+  constructor(public readonly repoPath: string) {
+    this.git = simpleGit(repoPath);
+  }
+
+  async isRepo(): Promise<boolean> {
+    try {
+      return await this.git.checkIsRepo();
+    } catch {
+      return false;
+    }
+  }
+
+  async headCommit(): Promise<string> {
+    try {
+      return (await this.git.revparse(['HEAD'])).trim();
+    } catch {
+      return 'uncommitted';
+    }
+  }
+
+  async branch(): Promise<string> {
+    try {
+      return (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  async changedFilesSince(ref: string): Promise<ChangedFile[]> {
+    try {
+      const out = await this.git.raw(['diff', '--name-status', ref]);
+      return out
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => {
+          const [status, ...rest] = l.split('\t');
+          return { status: status ?? '?', path: rest.join('\t') };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  async diffSince(ref: string): Promise<string> {
+    try {
+      return await this.git.diff([ref]);
+    } catch {
+      return '';
+    }
+  }
+
+  async workingDiff(): Promise<string> {
+    try {
+      return await this.git.diff();
+    } catch {
+      return '';
+    }
+  }
+
+  async status(): Promise<{ modified: string[]; created: string[]; deleted: string[]; staged: string[] }> {
+    try {
+      const s = await this.git.status();
+      return {
+        modified: s.modified,
+        created: s.not_added.concat(s.created),
+        deleted: s.deleted,
+        staged: s.staged,
+      };
+    } catch {
+      return { modified: [], created: [], deleted: [], staged: [] };
+    }
+  }
+
+  async log(file: string | undefined, n: number): Promise<Array<{ hash: string; message: string; date: string }>> {
+    try {
+      const opts: string[] = ['--max-count', String(n)];
+      if (file) opts.push('--', file);
+      const res = await this.git.log(opts);
+      return res.all.map((c) => ({ hash: c.hash.slice(0, 8), message: c.message, date: c.date }));
+    } catch {
+      return [];
+    }
+  }
+
+  async blame(file: string): Promise<string> {
+    try {
+      return await this.git.raw(['blame', '--line-porcelain', file]);
+    } catch {
+      return '';
+    }
+  }
+
+  /** Files frequently changed together with the given file (git proximity, spec §10.3 step 4). */
+  async coChangedFiles(file: string, n = 20): Promise<string[]> {
+    try {
+      const out = await this.git.raw(['log', '--max-count', String(n), '--name-only', '--pretty=format:', '--', file]);
+      const counts = new Map<string, number>();
+      for (const line of out.split('\n')) {
+        const p = line.trim();
+        if (p && p !== file) counts.set(p, (counts.get(p) ?? 0) + 1);
+      }
+      return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+    } catch {
+      return [];
+    }
+  }
+
+  async createCheckpointPatch(sinceRef: string): Promise<string> {
+    try {
+      return await this.git.diff([sinceRef]);
+    } catch {
+      return '';
+    }
+  }
+
+  /** Structured diff between two states (spec §5.2.6 diff(commit_a, commit_b)). */
+  async diffBetween(a: string, b: string): Promise<string> {
+    try {
+      return await this.git.diff([`${a}..${b}`]);
+    } catch {
+      return '';
+    }
+  }
+
+  /** Available stash entries (spec §5.2.6 stash_list). */
+  async stashList(): Promise<string[]> {
+    try {
+      const out = await this.git.raw(['stash', 'list']);
+      return out.split('\n').filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Current branch + ahead/behind remote (spec §5.2.6 branch_status). */
+  async branchStatus(): Promise<{ branch: string; ahead: number; behind: number; tracking: string | null }> {
+    try {
+      const s = await this.git.status();
+      return { branch: s.current ?? 'unknown', ahead: s.ahead, behind: s.behind, tracking: s.tracking ?? null };
+    } catch {
+      return { branch: 'unknown', ahead: 0, behind: 0, tracking: null };
+    }
+  }
+}
