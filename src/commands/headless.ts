@@ -9,6 +9,7 @@ import { Tasks } from '../storage/sessions.js';
 import { Tokens } from '../storage/tokens.js';
 import { eventToLog } from '../utils/parser.js';
 import { GitWorker } from '../analysis/git.js';
+import type { Session } from '../types/index.js';
 
 const USAGE = `codemaster — persistent reasoning layer for AI coding agents
 
@@ -99,6 +100,24 @@ export async function runHeadless(argv: string[]): Promise<number> {
 
   const daemon = new Daemon();
   const sm = daemon.sm;
+
+  // Ctrl-C pauses rather than abandons: applied work stays on disk and the
+  // session is resumable, instead of being left `active` for the startup
+  // reaper to close. A second Ctrl-C gives up on the clean exit.
+  let session: Session | undefined;
+  let interrupted = false;
+  const onSigint = (): void => {
+    if (interrupted) process.exit(130);
+    interrupted = true;
+    process.stderr.write('\nInterrupted — pausing session…\n');
+    if (!session) process.exit(130);
+    void sm.pause(session).finally(() => {
+      process.stderr.write(`Paused. Resume with: codemaster /resume ${session!.id}\n`);
+      process.exit(130);
+    });
+  };
+  process.on('SIGINT', onSigint);
+
   try {
     await daemon.start();
     if (!sm.manager.hasAnyProvider()) {
@@ -106,7 +125,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
       return 3;
     }
 
-    const session = await sm.createSession(objective, flags.repo);
+    session = await sm.createSession(objective, flags.repo);
     await sm.plan(session);
     await sm.runAll(session);
 
@@ -142,6 +161,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
     process.stderr.write(`${message}\n`);
     return 1;
   } finally {
+    process.off('SIGINT', onSigint);
     off();
     await daemon.stop();
   }

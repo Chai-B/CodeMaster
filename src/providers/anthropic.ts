@@ -203,8 +203,10 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
   // Empty stdout is a transient CLI-overload symptom that a short retry clears.
   // A structured error body is not transient — a usage limit will not lift in
   // seventeen seconds — so retry only when the CLI produced no output at all.
+  // A signalled child is not transient either: Ctrl-C interrupts the CLI too,
+  // and retrying it made a cancelled run sit for another seventeen seconds.
   let r = run();
-  for (let attempt = 0; !r.stdout && attempt < 3; attempt++) {
+  for (let attempt = 0; !r.stdout && !r.signal && attempt < 3; attempt++) {
     sleepSync([2000, 5000, 10000][attempt]!);
     r = run();
   }
