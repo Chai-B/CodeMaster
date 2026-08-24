@@ -114,6 +114,25 @@ export class StaticAnalysisAPI {
     return rgSearch(this.repoPath, `\\b${symbol}\\b`, { maxResults: 100 });
   }
 
+  /**
+   * Use sites of a symbol, resolved by the language server when one is already
+   * installed for that language, and by ripgrep otherwise. The server knows the
+   * difference between a call and a same-named local; ripgrep does not, so the
+   * selector was pulling in files that merely mentioned the word.
+   */
+  async findReferencesResolved(symbol: string): Promise<string[]> {
+    const def = this.findDefinition(symbol)[0];
+    const lang = def ? langOf(def.file) : null;
+    if (def && lang && def.line) {
+      const client = await lspClient(this.repoPath, lang).catch(() => null);
+      if (client) {
+        const locs = await client.references(def.file, def.line, 1).catch(() => []);
+        if (locs.length) return [...new Set(locs.map((l) => l.file))];
+      }
+    }
+    return [...new Set(this.findReferences(symbol).map((r) => r.file))];
+  }
+
   /** Key symbols (functions/classes/methods/types) defined in a file — used to
    *  find the files that reference them (multi-file surface, spec §5.2.5, §6.4). */
   symbolsInFile(file: string, limit = 25): SymbolLocation[] {
@@ -153,6 +172,10 @@ export class StaticAnalysisAPI {
       for (const sib of testFilesFor(this.repoPath, f)) out.add(sib);
     }
     return [...out].filter((t) => fs.existsSync(path.join(this.repoPath, t)));
+  }
+  /** Structural importance of every file (see DependencyGraph.pagerank). */
+  pagerank(): Map<string, number> {
+    return dependencyGraph(this.repoPath).pagerank();
   }
   getCycles(): DependencyCycle[] {
     return dependencyGraph(this.repoPath).cycles();
@@ -244,6 +267,11 @@ export class StaticAnalysisAPI {
   search(pattern: string, options?: SearchOptions): SearchResult[] {
     return rgSearch(this.repoPath, pattern, options);
   }
+}
+
+function langOf(file: string): string | null {
+  const ext = file.slice(file.lastIndexOf('.'));
+  return { '.py': 'python', '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript', '.rs': 'rust', '.go': 'go' }[ext] ?? null;
 }
 
 function toSymbol(r: Record<string, unknown>): SymbolLocation {

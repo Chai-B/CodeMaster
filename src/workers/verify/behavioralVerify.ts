@@ -31,6 +31,9 @@ export function makeBehavioralVerify(
   getChangedFiles: () => string[],
   opts: RunOpts = {},
   repro?: Repro | null,
+  /** Files the task named. When the patch misses all of them, nothing checked
+   *  the thing that was asked for, however green the suite is. */
+  locus: string[] = [],
 ): BehavioralVerify {
   let last: TestResults | null = null;
 
@@ -58,21 +61,26 @@ export function makeBehavioralVerify(
     }
 
     // 3. The repo's own tests that cover the changed files (regression + behavior).
+    // Locus coverage: a change that never touched the files the task named was
+    // not verified by any suite, no matter what the suite reports.
+    const missedLocus = locus.length > 0 && !locus.some((f) => changed.includes(f));
+
     const tests = staticAnalysis(repoPath).relevantTests(changed).slice(0, opts.maxTestFiles ?? 30);
     if (tests.length === 0) {
-      const conf = repro ? 'repro passed' : 'crash-guard only (low confidence)';
+      const conf = repro ? 'repro passed' : 'crash-guard only';
       last = { ran: !!repro, passed: repro ? 1 : 0, failed: 0, total: repro ? 1 : 0, framework: 'none', guardOk: true, reproUsed: !!repro, discoveredTests: [], output: `No relevant existing tests; ${conf}.` };
-      return { ok: true, output: `No relevant existing tests discovered; ${conf}.` };
+      return { ok: true, confident: !!repro && !missedLocus, output: `No relevant existing tests discovered; ${conf}.` };
     }
 
     const res = runTests(repoPath, tests, opts);
     last = { ran: res.ran, passed: res.passed, failed: res.failed, total: res.total, framework: res.framework, guardOk: true, reproUsed: !!repro, discoveredTests: tests, output: res.output };
 
-    if (!res.ran) return { ok: true, output: 'Relevant tests skipped (runner unavailable).' };
-    if (res.output === 'test run timed out') return { ok: true, output: 'Relevant tests timed out; skipped (non-blocking).' };
-    return res.failed === 0
-      ? { ok: true, output: `All ${res.passed} relevant tests passed.` }
-      : { ok: false, output: `${res.failed} relevant test(s) failed:\n${res.output}` };
+    if (!res.ran) return { ok: true, confident: false, output: 'Relevant tests skipped (runner unavailable).' };
+    if (res.output === 'test run timed out') return { ok: true, confident: false, output: 'Relevant tests timed out; skipped (non-blocking).' };
+    if (res.failed > 0) return { ok: false, output: `${res.failed} relevant test(s) failed:\n${res.output}` };
+    return missedLocus
+      ? { ok: true, confident: false, output: `All ${res.passed} relevant tests passed, but the patch never touched ${locus.join(', ')}.` }
+      : { ok: true, confident: true, output: `All ${res.passed} relevant tests passed.` };
   };
 
   return { verify, lastResults: () => last };
