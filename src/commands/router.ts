@@ -359,6 +359,13 @@ export class CommandRouter {
         `Context waste: ${fmtTokens(waste.wasted)} of ${fmtTokens(waste.input)} input tokens went to files no response referenced (${(waste.ratio * 100).toFixed(1)}%).`,
       );
     }
+    const cache = Tokens.cacheReuse();
+    if (cache) {
+      this.out(
+        'info',
+        `Prefix cache: ${fmtTokens(cache.cached)} of ${fmtTokens(cache.input)} input tokens were reused (${(cache.ratio * 100).toFixed(0)}%), ${fmtTokens(cache.fresh)} fresh.`,
+      );
+    }
     const states = QuotaLedger.all();
     if (!states.length) return this.out('info', 'No provider usage recorded yet.');
     this.out('heading', 'Provider windows');
