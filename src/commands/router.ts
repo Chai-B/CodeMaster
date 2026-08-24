@@ -8,6 +8,7 @@ import { LongTerm } from '../storage/memory.js';
 import { replayReasoning, renderReplay } from '../memory/replay.js';
 import { Wiki } from '../storage/wiki.js';
 import { Tokens } from '../storage/tokens.js';
+import { PromptCache } from '../storage/promptCache.js';
 import { Checkpoints } from '../storage/checkpoints.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { compileContext } from '../context/compiler.js';
@@ -358,6 +359,10 @@ export class CommandRouter {
         waste.ratio > 0.25 ? 'warn' : 'info',
         `Context waste: ${fmtTokens(waste.wasted)} of ${fmtTokens(waste.input)} input tokens went to files no response referenced (${(waste.ratio * 100).toFixed(1)}%).`,
       );
+    }
+    const reuse = PromptCache.saved();
+    if (reuse.hits > 0) {
+      this.out('info', `Reused answers: ${reuse.hits} identical request(s) served from cache, ${fmtTokens(reuse.tokens)} tokens not spent.`);
     }
     const cache = Tokens.cacheReuse();
     if (cache) {

@@ -11,6 +11,7 @@ process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-td-'
 
 const { resolveBudget, budgetForTier } = await import('../../src/context/budget.js');
 const { Tokens } = await import('../../src/storage/tokens.js');
+const { PromptCache, promptHash } = await import('../../src/storage/promptCache.js');
 
 test('the first attempt gets the smallest rung, not the whole window', () => {
   assert.equal(budgetForTier(200_000, 0), 24_000);
@@ -44,4 +45,28 @@ test('waste ratio reports the recorded unreferenced tokens', () => {
   assert.ok(w);
   assert.equal(w!.wasted, 250);
   assert.equal(w!.ratio, 0.25);
+});
+
+
+// ── W4: never ask the same reasoning twice ──────────────────
+
+test('the prompt hash changes with the context and with the model', () => {
+  const a = promptHash('body one', 'sonnet');
+  assert.equal(a, promptHash('body one', 'sonnet'));
+  assert.notEqual(a, promptHash('body two', 'sonnet'));
+  assert.notEqual(a, promptHash('body one', 'opus'));
+});
+
+test('a cached answer is returned without a provider call and counted as saved', () => {
+  const ir = { ir_version: '1.0', status: 'completed', summary: 'fix the parser', patches: [] } as never;
+  const h = promptHash('some compiled context', 'sonnet');
+  assert.equal(PromptCache.get(h), null);
+
+  PromptCache.put(h, 'sonnet', ir, 4200);
+  const hit = PromptCache.get(h);
+  assert.equal(hit?.tokens, 4200);
+  assert.equal(hit?.ir.summary, 'fix the parser');
+
+  // One hit recorded → 4200 tokens that were not bought a second time.
+  assert.deepEqual(PromptCache.saved(), { hits: 1, tokens: 4200 });
 });

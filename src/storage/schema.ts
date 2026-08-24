@@ -201,6 +201,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
   output_tokens INTEGER,
   context_components TEXT
 );
+-- Answers already paid for. Keyed by the exact compiled prompt, so a hit means
+-- the model would be asked a question it has already answered against an
+-- identical working tree (token discipline W4).
+CREATE TABLE IF NOT EXISTS prompt_cache (
+  hash TEXT PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  ir_json TEXT NOT NULL,
+  tokens INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 // Per-repository index database schema (spec §19.2).
