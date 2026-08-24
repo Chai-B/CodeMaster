@@ -33,7 +33,10 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
     }
     try {
       fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, nf.content, 'utf8');
+      // Trailing newline: the IR parser trims the tag body, so every generated
+      // file landed without one and showed up as "\ No newline at end of file"
+      // in its own diff and in every diff after it.
+      fs.writeFileSync(full, nf.content.endsWith('\n') ? nf.content : `${nf.content}\n`, 'utf8');
       result.created.push(nf.path);
     } catch (e) {
       result.failed.push({ file: nf.path, reason: String(e) });

@@ -20,7 +20,7 @@ test('new files outside the repository are refused, not written', () => {
     assert.ok(res.failed.every((f) => /outside the repository/.test(f.reason)));
     assert.ok(!fs.existsSync(path.join(repo, '..', 'escape.txt')));
     assert.ok(!fs.existsSync(outside));
-    assert.equal(fs.readFileSync(path.join(repo, 'src/ok.txt'), 'utf8'), 'ok');
+    assert.equal(fs.readFileSync(path.join(repo, 'src/ok.txt'), 'utf8'), 'ok\n');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(outside, { force: true });
