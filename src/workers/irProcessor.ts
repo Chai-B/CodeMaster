@@ -5,6 +5,7 @@ import { Reasoning, Failures } from '../storage/reasoning.js';
 import { Tasks } from '../storage/sessions.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { applyPatches, type ApplyResult } from './patchApplier.js';
+import { Undo } from '../storage/undo.js';
 import { archiveRawOutput } from '../memory/coldStorage.js';
 import { createCheckpoint } from './checkpointer.js';
 import { indexFile } from '../analysis/indexer.js';
@@ -58,6 +59,7 @@ export async function processIR(
 
   // 4. Patch processing
   const apply = applyPatches(repoPath, ir.patches, ir.files_created);
+  Undo.record(repoPath, session.id, task.id, ir.summary || task.title, apply.undo);
   for (const f of [...apply.applied, ...apply.created]) {
     await indexFile(repoPath, f);
     if (!session.working_files.some((wf) => wf.path === f)) session.working_files.push({ path: f });

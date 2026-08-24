@@ -15,11 +15,15 @@ export interface SelectedFile {
   content: string;
   tokens: number;
   compressed: boolean;
+  /** Which signals put this file here, strongest first. Recorded so `/why` can
+   *  answer the question without guessing at the ranking after the fact. */
+  reasons: string[];
 }
 
 interface Scored {
   path: string;
   score: number;
+  reasons: string[];
 }
 
 export async function selectFiles(
@@ -29,23 +33,31 @@ export async function selectFiles(
   compressionThreshold: number,
 ): Promise<SelectedFile[]> {
   const scores = new Map<string, number>();
+  const why = new Map<string, Map<string, number>>();
   // Signals accumulate rather than compete. Under `max()`, a file that a task
   // touched weakly from four independent directions scored the same as one that
   // matched a single keyword, so weak-signal convergence never surfaced. Capped
   // just below 1.0 so an accumulation can never outrank a direct mention.
-  const bump = (p: string, s: number) => scores.set(p, Math.min(0.98, Math.max(scores.get(p) ?? 0, s) + (scores.has(p) ? s * 0.35 : 0)));
+  const bump = (p: string, s: number, reason = 'related'): void => {
+    scores.set(p, Math.min(0.98, Math.max(scores.get(p) ?? 0, s) + (scores.has(p) ? s * 0.35 : 0)));
+    const r = why.get(p) ?? new Map<string, number>();
+    r.set(reason, Math.max(r.get(reason) ?? 0, s));
+    why.set(p, r);
+  };
+  const reasonsFor = (p: string): string[] =>
+    [...(why.get(p) ?? new Map())].sort((a, b) => b[1] - a[1]).map(([r]) => r);
 
   // Step 1: direct mentions
   const mentioned = task.input_files.map((f) => f.path);
   const fromDesc = extractFilePaths(task.description).concat(extractFilePaths(task.title));
   const direct = [...new Set([...mentioned, ...fromDesc])].filter((p) => fileExists(api.repoPath, p));
-  for (const p of direct) bump(p, 1.0);
+  for (const p of direct) bump(p, 1.0, 'named by the task');
 
   // Step 2: dependency graph expansion
   for (const p of direct) {
-    for (const dep of api.getDependencies(p)) bump(dep, 0.8);
+    for (const dep of api.getDependencies(p)) bump(dep, 0.8, `imported by ${p}`);
     if (task.type === 'refactor' || task.type === 'review') {
-      for (const dependent of api.getDependents(p)) bump(dependent, 0.6);
+      for (const dependent of api.getDependents(p)) bump(dependent, 0.6, `imports ${p}`);
     }
   }
 
@@ -53,18 +65,18 @@ export async function selectFiles(
   // not just the first few words. Component/class names (PascalCase) rank high
   // so a task that says "match the existing ContactSection" actually pulls that file.
   const desc = `${task.title} ${task.description}`;
-  for (const { file, score } of identifierFiles(api, desc)) bump(file, score);
+  for (const { file, score } of identifierFiles(api, desc)) bump(file, score, 'defines an identifier the task names');
 
   // Step 3a′: symbol-term matching — connect prose words in the task to symbol
   // NAMES (spec §5.2.5). A bug report saying "serializing the sequence value"
   // resolves to the `serialize_sequence_value` symbol → its file, even though the
   // exact identifier never appears in the text.
-  for (const { file, score } of symbolTermFiles(api, desc)) bump(file, score);
+  for (const { file, score } of symbolTermFiles(api, desc)) bump(file, score, 'defines symbols matching the task wording');
 
   // Step 3b: embedding similarity (real vectors when available)
   if (api.embeddingsReady()) {
     for (const sim of await api.findSimilar(desc, 10)) {
-      bump(sim.file, 0.5 + Math.min(0.2, Math.max(0, sim.score) * 0.2));
+      bump(sim.file, 0.5 + Math.min(0.2, Math.max(0, sim.score) * 0.2), 'similar to the task by file embedding');
     }
 
     // Step 3c: per-symbol embedding similarity (spec §5.2.8) — prose → the exact
@@ -73,26 +85,26 @@ export async function selectFiles(
     // signal: on a real bug it surfaces the defining file AND the compat/helper
     // files that must change together. These also seed the step-8 expansion.
     for (const sym of await api.findSimilarSymbols(desc, 12)) {
-      bump(sym.file, 0.55 + Math.min(0.3, Math.max(0, sym.score) * 0.45));
+      bump(sym.file, 0.55 + Math.min(0.3, Math.max(0, sym.score) * 0.45), `symbol ${sym.symbol} is close to the task wording`);
     }
   }
 
   // Step 4: git proximity
   for (const p of direct) {
     const co = await api.git.coChangedFiles(p, 15);
-    for (const c of co.slice(0, 5)) if (fileExists(api.repoPath, c)) bump(c, 0.4);
+    for (const c of co.slice(0, 5)) if (fileExists(api.repoPath, c)) bump(c, 0.4, `historically changed together with ${p}`);
   }
 
   // Step 5: call-graph expansion — when the task names a function, pull its neighbors
   for (const fn of functionSymbols(api, desc)) {
-    for (const caller of api.getCallers(fn)) if (fileExists(api.repoPath, caller.file)) bump(caller.file, 0.5);
-    for (const callee of api.getCallees(fn)) if (fileExists(api.repoPath, callee.file)) bump(callee.file, 0.6);
+    for (const caller of api.getCallers(fn)) if (fileExists(api.repoPath, caller.file)) bump(caller.file, 0.5, `calls ${fn}`);
+    for (const callee of api.getCallees(fn)) if (fileExists(api.repoPath, callee.file)) bump(callee.file, 0.6, `called by ${fn}`);
   }
 
   // Step 6: coverage expansion (tests)
   if (task.type === 'test') {
     for (const p of [...scores.keys()]) {
-      for (const t of testFilesFor(api.repoPath, p)) bump(t, 0.7);
+      for (const t of testFilesFor(api.repoPath, p)) bump(t, 0.7, `tests ${p}`);
     }
   }
 
@@ -123,7 +135,7 @@ export async function selectFiles(
     [...freq.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
-      .forEach(([f, n]) => bump(f, Math.min(0.72, 0.45 + 0.04 * n)));
+      .forEach(([f, n]) => bump(f, Math.min(0.72, 0.45 + 0.04 * n), `shares symbols with ${n} of the top targets`));
   }
 
   // Step 6b: structural importance. A hub every module imports is more likely to
@@ -132,13 +144,17 @@ export async function selectFiles(
   if (scores.size > 1) {
     const pr = api.pagerank();
     const top = Math.max(...pr.values(), 0);
-    if (top > 0) for (const p of scores.keys()) bump(p, 0.12 * ((pr.get(p) ?? 0) / top));
+    if (top > 0) for (const p of scores.keys()) bump(p, 0.12 * ((pr.get(p) ?? 0) / top), 'structurally central to the repository');
   }
 
   // Step 7: budget-aware greedy selection. Apply the source-relevance multiplier
   // so real source outranks docs/examples/scripts/tests for code tasks (spec §6).
   const ranked: Scored[] = [...scores.entries()]
-    .map(([p, s]) => ({ path: p, score: s * relevanceWeight(p, task.type) * Learning.utility(api.repoPath, p) }))
+    .map(([p, s]) => ({
+      path: p,
+      score: s * relevanceWeight(p, task.type) * Learning.utility(api.repoPath, p),
+      reasons: reasonsFor(p),
+    }))
     .sort((a, b) => b.score - a.score);
 
   // Task keywords drive symbol-slice compression: when a file is too large to
@@ -174,7 +190,7 @@ export async function selectFiles(
       // single large file must not starve small high-value ones below it.
       if (used + toks > budgetTokens) continue;
     }
-    out.push({ path: r.path, score: r.score, content: body, tokens: toks, compressed });
+    out.push({ path: r.path, score: r.score, content: body, tokens: toks, compressed, reasons: r.reasons });
     used += toks;
   }
   return out;

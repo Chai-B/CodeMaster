@@ -56,7 +56,7 @@ export type WorkerEvent =
   | { type: 'worker.started'; worker: string; detail?: string }
   | { type: 'worker.finished'; worker: string; detail?: string };
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'success' | 'heading' | 'sep';
+export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'success' | 'heading' | 'sep' | 'dim';
 
 export type LogEvent = {
   type: 'log';

@@ -37,7 +37,7 @@ export function eventToLog(ev: CodeMasterEvent): Omit<LogEntry, 'id'> | null {
     case 'log': {
       const map: Record<string, LogType> = {
         info: 'plain', warn: 'warn', error: 'error', success: 'success',
-        debug: 'dim', heading: 'heading', sep: 'sep',
+        debug: 'dim', dim: 'dim', heading: 'heading', sep: 'sep',
       };
       return { type: map[ev.level] ?? 'plain', text: ev.message };
     }

@@ -10,7 +10,9 @@ import { Wiki } from '../storage/wiki.js';
 import { Tokens } from '../storage/tokens.js';
 import { PromptCache } from '../storage/promptCache.js';
 import { Checkpoints } from '../storage/checkpoints.js';
+import { Undo, revert } from '../storage/undo.js';
 import { staticAnalysis } from '../analysis/api.js';
+import { GitWorker } from '../analysis/git.js';
 import { compileContext } from '../context/compiler.js';
 import { createCheckpoint, restoreCheckpoint, verifyCheckpointState } from '../workers/checkpointer.js';
 import { compileHandoffPackage, validateHandoffPackage, renderHandoffPackage } from '../workers/handoff.js';
@@ -28,7 +30,7 @@ import { bus } from '../events/bus.js';
 import { fmtTokens } from '../util/tokens.js';
 import { COMMANDS } from './catalog.js';
 import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
-import { activeRepoPath, listProjects } from '../config.js';
+import { activeRepoPath, listProjects, loadConfig, saveConfig, CONFIG_PATH } from '../config.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session } from '../types/index.js';
 
@@ -41,8 +43,7 @@ export class CommandRouter {
   constructor(public sm: SessionManager) {}
 
   private out: Out = (level, msg) => {
-    const mapped = level === 'dim' ? 'debug' : level;
-    bus.emit({ type: 'log', level: mapped, message: msg });
+    bus.emit({ type: 'log', level, message: msg });
   };
 
   /** Returns true if the input was handled as a command. */
@@ -83,6 +84,12 @@ export class CommandRouter {
       case '/skip': return this.skip(arg);
       case '/provider': return this.provider(args);
       case '/cost': return this.cost();
+      case '/waste': return this.waste();
+      case '/model': return this.model(arg);
+      case '/config': return this.config(args);
+      case '/diff': return this.diff(arg);
+      case '/undo': return this.undo(arg);
+      case '/why': return this.why(arg);
       case '/learn': return this.learn();
       case '/projects': return this.projects();
       case '/account': return this.account(args);
@@ -577,7 +584,8 @@ export class CommandRouter {
     this.out('success', 'Checkpoint created');
   }
 
-  private checkpoints(args: string[]): void {
+  private async checkpoints(args: string[]): Promise<void> {
+    if (args[0] === 'diff' && args[1]) return this.checkpointDiff(args[1]);
     if (args[0] === 'restore' && args[1]) {
       const s = restoreCheckpoint(args[1]);
       if (!s) return this.out('warn', 'Checkpoint not found');
@@ -705,6 +713,172 @@ export class CommandRouter {
     }
   }
 
+  /** The active model, and switching it. `/provider` lists every vendor; this is
+   *  the one-word form for the only provider decision most runs need. */
+  private model(arg: string): void {
+    const s = this.sm.getCurrent();
+    if (!arg) {
+      const active = s?.current_provider?.model_id ?? this.sm.cfg.providers.default;
+      this.out('heading', 'Model');
+      for (const m of this.sm.manager.listModels()) {
+        const mark = m.id === active ? '→' : ' ';
+        this.out(m.id === active ? 'success' : 'info', `${mark} ${m.id.padEnd(28)} ctx ${fmtTokens(m.context_size)}`);
+      }
+      this.out('dim', 'Switch with /model <model_id>.');
+      return;
+    }
+    if (!this.sm.manager.modelSpec(arg)) return this.out('warn', `Unknown model: ${arg}. Run /model to see what is available.`);
+    const providerId = this.sm.manager.providerOf(arg);
+    if (s) {
+      s.current_provider = { provider_id: providerId, model_id: arg };
+      Sessions.update(s);
+      this.out('success', `This session now runs on ${arg} (${providerId}).`);
+      return;
+    }
+    // Without a session there is nothing to attach the choice to, so it becomes
+    // the default for the next one rather than being silently dropped.
+    const cfg = loadConfig();
+    cfg.providers.default = arg;
+    saveConfig(cfg);
+    this.sm.cfg.providers.default = arg;
+    this.out('success', `Default model set to ${arg} (${providerId}).`);
+  }
+
+  /** Read and change settings without leaving the tool or hand-editing YAML. */
+  private config(args: string[]): void {
+    const cfg = loadConfig();
+    const flat = flatten(cfg as unknown as Record<string, unknown>);
+    if (!args.length) {
+      this.out('heading', 'Configuration');
+      this.out('dim', CONFIG_PATH);
+      for (const [k, v] of flat) this.out('info', `${k.padEnd(40)} ${v}`);
+      this.out('dim', 'Change one with /config set <key> <value>.');
+      return;
+    }
+    if (args[0] !== 'set' || args.length < 3) return this.usage('/config');
+    const key = args[1]!;
+    const raw = args.slice(2).join(' ');
+    if (!flat.some(([k]) => k === key)) return this.out('warn', `Unknown setting: ${key}. Run /config to see the keys.`);
+    const applied = setPath(cfg as unknown as Record<string, unknown>, key, raw);
+    if (!applied.ok) return this.out('warn', applied.reason);
+    saveConfig(cfg);
+    this.out('success', `${key} = ${applied.value}`);
+    this.out('dim', 'Settings load per command; running work keeps the value it started with.');
+  }
+
+  /** Everything this session has changed on disk, as a diff. */
+  private async diff(arg: string): Promise<void> {
+    const s = this.requireSession();
+    if (!s) return;
+    const git = new GitWorker(s.repository.path);
+    if (!(await git.isRepo())) return this.out('warn', 'Not a git repository, so there is no baseline to diff against.');
+    const base = s.repository.commit;
+    const text = (base ? await git.diffSince(base) : await git.workingDiff()).trim();
+    if (!text) return this.out('info', 'Nothing has changed on disk since this session started.');
+    const files = [...text.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]);
+    this.out('heading', `Changes since ${base ? base.slice(0, 8) : 'the last commit'}`);
+    if (files.length) this.out('info', `${files.length} file(s): ${files.join(', ')}`);
+    const lines = text.split('\n');
+    const shown = arg === 'full' ? lines : lines.slice(0, 400);
+    for (const l of shown) this.out(l.startsWith('+') ? 'success' : l.startsWith('-') ? 'warn' : 'dim', l);
+    if (shown.length < lines.length) this.out('dim', `… ${lines.length - shown.length} more lines. /diff full shows everything.`);
+  }
+
+  /** Take back what the last run wrote. Restores the exact prior bytes of the
+   *  files it touched, so unrelated edits in the same tree survive. */
+  private undo(arg: string): void {
+    const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
+    if (arg === 'list') {
+      const all = Undo.list(repo);
+      this.out('heading', 'Undoable changes');
+      if (!all.length) return this.out('dim', 'Nothing has been applied to this repository yet.');
+      for (const r of all) this.out('info', `${r.created_at.slice(0, 19)}  ${r.entries.length} file(s)  ${r.summary ?? ''}`);
+      return;
+    }
+    const rec = Undo.latest(repo);
+    if (!rec) return this.out('warn', 'Nothing to undo — no patch has been applied to this repository.');
+    const r = revert(repo, rec);
+    Undo.drop(rec.id);
+    if (r.restored.length) this.out('success', `Reverted ${r.restored.length} file(s): ${r.restored.join(', ')}`);
+    if (r.removed.length) this.out('success', `Removed ${r.removed.length} created file(s): ${r.removed.join(', ')}`);
+    for (const f of r.failed) this.out('error', `${f.path}: ${f.reason}`);
+    this.out('dim', `Undone: ${rec.summary ?? 'the last applied change'}`);
+  }
+
+  /** Why a file is costing context. Answered from the same selector the real
+   *  run uses, recompiled locally — no model is asked. */
+  private async why(arg: string): Promise<void> {
+    const s = this.requireSession();
+    if (!s) return;
+    if (!arg) return this.usage('/why');
+    const tasks = Tasks.forSession(s.id);
+    const t = tasks.find((x) => x.status === 'pending' || x.status === 'in_progress') ?? tasks[0];
+    if (!t) return this.out('warn', 'No task to explain a selection for. Use /plan first.');
+    const compiled = await compileContext(s, t, {
+      maxContextTokens: this.sm.cfg.context.max_context_tokens,
+      fileCompressionThreshold: this.sm.cfg.context.file_compression_threshold,
+    });
+    const costs = compiled.file_costs ?? [];
+    const hit = costs.find((f) => f.path === arg || f.path.endsWith(`/${arg}`));
+    if (!hit) {
+      this.out('info', `${arg} is not in the context for "${t.title}".`);
+      if (costs.length) this.out('dim', `Selected instead: ${costs.map((f) => f.path).join(', ')}`);
+      return;
+    }
+    this.out('heading', `${hit.path} — ${fmtTokens(hit.tokens)} tokens`);
+    if (!hit.reasons?.length) return this.out('dim', 'Included as a low-signal neighbour with no single dominant reason.');
+    for (const r of hit.reasons) this.out('info', `• ${r}`);
+  }
+
+  /** Where tokens went that bought no reasoning, and what was avoided. */
+  private waste(): void {
+    this.out('heading', 'Token discipline');
+    const waste = Tokens.wasteRatio();
+    if (!waste) {
+      this.out('dim', 'No calls recorded yet, so there is nothing to measure.');
+    } else {
+      this.out(
+        waste.ratio > 0.25 ? 'warn' : 'success',
+        `Unreferenced context: ${fmtTokens(waste.wasted)} of ${fmtTokens(waste.input)} input tokens went to files no response mentioned (${(waste.ratio * 100).toFixed(1)}%).`,
+      );
+      if (waste.ratio > 0.25) this.out('dim', 'Above 25% means the selector is over-including. /learn shows which files keep going unread.');
+    }
+    const cache = Tokens.cacheReuse();
+    if (cache) {
+      this.out('info', `Vendor prefix cache: ${fmtTokens(cache.cached)} of ${fmtTokens(cache.input)} input tokens were replayed rather than resent (${(cache.ratio * 100).toFixed(0)}%).`);
+    }
+    const reuse = PromptCache.saved();
+    this.out(
+      reuse.hits > 0 ? 'success' : 'dim',
+      reuse.hits > 0
+        ? `Repeated questions: ${reuse.hits} identical request(s) answered from store, ${fmtTokens(reuse.tokens)} tokens never spent.`
+        : 'Repeated questions: none yet — every request so far asked something new.',
+    );
+    const learned = Learning.report(activeRepoPath()).files.filter((f) => f.rate < 0.25);
+    if (learned.length) {
+      this.out('info', `Being ranked down: ${learned.length} file(s) included repeatedly and referenced almost never.`);
+      for (const f of learned.slice(0, 5)) this.out('dim', `  ${f.path} — read in ${Math.round(f.rate * 100)}% of ${f.included} inclusions`);
+    }
+  }
+
+  /** What the tree has done since a checkpoint was taken. Reads the snapshot's
+   *  recorded commit and diffs against it, so it works after a restart. */
+  private async checkpointDiff(checkpointId: string): Promise<void> {
+    const s = this.requireSession();
+    if (!s) return;
+    const cp = Checkpoints.forSession(s.id).find((c) => c.id === checkpointId);
+    if (!cp) return this.out('warn', `Checkpoint ${checkpointId} is not in this session.`);
+    const base = cp.repository_commit;
+    if (!base) return this.out('warn', 'That checkpoint recorded no commit, so there is nothing to diff against.');
+    const git = new GitWorker(cp.repository_path ?? s.repository.path);
+    const text = (await git.diffSince(base)).trim();
+    this.out('heading', `Since checkpoint ${checkpointId} (${cp.created_at.slice(0, 19)})`);
+    if (!text) return this.out('info', 'The working tree is unchanged since that checkpoint.');
+    const lines = text.split('\n');
+    for (const l of lines.slice(0, 400)) this.out(l.startsWith('+') ? 'success' : l.startsWith('-') ? 'warn' : 'dim', l);
+    if (lines.length > 400) this.out('dim', `… ${lines.length - 400} more lines.`);
+  }
+
   private plugins(): void {
     this.out('heading', 'Plugins');
     const plugins = listPlugins();
@@ -744,4 +918,46 @@ export class CommandRouter {
       this.out('info', `${c.cmd.padEnd(14)} ${c.desc}`);
     }
   }
+}
+
+/** Config as `a.b.c` → value pairs, skipping arrays of objects that have no
+ *  useful single-line form. */
+function flatten(obj: Record<string, unknown>, prefix = ''): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) out.push(...flatten(v as Record<string, unknown>, key));
+    else if (Array.isArray(v)) out.push([key, `${v.length} entr${v.length === 1 ? 'y' : 'ies'}`]);
+    else out.push([key, String(v)]);
+  }
+  return out;
+}
+
+/** Set a dotted key, coercing to the type already stored there. Refuses rather
+ *  than writing a string where a number lives — a silently mistyped setting is
+ *  worse than a rejected one. */
+function setPath(obj: Record<string, unknown>, key: string, raw: string): { ok: true; value: string } | { ok: false; reason: string } {
+  const parts = key.split('.');
+  let cur: Record<string, unknown> = obj;
+  for (const p of parts.slice(0, -1)) {
+    const next = cur[p];
+    if (!next || typeof next !== 'object') return { ok: false, reason: `${key} is not a settable path.` };
+    cur = next as Record<string, unknown>;
+  }
+  const leaf = parts[parts.length - 1]!;
+  const existing = cur[leaf];
+  if (Array.isArray(existing) || (existing && typeof existing === 'object')) {
+    return { ok: false, reason: `${key} holds structured data; edit ${CONFIG_PATH} directly.` };
+  }
+  if (typeof existing === 'number') {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return { ok: false, reason: `${key} takes a number.` };
+    cur[leaf] = n;
+  } else if (typeof existing === 'boolean') {
+    if (!['true', 'false'].includes(raw)) return { ok: false, reason: `${key} takes true or false.` };
+    cur[leaf] = raw === 'true';
+  } else {
+    cur[leaf] = raw;
+  }
+  return { ok: true, value: String(cur[leaf]) };
 }

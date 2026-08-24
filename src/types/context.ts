@@ -48,5 +48,5 @@ export interface CompiledPrompt {
   omitted: ContextComponent[];
   /** Tokens spent embedding each file, so the executor can measure how many of
    *  them the response never referenced (token-discipline W3). */
-  file_costs?: Array<{ path: string; tokens: number }>;
+  file_costs?: Array<{ path: string; tokens: number; reasons?: string[] }>;
 }

@@ -26,6 +26,7 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/runall', desc: 'Execute all pending tasks', group: 'Planning' },
   { cmd: '/skip', desc: 'Mark a task as skipped', group: 'Planning', usage: '/skip <task index|id>' },
   // Provider
+  { cmd: '/model', desc: 'Show or switch the model in use', group: 'Provider', usage: '/model | /model <model_id>' },
   { cmd: '/provider', desc: 'List/use/status providers', group: 'Provider', usage: '/provider | /provider use <model_id>' },
   { cmd: '/account', desc: 'Manage provider accounts', group: 'Provider', usage: '/account | /account add <provider> <alias> | /account remove <alias>' },
   { cmd: '/handoff', desc: 'Hand off session to a provider', group: 'Provider', usage: '/handoff <model_id>' },
@@ -40,19 +41,24 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/graph', desc: 'Show dependency graph for a module', group: 'Repository', usage: '/graph <file> | cycles | deadcode | rkg | untested' },
   // Checkpoint
   { cmd: '/checkpoint', desc: 'Create a checkpoint', group: 'Checkpoint' },
-  { cmd: '/checkpoints', desc: 'List/restore checkpoints', group: 'Checkpoint', usage: '/checkpoints | /checkpoints restore <checkpoint_id>' },
+  { cmd: '/checkpoints', desc: 'List, restore or diff checkpoints', group: 'Checkpoint', usage: '/checkpoints | /checkpoints restore <checkpoint_id> | /checkpoints diff <checkpoint_id>' },
+  { cmd: '/undo', desc: 'Take back the last applied change', group: 'Checkpoint', usage: '/undo | /undo list' },
+  { cmd: '/diff', desc: 'Show what this session changed on disk', group: 'Checkpoint', usage: '/diff | /diff full' },
   // Diagnostic
   { cmd: '/tokens', desc: 'Token usage statistics', group: 'Diagnostic', usage: '/tokens | /tokens by-provider' },
   { cmd: '/context', desc: 'Show compiled context (no LLM)', group: 'Diagnostic' },
   { cmd: '/stats', desc: 'Overall runtime statistics', group: 'Diagnostic' },
   { cmd: '/health', desc: 'Provider account health', group: 'Diagnostic' },
   { cmd: '/cost', desc: 'Subscription windows spent and blocked', group: 'Diagnostic' },
+  { cmd: '/waste', desc: 'Where tokens went that bought no reasoning', group: 'Diagnostic' },
+  { cmd: '/why', desc: 'Why a file is in the context', group: 'Diagnostic', usage: '/why <file>' },
   { cmd: '/learn', desc: 'What this repository has taught the selector', group: 'Diagnostic' },
   { cmd: '/workers', desc: 'List workers + task pipeline', group: 'Diagnostic' },
   { cmd: '/profile', desc: 'Profiling for a task', group: 'Diagnostic', usage: '/profile <task index|id>' },
   { cmd: '/replay', desc: 'Replay reasoning from a session', group: 'Diagnostic', usage: '/replay <session_id>' },
   { cmd: '/verbose', desc: 'Toggle verbose worker trace', group: 'Diagnostic', usage: '/verbose [on|off]' },
   // Misc
+  { cmd: '/config', desc: 'Show or change settings', group: 'Misc', usage: '/config | /config set <key> <value>' },
   { cmd: '/plugins', desc: 'List loaded plugins', group: 'Misc' },
   { cmd: '/help', desc: 'Show commands', group: 'Misc' },
   { cmd: '/clear', desc: 'Clear the screen', group: 'Misc' },
