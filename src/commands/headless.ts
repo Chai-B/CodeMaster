@@ -3,6 +3,7 @@
 
 import fs from 'fs';
 import { spawnSync } from 'child_process';
+import { setActiveRepo } from '../config.js';
 import { bus } from '../events/bus.js';
 import { Daemon } from '../daemon/daemon.js';
 import { Tasks } from '../storage/sessions.js';
@@ -86,6 +87,8 @@ export async function runHeadless(argv: string[]): Promise<number> {
   const objective = flags.objective || readStdin();
   if (!objective) { process.stderr.write('No objective given.\n\n' + USAGE); return 2; }
   if (!fs.existsSync(flags.repo)) { process.stderr.write(`No such directory: ${flags.repo}\n`); return 2; }
+  // Scope every store to this project before anything opens a database.
+  setActiveRepo(flags.repo);
 
   const showProgress = flags.verbose || !flags.json;
   // Failures always reach stderr. Suppressing them under --json hid provider

@@ -26,6 +26,7 @@ import { applyWikiUpdate } from '../wiki/updater.js';
 import { bus } from '../events/bus.js';
 import { fmtTokens } from '../util/tokens.js';
 import { COMMANDS } from './catalog.js';
+import { activeRepoPath, listProjects } from '../config.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session } from '../types/index.js';
 
@@ -56,6 +57,8 @@ export class CommandRouter {
     const cmd = parts[0]!.toLowerCase();
     const arg = text.slice(cmd.length).trim();
 
+    if (arg === '--help' || arg === '-h') return this.usage(cmd);
+
     try {
       await this.route(cmd, arg, parts.slice(1));
     } catch (e) {
@@ -79,6 +82,7 @@ export class CommandRouter {
       case '/provider': return this.provider(args);
       case '/cost': return this.cost();
       case '/learn': return this.learn();
+      case '/projects': return this.projects();
       case '/account': return this.account(args);
       case '/handoff': return this.handoff(arg);
       case '/memory': return this.memory(args);
@@ -100,7 +104,7 @@ export class CommandRouter {
       case '/verbose': this.verbose = arg !== 'off'; this.out('success', `Verbose ${this.verbose ? 'on' : 'off'}`); return;
       case '/recover': return this.recover();
       case '/plugins': return this.plugins();
-      case '/help': return this.help();
+      case '/help': return this.help(arg);
       default: {
         const plugin = getCommandPlugin(cmd);
         if (plugin) {
@@ -295,6 +299,26 @@ export class CommandRouter {
   }
 
   /** What this repository has taught the tool — observations only. */
+  /**
+   * Every repository CodeMaster holds state for. One repo is one project: its
+   * sessions, reasoning, wiki and checkpoints live in its own directory, so
+   * nothing leaks between them. To work in another project, start CodeMaster
+   * there (or pass `--repo`) — the active project always follows the repo.
+   */
+  private projects(): void {
+    const active = activeRepoPath();
+    const all = listProjects();
+    if (!all.length) return this.out('info', 'No projects yet — the first session in a repository creates one.');
+    this.out('heading', 'Projects');
+    for (const p of all) {
+      const sessions = Sessions.list(500, p.path);
+      const marker = p.path === active ? '●' : ' ';
+      const note = p.exists ? '' : '  (repository no longer on disk)';
+      this.out(p.exists ? 'info' : 'dim', `${marker} ${p.path}  ${sessions.length} session(s)${note}`);
+    }
+    this.out('dim', `State lives under ${all[0]!.dir.replace(/\/[^/]+$/, '')}`);
+  }
+
   private learn(): void {
     const repo = this.sm.getCurrent()?.repository.path ?? process.cwd();
     const { files, tiers } = Learning.report(repo);
@@ -677,7 +701,17 @@ export class CommandRouter {
     this.out('info', topoOrder().join(' → '));
   }
 
-  private help(): void {
+  /** Per-command help, from the same catalog `/help` reads. */
+  private usage(cmd: string): void {
+    const def = COMMANDS.find((c) => c.cmd === cmd);
+    if (!def) return this.out('warn', `Unknown command: ${cmd}`);
+    this.out('heading', def.cmd);
+    this.out('info', def.desc);
+    this.out('dim', `Usage: ${def.usage ?? def.cmd}`);
+  }
+
+  private help(arg?: string): void {
+    if (arg) return this.usage(arg.startsWith('/') ? arg : `/${arg}`);
     let group = '';
     for (const c of COMMANDS) {
       if (c.group !== group) {

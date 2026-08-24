@@ -4,50 +4,54 @@ export interface CommandDef {
   cmd: string;
   desc: string;
   group: string;
+  /** Full call form, shown by `/<cmd> --help`. Absent means the command takes
+   *  no arguments. */
+  usage?: string;
 }
 
 export const COMMANDS: CommandDef[] = [
   // Session
-  { cmd: '/new', desc: 'Create a session with an objective', group: 'Session' },
-  { cmd: '/resume', desc: 'Resume a paused/crashed session', group: 'Session' },
+  { cmd: '/new', desc: 'Create a session with an objective', group: 'Session', usage: '/new <objective>' },
+  { cmd: '/resume', desc: 'Resume a paused/crashed session', group: 'Session', usage: '/resume [session_id]' },
   { cmd: '/recover', desc: 'Recover incomplete sessions after a crash', group: 'Session' },
   { cmd: '/pause', desc: 'Pause current session (checkpoint)', group: 'Session' },
   { cmd: '/complete', desc: 'Complete current session', group: 'Session' },
-  { cmd: '/session', desc: 'List or show sessions', group: 'Session' },
+  { cmd: '/session', desc: 'List or show sessions', group: 'Session', usage: '/session | /session info <session_id>' },
+  { cmd: '/projects', desc: 'List every repository CodeMaster has state for', group: 'Session' },
   // Planning
   { cmd: '/plan', desc: '(Re)generate the execution plan', group: 'Planning' },
   { cmd: '/tasks', desc: 'Show current task list', group: 'Planning' },
-  { cmd: '/task', desc: 'Show detail for a task', group: 'Planning' },
+  { cmd: '/task', desc: 'Show detail for a task', group: 'Planning', usage: '/task <task index|id>' },
   { cmd: '/run', desc: 'Execute the next pending task', group: 'Planning' },
   { cmd: '/runall', desc: 'Execute all pending tasks', group: 'Planning' },
-  { cmd: '/skip', desc: 'Mark a task as skipped', group: 'Planning' },
+  { cmd: '/skip', desc: 'Mark a task as skipped', group: 'Planning', usage: '/skip <task index|id>' },
   // Provider
-  { cmd: '/provider', desc: 'List/use/status providers', group: 'Provider' },
-  { cmd: '/account', desc: 'Manage provider accounts', group: 'Provider' },
-  { cmd: '/handoff', desc: 'Hand off session to a provider', group: 'Provider' },
+  { cmd: '/provider', desc: 'List/use/status providers', group: 'Provider', usage: '/provider | /provider use <model_id>' },
+  { cmd: '/account', desc: 'Manage provider accounts', group: 'Provider', usage: '/account | /account add <provider> <alias> | /account remove <alias>' },
+  { cmd: '/handoff', desc: 'Hand off session to a provider', group: 'Provider', usage: '/handoff <model_id>' },
   // Memory / Wiki
-  { cmd: '/memory', desc: 'Inspect/search memory', group: 'Memory' },
-  { cmd: '/wiki', desc: 'Show/search/update wiki', group: 'Memory' },
-  { cmd: '/reasoning', desc: 'Browse reasoning objects', group: 'Memory' },
-  { cmd: '/forget', desc: 'Mark memories for expiry', group: 'Memory' },
+  { cmd: '/memory', desc: 'Inspect/search memory', group: 'Memory', usage: '/memory | /memory compress' },
+  { cmd: '/wiki', desc: 'Show/search/update wiki', group: 'Memory', usage: '/wiki [key] | /wiki bootstrap | /wiki update <key>' },
+  { cmd: '/reasoning', desc: 'Browse reasoning objects', group: 'Memory', usage: '/reasoning | /reasoning search <query>' },
+  { cmd: '/forget', desc: 'Mark memories for expiry', group: 'Memory', usage: '/forget <query>' },
   // Repository
   { cmd: '/reindex', desc: 'Full repository re-index', group: 'Repository' },
   { cmd: '/rebuild-map', desc: 'Regenerate repository map', group: 'Repository' },
-  { cmd: '/graph', desc: 'Show dependency graph for a module', group: 'Repository' },
+  { cmd: '/graph', desc: 'Show dependency graph for a module', group: 'Repository', usage: '/graph <file> | cycles | deadcode | rkg | untested' },
   // Checkpoint
   { cmd: '/checkpoint', desc: 'Create a checkpoint', group: 'Checkpoint' },
-  { cmd: '/checkpoints', desc: 'List/restore checkpoints', group: 'Checkpoint' },
+  { cmd: '/checkpoints', desc: 'List/restore checkpoints', group: 'Checkpoint', usage: '/checkpoints | /checkpoints restore <checkpoint_id>' },
   // Diagnostic
-  { cmd: '/tokens', desc: 'Token usage statistics', group: 'Diagnostic' },
+  { cmd: '/tokens', desc: 'Token usage statistics', group: 'Diagnostic', usage: '/tokens | /tokens by-provider' },
   { cmd: '/context', desc: 'Show compiled context (no LLM)', group: 'Diagnostic' },
   { cmd: '/stats', desc: 'Overall runtime statistics', group: 'Diagnostic' },
   { cmd: '/health', desc: 'Provider account health', group: 'Diagnostic' },
   { cmd: '/cost', desc: 'Subscription windows spent and blocked', group: 'Diagnostic' },
   { cmd: '/learn', desc: 'What this repository has taught the selector', group: 'Diagnostic' },
   { cmd: '/workers', desc: 'List workers + task pipeline', group: 'Diagnostic' },
-  { cmd: '/profile', desc: 'Profiling for a task', group: 'Diagnostic' },
-  { cmd: '/replay', desc: 'Replay reasoning from a session', group: 'Diagnostic' },
-  { cmd: '/verbose', desc: 'Toggle verbose worker trace', group: 'Diagnostic' },
+  { cmd: '/profile', desc: 'Profiling for a task', group: 'Diagnostic', usage: '/profile <task index|id>' },
+  { cmd: '/replay', desc: 'Replay reasoning from a session', group: 'Diagnostic', usage: '/replay <session_id>' },
+  { cmd: '/verbose', desc: 'Toggle verbose worker trace', group: 'Diagnostic', usage: '/verbose [on|off]' },
   // Misc
   { cmd: '/plugins', desc: 'List loaded plugins', group: 'Misc' },
   { cmd: '/help', desc: 'Show commands', group: 'Misc' },

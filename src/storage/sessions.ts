@@ -86,8 +86,9 @@ export const Sessions = {
     return r ? rowToSession(r) : null;
   },
 
-  list(limit = 50): Session[] {
-    const rows = getDb()
+  /** `repoPath` reads another project's sessions without switching to it. */
+  list(limit = 50, repoPath?: string): Session[] {
+    const rows = getDb(repoPath)
       .prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?')
       .all(limit) as Record<string, unknown>[];
     return rows.map(rowToSession);
