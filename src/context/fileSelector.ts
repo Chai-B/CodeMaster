@@ -28,7 +28,11 @@ export async function selectFiles(
   compressionThreshold: number,
 ): Promise<SelectedFile[]> {
   const scores = new Map<string, number>();
-  const bump = (p: string, s: number) => scores.set(p, Math.max(scores.get(p) ?? 0, s));
+  // Signals accumulate rather than compete. Under `max()`, a file that a task
+  // touched weakly from four independent directions scored the same as one that
+  // matched a single keyword, so weak-signal convergence never surfaced. Capped
+  // just below 1.0 so an accumulation can never outrank a direct mention.
+  const bump = (p: string, s: number) => scores.set(p, Math.min(0.98, Math.max(scores.get(p) ?? 0, s) + (scores.has(p) ? s * 0.35 : 0)));
 
   // Step 1: direct mentions
   const mentioned = task.input_files.map((f) => f.path);
@@ -109,7 +113,8 @@ export async function selectFiles(
     for (const f of topSource) {
       for (const dep of api.getImpactOf(f)) addN(dep);
       for (const sym of api.symbolsInFile(f, 12)) {
-        for (const ref of api.findReferences(sym.name).slice(0, 12)) addN(ref.file);
+        // Language-server references when a server is installed; ripgrep otherwise.
+        for (const file of (await api.findReferencesResolved(sym.name)).slice(0, 12)) addN(file);
         for (const c of api.getCallers(sym.name)) addN(c.file);
       }
     }
@@ -118,6 +123,15 @@ export async function selectFiles(
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
       .forEach(([f, n]) => bump(f, Math.min(0.72, 0.45 + 0.04 * n)));
+  }
+
+  // Step 6b: structural importance. A hub every module imports is more likely to
+  // be part of an arbitrary change than an equally-scoring leaf. Kept small — it
+  // breaks ties, it does not decide selection.
+  if (scores.size > 1) {
+    const pr = api.pagerank();
+    const top = Math.max(...pr.values(), 0);
+    if (top > 0) for (const p of scores.keys()) bump(p, 0.12 * ((pr.get(p) ?? 0) / top));
   }
 
   // Step 7: budget-aware greedy selection. Apply the source-relevance multiplier

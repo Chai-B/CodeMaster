@@ -223,7 +223,10 @@ export class SessionManager {
       const repro = this.cfg.verify.genRepro
         ? await generateRepro(session.repository.path, `${next.title}\n${next.description}`, '', this.manager, this.cfg, session.id, { timeoutMs: this.cfg.verify.timeoutMs }).catch(() => null)
         : null;
-      const bv = makeBehavioralVerify(session.repository.path, changedGetter, { timeoutMs: this.cfg.verify.timeoutMs }, repro);
+      // Files the task actually named — the locus a green suite must have touched
+      // for `verified` to mean anything.
+      const locus = next.input_files.map((f) => f.path);
+      const bv = makeBehavioralVerify(session.repository.path, changedGetter, { timeoutMs: this.cfg.verify.timeoutMs }, repro, locus);
       let result: ExecuteResult;
       try {
         result = (await solveWithVerification(session, next, this.manager, this.cfg, bv.verify, this.cfg.verify.maxIters)).last;

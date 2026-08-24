@@ -60,9 +60,11 @@ test('typeOrImportCheck: a missing top-level package is an env skip, not a failu
 test('behavioralVerify: no relevant tests and no repro → low-confidence pass', () => {
   const repo = mkRepo({ 'README.md': 'x' });
   const { verify, lastResults } = makeBehavioralVerify(repo, () => []);
-  const r = verify() as { ok: boolean; output: string };
+  const r = verify() as { ok: boolean; output: string; confident?: boolean };
   assert.equal(r.ok, true);
-  assert.match(r.output, /low confidence/i);
+  // The work stands, but nothing exercised it — `verified` must not claim it did.
+  assert.equal(r.confident, false);
+  assert.match(r.output, /no relevant existing tests/i);
   assert.equal(lastResults()?.reproUsed, false);
 });
 
@@ -92,4 +94,12 @@ test('behavioralVerify: a passing repro with no other tests → ok:true', () => 
   const { verify } = makeBehavioralVerify(repo, () => [], {}, fakeRepro);
   const r = verify() as { ok: boolean };
   assert.equal(r.ok, true);
+});
+
+test('a green suite that never touched the named files is not a verification', () => {
+  const repo = mkRepo({ 'other.py': 'X = 1\n' });
+  const { verify } = makeBehavioralVerify(repo, () => ['other.py'], {}, null, ['target.py']);
+  const r = verify() as { ok: boolean; confident?: boolean };
+  assert.equal(r.ok, true);
+  assert.equal(r.confident, false);
 });

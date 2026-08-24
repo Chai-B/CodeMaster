@@ -57,6 +57,38 @@ export class DependencyGraph {
     }
   }
 
+  /**
+   * PageRank over the import graph — a file that many modules depend on is more
+   * likely to matter to an arbitrary task than a leaf with the same keyword
+   * score. Used as one selector signal among several, not as a ranking on its
+   * own. Damping 0.85, twenty iterations: the graph is small and this converges
+   * well before that on real repositories.
+   */
+  pagerank(): Map<string, number> {
+    const files = [...this.adj.keys()];
+    if (!files.length) return new Map();
+    const d = 0.85;
+    const base = (1 - d) / files.length;
+    let rank = new Map(files.map((f) => [f, 1 / files.length]));
+    for (let i = 0; i < 20; i++) {
+      const next = new Map(files.map((f) => [f, base]));
+      let sink = 0;
+      for (const f of files) {
+        const outs = this.adj.get(f)!;
+        const r = rank.get(f)!;
+        if (!outs.size) { sink += r; continue; }
+        const share = (d * r) / outs.size;
+        for (const to of outs) next.set(to, (next.get(to) ?? base) + share);
+      }
+      // A file importing nothing still contributes; otherwise rank leaks away
+      // and everything converges to the same floor.
+      const spread = (d * sink) / files.length;
+      for (const f of files) next.set(f, next.get(f)! + spread);
+      rank = next;
+    }
+    return rank;
+  }
+
   dependencies(file: string, transitive = false): string[] {
     return transitive ? this.reach(file, this.adj) : [...(this.adj.get(file) ?? [])];
   }

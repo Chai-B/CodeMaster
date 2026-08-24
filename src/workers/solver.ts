@@ -16,6 +16,11 @@ import type { Session, Task } from '../types/index.js';
 export interface VerifyResult {
   ok: boolean;
   output: string; // failure detail fed back to the model when !ok
+  /** False when nothing actually exercised the change — no relevant test, a
+   *  runner that could not start, a timeout, or a patch that never touched the
+   *  files the task named. The work still stands, but `verified` must not claim
+   *  it was checked. */
+  confident?: boolean;
 }
 export type VerifyFn = () => VerifyResult | Promise<VerifyResult>;
 
@@ -52,8 +57,12 @@ export async function solveWithVerification(
 
     const v = await verify();
     if (v.ok) {
-      verified = true;
-      bus.emit({ type: 'log', level: 'success', message: `Verification passed on iteration ${iterations}.` });
+      verified = v.confident !== false;
+      bus.emit(
+        verified
+          ? { type: 'log', level: 'success', message: `Verification passed on iteration ${iterations}.` }
+          : { type: 'log', level: 'warn', message: `Applied, but unverified: ${v.output}` },
+      );
       break;
     }
     // Record the non-working approach (spec §8.5) so it is retrievable as a
