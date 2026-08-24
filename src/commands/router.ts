@@ -13,6 +13,7 @@ import { staticAnalysis } from '../analysis/api.js';
 import { compileContext } from '../context/compiler.js';
 import { createCheckpoint, restoreCheckpoint, verifyCheckpointState } from '../workers/checkpointer.js';
 import { compileHandoffPackage, validateHandoffPackage, renderHandoffPackage } from '../workers/handoff.js';
+import { QuotaLedger } from '../providers/quotaLedger.js';
 import { MemoryCompressorWorker } from '../workers/memoryCompressor.js';
 import { runWorker } from '../workers/base.js';
 import { applyDecay, findCompressionCandidates } from '../memory/lifecycle.js';
@@ -75,6 +76,7 @@ export class CommandRouter {
       case '/runall': return this.run(true);
       case '/skip': return this.skip(arg);
       case '/provider': return this.provider(args);
+      case '/cost': return this.cost();
       case '/account': return this.account(args);
       case '/handoff': return this.handoff(arg);
       case '/memory': return this.memory(args);
@@ -287,6 +289,20 @@ export class CommandRouter {
     this.out('heading', 'Accounts');
     for (const a of this.sm.manager.listAccounts()) {
       this.out('info', `${a.alias} (${a.provider_id})  health: ${a.health.status}  used today: ${fmtTokens(a.quota.tokens_used_today)}`);
+    }
+  }
+
+  /** What each subscription window has actually spent, and what is blocked. */
+  private cost(): void {
+    const states = QuotaLedger.all();
+    if (!states.length) return this.out('info', 'No provider usage recorded yet.');
+    this.out('heading', 'Provider windows');
+    for (const st of states) {
+      const blockedMs = QuotaLedger.blockedForMs(st.key, st.provider_id);
+      const parts = [`${fmtTokens(st.tokens_used)} in ${st.requests} call(s) since ${st.window_start.slice(11, 16)}Z`];
+      if (blockedMs > 0) parts.push(`blocked ${Math.ceil(blockedMs / 1000)}s`);
+      if (st.consecutive_failures > 0) parts.push(`${st.consecutive_failures} consecutive failure(s)`);
+      this.out(blockedMs > 0 ? 'warn' : 'info', `${st.key}  ${parts.join('  ·  ')}`);
     }
   }
 
