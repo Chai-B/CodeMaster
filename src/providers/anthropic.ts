@@ -1,7 +1,8 @@
 // Anthropic provider adapter (spec §13.5).
 
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawnSync } from 'child_process';
+import { runCli, type CliRun } from './cliRun.js';
 import { parseIR } from '../workers/outputParser.js';
 import { CredentialManager } from './credentials.js';
 import { ConversationLost } from '../types/index.js';
@@ -163,8 +164,8 @@ function cliModelAlias(model: string): string {
   return model;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export interface CliResult {
@@ -180,7 +181,7 @@ export interface CliResult {
  * non-zero, so an exit code alone explains nothing. Prefer the body, and fall
  * back to the process-level facts when there is no parseable output.
  */
-export function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): string {
+export function describeCliFailure(r: CliRun, d: CliResult | null): string {
   const body = d ? d.api_error_status || d.result || d.subtype : null;
   const proc = [
     r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
@@ -212,7 +213,7 @@ export function usageFromCliResult(d: CliResult): TokenUsage {
   return { input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, total_tokens: input + output };
 }
 
-function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
+async function invokeViaClaudeCli(request: ProviderRequest): Promise<ProviderResponse> {
   const started = Date.now();
   const conv = request.conversation;
   // Resuming replays the vendor's system prompt from its own cache, so the
@@ -229,18 +230,19 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
         '--exclude-dynamic-system-prompt-sections',
         '--output-format', 'json',
       ];
-  const run = (): SpawnSyncReturns<string> =>
-    spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  // The CLI emits its whole JSON body at the end, so there is no partial output
+  // worth surfacing — the runner's heartbeat is what tells the user it is alive.
+  const run = (): Promise<CliRun> => runCli('claude', args, request.user);
 
   // Empty stdout is a transient CLI-overload symptom that a short retry clears.
   // A structured error body is not transient — a usage limit will not lift in
   // seventeen seconds — so retry only when the CLI produced no output at all.
   // A signalled child is not transient either: Ctrl-C interrupts the CLI too,
   // and retrying it made a cancelled run sit for another seventeen seconds.
-  let r = run();
+  let r = await run();
   for (let attempt = 0; !r.stdout && !r.signal && attempt < 3; attempt++) {
-    sleepSync([2000, 5000, 10000][attempt]!);
-    r = run();
+    await sleep([2000, 5000, 10000][attempt]!);
+    r = await run();
   }
 
   let d: CliResult | null = null;

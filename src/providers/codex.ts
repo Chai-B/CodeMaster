@@ -6,6 +6,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { runCli } from './cliRun.js';
+import { bus } from '../events/bus.js';
 import { irFromDiff } from '../workers/irFromDiff.js';
 import { DIFF_OUTPUT_FORMAT } from '../context/outputFormat.js';
 import { CredentialManager } from './credentials.js';
@@ -55,7 +57,7 @@ export class CodexAdapter implements ProviderAdapter {
     // user's ChatGPT subscription, the same way the Anthropic adapter falls back
     // to the `claude` CLI. This is what gives failover a second vendor to reach.
     if (!apiKey) {
-      if (codexCliAvailable()) return invokeViaCodexCli(request);
+      if (codexCliAvailable()) return await invokeViaCodexCli(request);
       throw new Error('No OpenAI credentials for Codex. Set OPENAI_API_KEY or install the authenticated `codex` CLI.');
     }
     const client = new OpenAI({ apiKey });
@@ -119,6 +121,21 @@ interface CodexUsage {
   output_tokens?: number;
 }
 
+/** Surface the steps Codex reports, and nothing else — the event stream also
+ *  carries deltas and bookkeeping that would flood the log. */
+function reportEvent(line: string): void {
+  if (!line.includes('item.completed')) return;
+  try {
+    const ev = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string } };
+    if (ev.type !== 'item.completed' || !ev.item) return;
+    const kind = ev.item.type ?? 'step';
+    if (kind === 'agent_message') return; // the answer itself; parsed from the output file
+    bus.emit({ type: 'log', level: 'debug', message: `codex: ${kind}${ev.item.text ? ` — ${ev.item.text.slice(0, 120)}` : ''}` });
+  } catch {
+    // A partial line is not worth reporting.
+  }
+}
+
 /** Last `turn.completed` usage in the JSONL event stream — the only real token
  *  numbers the CLI reports. Absent means we record nothing rather than guess. */
 export function usageFromEvents(jsonl: string): CodexUsage | null {
@@ -141,7 +158,7 @@ export function usageFromEvents(jsonl: string): CodexUsage | null {
  * the prompt states the context is complete — otherwise Codex explores the repo
  * on its own and spends tokens re-deriving what the compiler already supplied.
  */
-function invokeViaCodexCli(request: ProviderRequest): ProviderResponse {
+async function invokeViaCodexCli(request: ProviderRequest): Promise<ProviderResponse> {
   const started = Date.now();
   const outFile = path.join(os.tmpdir(), `codex-out-${process.pid}-${Date.now()}.txt`);
   const args = [
@@ -155,7 +172,9 @@ function invokeViaCodexCli(request: ProviderRequest): ProviderResponse {
   // Codex has no system-prompt flag, so the system block is prepended.
   const input = `${request.system}\n\nAll context needed is below. Do not read files or run commands; answer from the context provided.\n\n${request.user}`;
   try {
-    const r = spawnSync('codex', args, { input, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    // Codex streams a JSONL event per step, so the work it is doing can be
+    // reported as it happens instead of after the fact.
+    const r = await runCli('codex', args, input, (line) => reportEvent(line));
     const text = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : '';
     if (r.status !== 0 || !text) {
       const why = [

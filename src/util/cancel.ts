@@ -2,12 +2,11 @@
 // not the process — a killed process loses the session's in-memory state and
 // the work already applied to the tree.
 //
-// The vendor CLIs are driven with spawnSync, which blocks the event loop and
-// cannot be interrupted from JavaScript. That is fine: the child shares the
-// terminal's process group, so Ctrl-C reaches it directly and the adapter sees
-// a signalled child. What this module adds is everything after that — the
-// solver, the executor and the failover loop stop instead of retrying into a
-// cancellation.
+// The vendor CLIs run as ordinary async children (see providers/cliRun.ts),
+// which poll `isCancelled` and send the child SIGINT — so a cancelled run stops
+// the vendor call itself rather than waiting for it to finish. What this module
+// adds beyond that is everything after: the solver, the executor and the
+// failover loop stop instead of retrying into a cancellation.
 
 export class Cancelled extends Error {
   constructor() {
