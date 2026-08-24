@@ -212,7 +212,7 @@ export class StaticAnalysisAPI {
     return this.git.diffBetween(a, b);
   }
   async getWorkingDiff(): Promise<string> {
-    return this.git.workingDiff();
+    return this.git.fullWorkingDiff();
   }
   async getBlame(file: string): Promise<string> {
     return this.git.blame(file);

@@ -59,6 +59,12 @@ export function eventToLog(ev: CodeMasterEvent): Omit<LogEntry, 'id'> | null {
       return { type: 'dim', text: `Provider: response (${ev.tokens.toLocaleString()} tokens)` };
     case 'provider.switched':
       return { type: 'warn', text: `Provider switched: ${ev.from} → ${ev.to}` };
+    case 'provider.error':
+      return { type: 'error', text: `Provider ${ev.provider_id} failed: ${ev.error}` };
+    case 'provider.rate_limited':
+      return { type: 'warn', text: `Rate limited (${ev.account_id}) — retry in ${Math.round(ev.retry_after_ms / 1000)}s` };
+    case 'quota.exhausted':
+      return { type: 'error', text: `Quota exhausted for account ${ev.account_id}` };
     case 'wiki.created':
       return { type: 'dim', text: `Wiki created: ${ev.key}` };
     case 'wiki.updated':

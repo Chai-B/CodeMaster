@@ -24,6 +24,8 @@ const ENV_REF: Record<string, string> = {
   'openai-codex': 'env:OPENAI_API_KEY',
 };
 
+const UNAVAILABLE_COOLDOWN_MS = 60_000;
+
 export class ProviderManager {
   private adapters = new Map<string, ProviderAdapter>();
   private accounts: Account[] = [];
@@ -211,6 +213,22 @@ export class ProviderManager {
   }
 
   /**
+   * An account disabled by an error becomes eligible again after a cooldown.
+   * Disabling permanently for the process lifetime meant one transient CLI
+   * hiccup during planning silently killed every later task in the run.
+   */
+  private available(account: Account): boolean {
+    if (account.health.status !== 'unavailable') return true;
+    const since = account.health.unavailable_since;
+    if (!since) return true;
+    if (Date.now() - Date.parse(since) < UNAVAILABLE_COOLDOWN_MS) return false;
+    account.health.status = 'healthy';
+    account.health.unavailable_since = undefined;
+    account.health.unavailable_reason = undefined;
+    return true;
+  }
+
+  /**
    * Compile → invoke with exponential backoff, automatically failing over to the
    * next healthy provider when one is unavailable (spec §13, §26.7).
    */
@@ -222,7 +240,7 @@ export class ProviderManager {
     let lastErr: unknown;
     for (const model of this.failoverModelOrder()) {
       const sel = this.select(model, requiredTokens, taskType);
-      if (sel.account.health.status === 'unavailable') continue;
+      if (!this.available(sel.account)) continue;
       try {
         const request = sel.adapter.format_prompt(compiled, sel.model);
         const response = await invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));

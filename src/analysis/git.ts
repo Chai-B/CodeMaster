@@ -1,6 +1,7 @@
 // GitWorker — deterministic temporal/authorship context (spec §5.2.6, §12.2).
 
 import { simpleGit, type SimpleGit } from 'simple-git';
+import { spawnSync } from 'child_process';
 
 export interface ChangedFile {
   path: string;
@@ -58,6 +59,28 @@ export class GitWorker {
     } catch {
       return '';
     }
+  }
+
+  /**
+   * Working-tree diff *including untracked files*. Plain `git diff` reports only
+   * modifications to tracked files, so a task whose entire output is new files
+   * produced an empty diff — and the verifier then reported that a file which
+   * exists on disk had never been created, costing a needless correction round.
+   */
+  fullWorkingDiff(): string {
+    const run = (args: string[]): string => {
+      // `diff --no-index` exits 1 when the files differ, so read stdout rather
+      // than gating on the status code.
+      const r = spawnSync('git', args, { cwd: this.repoPath, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+      return r.stdout ?? '';
+    };
+    const empty = process.platform === 'win32' ? 'NUL' : '/dev/null';
+    const untracked = run(['ls-files', '--others', '--exclude-standard', '-z'])
+      .split('\0')
+      .filter(Boolean)
+      .map((f) => run(['diff', '--no-index', '--', empty, f]))
+      .join('');
+    return run(['diff', 'HEAD']) + untracked;
   }
 
   async workingDiff(): Promise<string> {
