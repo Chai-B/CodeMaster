@@ -13,7 +13,7 @@ const fakeExec = (tokens: number) => async () => ({ ir: {} as any, tokens, ms: 1
 
 test('solver stops immediately when verification passes', async () => {
   let calls = 0;
-  const r = await solveWithVerification({} as any, mkTask(), {} as any, {} as any,
+  const r = await solveWithVerification({ repository: { path: process.cwd() } } as any, mkTask(), {} as any, {} as any,
     () => { calls++; return { ok: true, output: '' }; }, 3, fakeExec(10));
   assert.equal(r.iterations, 1);
   assert.equal(r.verified, true);
@@ -24,7 +24,7 @@ test('solver stops immediately when verification passes', async () => {
 test('solver retries with feedback until it passes', async () => {
   let verifyCalls = 0;
   const task = mkTask();
-  const r = await solveWithVerification({} as any, task, {} as any, {} as any,
+  const r = await solveWithVerification({ repository: { path: process.cwd() } } as any, task, {} as any, {} as any,
     () => { verifyCalls++; return { ok: verifyCalls >= 3, output: `fail ${verifyCalls}` }; }, 5, fakeExec(10));
   assert.equal(r.iterations, 3);
   assert.equal(r.verified, true);
@@ -33,7 +33,7 @@ test('solver retries with feedback until it passes', async () => {
 });
 
 test('solver gives up after maxIters without verifying', async () => {
-  const r = await solveWithVerification({} as any, mkTask(), {} as any, {} as any,
+  const r = await solveWithVerification({ repository: { path: process.cwd() } } as any, mkTask(), {} as any, {} as any,
     () => ({ ok: false, output: 'nope' }), 2, fakeExec(5));
   assert.equal(r.iterations, 2);
   assert.equal(r.verified, false);

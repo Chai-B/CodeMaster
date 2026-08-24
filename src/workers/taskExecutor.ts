@@ -6,6 +6,7 @@ import { processIR } from './irProcessor.js';
 import { ParseError } from './outputParser.js';
 import { Tokens } from '../storage/tokens.js';
 import { bus } from '../events/bus.js';
+import { Learning } from '../learning/reflector.js';
 import { invokeWithBackoff, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
@@ -27,12 +28,19 @@ export interface ExecuteResult {
  * appears in the model's own output. This is the number the wasteRatio gate is
  * computed from, so it must stay an observation rather than a heuristic score.
  */
-function unreferencedTokens(compiled: CompiledPrompt, text: string): number {
+function unreferencedTokens(compiled: CompiledPrompt, text: string, repoPath: string): number {
+  const referenced = new Set<string>();
   let wasted = 0;
   for (const f of compiled.file_costs ?? []) {
     const base = f.path.split('/').pop() ?? f.path;
-    if (!text.includes(f.path) && !text.includes(base)) wasted += f.tokens;
+    if (text.includes(f.path) || text.includes(base)) referenced.add(f.path);
+    else wasted += f.tokens;
   }
+  // The same observation the waste number is built from also feeds the learning
+  // loop: a file included over and over and referenced by nothing gets ranked
+  // down in future selections.
+  const paths = (compiled.file_costs ?? []).map((f) => f.path);
+  if (paths.length) Learning.recordSelection(repoPath, paths, referenced);
   return wasted;
 }
 
@@ -99,7 +107,7 @@ export async function executeTask(
     usage: response.usage,
     cost_usd: cost,
     components: compiled.included,
-    wasted_tokens: unreferencedTokens(compiled, response.text),
+    wasted_tokens: unreferencedTokens(compiled, response.text, session.repository.path),
   });
 
   // Parse IR natively per provider; on failure, retry once with a format reminder (spec §15.3).

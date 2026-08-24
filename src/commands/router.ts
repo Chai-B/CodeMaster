@@ -14,6 +14,7 @@ import { compileContext } from '../context/compiler.js';
 import { createCheckpoint, restoreCheckpoint, verifyCheckpointState } from '../workers/checkpointer.js';
 import { compileHandoffPackage, validateHandoffPackage, renderHandoffPackage } from '../workers/handoff.js';
 import { QuotaLedger } from '../providers/quotaLedger.js';
+import { Learning } from '../learning/reflector.js';
 import { MemoryCompressorWorker } from '../workers/memoryCompressor.js';
 import { runWorker } from '../workers/base.js';
 import { applyDecay, findCompressionCandidates } from '../memory/lifecycle.js';
@@ -77,6 +78,7 @@ export class CommandRouter {
       case '/skip': return this.skip(arg);
       case '/provider': return this.provider(args);
       case '/cost': return this.cost();
+      case '/learn': return this.learn();
       case '/account': return this.account(args);
       case '/handoff': return this.handoff(arg);
       case '/memory': return this.memory(args);
@@ -289,6 +291,27 @@ export class CommandRouter {
     this.out('heading', 'Accounts');
     for (const a of this.sm.manager.listAccounts()) {
       this.out('info', `${a.alias} (${a.provider_id})  health: ${a.health.status}  used today: ${fmtTokens(a.quota.tokens_used_today)}`);
+    }
+  }
+
+  /** What this repository has taught the tool — observations only. */
+  private learn(): void {
+    const repo = this.sm.getCurrent()?.repository.path ?? process.cwd();
+    const { files, tiers } = Learning.report(repo);
+    if (!files.length && !tiers.length) {
+      return this.out('info', 'Nothing learned yet — run a few tasks in this repository first.');
+    }
+    if (files.length) {
+      this.out('heading', 'Files the model was given but did not use');
+      for (const f of files) {
+        this.out(f.rate < 0.34 ? 'warn' : 'info', `${f.path}  referenced ${f.referenced}/${f.included} times (${(f.rate * 100).toFixed(0)}%)`);
+      }
+    }
+    if (tiers.length) {
+      this.out('heading', 'Context budget tiers that produced a verified result');
+      for (const t of tiers) {
+        this.out('info', `${t.task_type}  tier ${t.tier}  ${t.verified ? 'verified' : 'unverified'} ×${t.count}`);
+      }
     }
   }
 

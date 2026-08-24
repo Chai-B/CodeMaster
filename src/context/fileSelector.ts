@@ -7,6 +7,7 @@ import { StaticAnalysisAPI } from '../analysis/api.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { Task } from '../types/index.js';
 import { loadConfig } from '../config.js';
+import { Learning } from '../learning/reflector.js';
 
 export interface SelectedFile {
   path: string;
@@ -137,7 +138,7 @@ export async function selectFiles(
   // Step 7: budget-aware greedy selection. Apply the source-relevance multiplier
   // so real source outranks docs/examples/scripts/tests for code tasks (spec §6).
   const ranked: Scored[] = [...scores.entries()]
-    .map(([p, s]) => ({ path: p, score: s * relevanceWeight(p, task.type) }))
+    .map(([p, s]) => ({ path: p, score: s * relevanceWeight(p, task.type) * Learning.utility(api.repoPath, p) }))
     .sort((a, b) => b.score - a.score);
 
   // Task keywords drive symbol-slice compression: when a file is too large to
