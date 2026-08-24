@@ -254,6 +254,25 @@ CREATE TABLE IF NOT EXISTS dependency_edges (
 CREATE INDEX IF NOT EXISTS idx_depedges_from ON dependency_edges(from_file);
 CREATE INDEX IF NOT EXISTS idx_depedges_to ON dependency_edges(to_file);
 
+-- Learning loop (spec §7 phase 5). Per-repository, and derived only from
+-- observed outcomes: how often a file the selector included was actually
+-- referenced by the response, and the escalation tier a task type really
+-- needed. Nothing here is a prior or an estimate.
+CREATE TABLE IF NOT EXISTS file_utility (
+  path TEXT PRIMARY KEY,
+  included INTEGER NOT NULL DEFAULT 0,
+  referenced INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tier_outcomes (
+  task_type TEXT NOT NULL,
+  tier INTEGER NOT NULL,
+  verified INTEGER NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task_type, tier, verified)
+);
+
 CREATE TABLE IF NOT EXISTS module_index (
   path TEXT PRIMARY KEY,
   name TEXT,

@@ -43,6 +43,7 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/stats', desc: 'Overall runtime statistics', group: 'Diagnostic' },
   { cmd: '/health', desc: 'Provider account health', group: 'Diagnostic' },
   { cmd: '/cost', desc: 'Subscription windows spent and blocked', group: 'Diagnostic' },
+  { cmd: '/learn', desc: 'What this repository has taught the selector', group: 'Diagnostic' },
   { cmd: '/workers', desc: 'List workers + task pipeline', group: 'Diagnostic' },
   { cmd: '/profile', desc: 'Profiling for a task', group: 'Diagnostic' },
   { cmd: '/replay', desc: 'Replay reasoning from a session', group: 'Diagnostic' },

@@ -56,7 +56,7 @@ test('solver records a failure on verify-fail, keyed to the changed files', asyn
     applied: ['pkg/alpha.py'], created: [], failed: [], reasoningStored: 0, wikiUpdated: [],
   });
   const r = await solveWithVerification(
-    { id: 'sess' } as never, task, {} as never, {} as never,
+    { id: 'sess', repository: { path: process.cwd() } } as never, task, {} as never, {} as never,
     () => ({ ok: false, output: 'beta.py import error' }), 1, exec,
   );
   assert.equal(r.verified, false);

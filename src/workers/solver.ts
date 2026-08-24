@@ -7,6 +7,7 @@
 
 import { executeTask, type ExecuteResult } from './taskExecutor.js';
 import { bus } from '../events/bus.js';
+import { Learning } from '../learning/reflector.js';
 import { Failures } from '../storage/reasoning.js';
 import { id, now } from '../util/id.js';
 import type { ProviderManager } from '../providers/manager.js';
@@ -47,12 +48,16 @@ export async function solveWithVerification(
   let totalTokens = 0;
   let iterations = 0;
 
+  // Start where this repository has actually verified this kind of task before,
+  // instead of always paying for a failed pass at the smallest budget first.
+  const start = Learning.startTier(session.repository.path, task.type);
+
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     iterations = i + 1;
     bus.emit({ type: 'log', level: 'info', message: `Solver iteration ${iterations}/${maxIters}…` });
     // The context budget climbs only after a pass has actually failed at the
     // current size — the first attempt never pays for a window it did not need.
-    last = await exec(session, task, manager, cfg, i);
+    last = await exec(session, task, manager, cfg, start + i);
     totalTokens += last.tokens;
 
     const v = await verify();
@@ -104,5 +109,6 @@ export async function solveWithVerification(
   }
 
   task.description = origDesc;
+  Learning.recordTier(session.repository.path, task.type, start + iterations - 1, verified);
   return { last, iterations, verified, totalTokens };
 }
