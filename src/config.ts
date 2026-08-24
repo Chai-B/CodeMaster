@@ -52,6 +52,43 @@ export function sessionsDir(repoPath: string = activeRepo): string {
   return path.join(repoDataDir(repoPath), 'sessions');
 }
 
+export interface Project {
+  /** Absolute path of the repository this state belongs to. */
+  path: string;
+  slug: string;
+  dir: string;
+  /** False once the repository has been moved or deleted from disk. */
+  exists: boolean;
+}
+
+/**
+ * Every repository CodeMaster has state for. One repository is one project:
+ * its sessions, reasoning, wiki and checkpoints all live under its own
+ * directory, so two repositories never see each other's memory.
+ */
+export function listProjects(): Project[] {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(REPOS_DIR);
+  } catch {
+    return [];
+  }
+  const out: Project[] = [];
+  for (const slug of entries) {
+    const dir = path.join(REPOS_DIR, slug);
+    try {
+      const marker = JSON.parse(fs.readFileSync(path.join(dir, 'repo.json'), 'utf8')) as {
+        repository_path?: string;
+      };
+      if (!marker.repository_path) continue;
+      out.push({ path: marker.repository_path, slug, dir, exists: fs.existsSync(marker.repository_path) });
+    } catch {
+      /* Not a project directory, or a half-written one. */
+    }
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export interface ProviderModels {
   models: ModelSpec[];
 }
