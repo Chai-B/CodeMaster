@@ -1,0 +1,135 @@
+// Session and Task data structures (spec §4.2).
+
+import type { ISO8601, FileRef, ProviderRef, RepositoryRef, TokenBudget } from './common.js';
+
+export type SessionStatus =
+  | 'initializing'
+  | 'planning'
+  | 'active'
+  | 'paused'
+  | 'completing'
+  | 'completed'
+  | 'failed';
+
+export interface ParsedObjective {
+  goal: string;
+  scope: string[];
+  constraints: string[];
+  keywords: string[];
+  task_type: TaskType;
+}
+
+export type TaskType =
+  | 'plan'
+  | 'implement'
+  | 'test'
+  | 'review'
+  | 'verify'
+  | 'refactor'
+  | 'debug';
+
+export type TaskStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'skipped';
+
+export interface Constraint {
+  id: string;
+  description: string;
+  hard: boolean;
+}
+
+export interface Question {
+  id: string;
+  text: string;
+  status: 'open' | 'resolved';
+  resolution?: string;
+}
+
+export interface ExecutionPlan {
+  tasks: Task[];
+  created_at: ISO8601;
+  created_by?: ProviderRef;
+}
+
+export interface ProgressState {
+  total: number;
+  completed: number;
+  failed: number;
+  current_task_id?: string;
+}
+
+export interface ArchitectureSnapshot {
+  summary: string;
+  components: Record<string, string>;
+  updated_at: ISO8601;
+}
+
+export interface Task {
+  id: string;
+  session_id: string;
+  parent_task_id?: string;
+
+  title: string;
+  description: string;
+  type: TaskType;
+
+  status: TaskStatus;
+
+  input_files: FileRef[];
+  output_files: FileRef[];
+
+  dependencies: string[];
+  blocking: string[];
+
+  assigned_provider?: ProviderRef;
+
+  reasoning_refs: string[];
+  decision_refs: string[];
+
+  started_at?: ISO8601;
+  completed_at?: ISO8601;
+  failed_at?: ISO8601;
+  failure_reason?: string;
+
+  estimated_tokens: number;
+  actual_tokens?: number;
+
+  order: number;
+}
+
+export interface Session {
+  id: string;
+  created_at: ISO8601;
+  updated_at: ISO8601;
+  status: SessionStatus;
+
+  objective: string;
+  objective_parsed?: ParsedObjective;
+
+  repository: RepositoryRef;
+
+  plan?: ExecutionPlan;
+  progress: ProgressState;
+
+  architecture?: ArchitectureSnapshot;
+  decisions: string[];
+
+  constraints: Constraint[];
+  open_questions: Question[];
+
+  working_files: FileRef[];
+
+  provider_history: ProviderRef[];
+  current_provider?: ProviderRef;
+
+  checkpoints: string[];
+  latest_checkpoint?: string;
+
+  token_usage: TokenBudget;
+
+  metadata: Record<string, unknown>;
+}
