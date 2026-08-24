@@ -7,6 +7,7 @@ import { ParseError } from './outputParser.js';
 import { Tokens } from '../storage/tokens.js';
 import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
+import { throwIfCancelled } from '../util/cancel.js';
 import { invokeWithBackoff, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
@@ -52,6 +53,7 @@ export async function executeTask(
   tier = 0,
 ): Promise<ExecuteResult> {
   const started = Date.now();
+  throwIfCancelled();
   bus.emit({ type: 'task.started', task_id: task.id, title: task.title });
 
   const primary = manager.select(session.current_provider?.model_id ?? cfg.providers.default, cfg.context.max_context_tokens);
@@ -70,6 +72,7 @@ export async function executeTask(
   // Retain the last compiled context for checkpoint debugging (spec §14.2 context_last.md).
   session.metadata = { ...(session.metadata ?? {}), last_context: compiled.body };
 
+  throwIfCancelled();
   // Invoke with automatic failover across healthy providers (spec §13, §26.7).
   // On a vendor switch the context is recompiled with a handoff package, so the
   // new provider inherits the session's decisions and progress instead of

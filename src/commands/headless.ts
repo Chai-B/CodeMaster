@@ -4,6 +4,7 @@
 import fs from 'fs';
 import { spawnSync } from 'child_process';
 import { setActiveRepo } from '../config.js';
+import { beginCancellable, cancelActive, endCancellable } from '../util/cancel.js';
 import { bus } from '../events/bus.js';
 import { Daemon } from '../daemon/daemon.js';
 import { Tasks } from '../storage/sessions.js';
@@ -112,6 +113,9 @@ export async function runHeadless(argv: string[]): Promise<number> {
   const onSigint = (): void => {
     if (interrupted) process.exit(130);
     interrupted = true;
+    // Stop the running task first, so the checkpoint captures a settled tree
+    // rather than one being written underneath it.
+    cancelActive();
     process.stderr.write('\nInterrupted — pausing session…\n');
     if (!session) process.exit(130);
     void sm.pause(session).finally(() => {
@@ -130,7 +134,12 @@ export async function runHeadless(argv: string[]): Promise<number> {
 
     session = await sm.createSession(objective, flags.repo);
     await sm.plan(session);
-    await sm.runAll(session);
+    beginCancellable();
+    try {
+      await sm.runAll(session);
+    } finally {
+      endCancellable();
+    }
 
     const tasks = Tasks.forSession(session.id);
     const failed = tasks.filter((t) => t.status === 'failed');

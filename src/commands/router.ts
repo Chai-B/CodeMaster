@@ -26,6 +26,7 @@ import { applyWikiUpdate } from '../wiki/updater.js';
 import { bus } from '../events/bus.js';
 import { fmtTokens } from '../util/tokens.js';
 import { COMMANDS } from './catalog.js';
+import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
 import { activeRepoPath, listProjects } from '../config.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session } from '../types/index.js';
@@ -238,13 +239,23 @@ export class CommandRouter {
     const s = this.requireSession();
     if (!s) return;
     if (!this.sm.manager.hasAnyProvider()) return this.out('warn', 'No provider credentials — set an API key, run `claude setup-token`, or /account add.');
-    if (all) {
-      await this.sm.runAll(s);
-      this.out('success', `Done. ${s.progress.completed}/${s.progress.total} completed, ${s.progress.failed} failed`);
-    } else {
-      const t = await this.sm.runNextTask(s);
-      if (!t) this.out('dim', 'No pending tasks.');
-      else this.out('success', `Task "${t.title}" → ${t.status}`);
+    // Ctrl-C during a run stops the run, not the process: the session, its
+    // reasoning and the work already on disk all survive.
+    beginCancellable();
+    try {
+      if (all) {
+        await this.sm.runAll(s);
+        this.out('success', `Done. ${s.progress.completed}/${s.progress.total} completed, ${s.progress.failed} failed`);
+      } else {
+        const t = await this.sm.runNextTask(s);
+        if (!t) this.out('dim', 'No pending tasks.');
+        else this.out('success', `Task "${t.title}" → ${t.status}`);
+      }
+    } catch (e) {
+      if (!(e instanceof Cancelled)) throw e;
+      this.out('warn', 'Stopped. The session is intact — /run resumes where it left off.');
+    } finally {
+      endCancellable();
     }
   }
 

@@ -13,6 +13,7 @@ import { eventToLog, type LogEntry, type LogType, type SessionStatusView } from 
 import { BLUE_HI, BLUE_DIM, MUTED, BRAILLE } from './themes/blue.js';
 
 import { bus } from './events/bus.js';
+import { cancelActive } from './util/cancel.js';
 import { Daemon } from './daemon/daemon.js';
 import { COMMANDS } from './commands/catalog.js';
 import { Tasks } from './storage/sessions.js';
@@ -143,6 +144,9 @@ function App() {
   useInput((c, key) => {
     if (key.ctrl && c === 'q') exit();
     if (key.ctrl && c === 'l') dispatch({ type: 'clear' });
+    // Ctrl-C stops the running task and keeps the session; with nothing
+    // running there is nothing to stop, so it leaves.
+    if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
 
     if (acOptions.length > 0) {
       if (key.upArrow) setAcIndex((i) => (i <= 0 ? acOptions.length - 1 : i - 1));
