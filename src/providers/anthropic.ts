@@ -180,7 +180,17 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
     r = spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   }
   if (r.status !== 0 || !r.stdout) {
-    throw new Error(`claude CLI: empty response (transient overload) — ${(r.stderr || 'no output').slice(0, 200)}`);
+    // Report what actually happened. "transient overload" was a guess that hid
+    // spawn errors, signals and non-zero exits behind one indistinguishable
+    // message, leaving nothing to debug when a run failed.
+    const why = [
+      r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
+      r.signal ? `signal ${r.signal}` : null,
+      r.status !== 0 && r.status !== null ? `exit ${r.status}` : null,
+      r.stdout ? null : 'empty stdout',
+      r.stderr ? `stderr: ${r.stderr.slice(0, 400)}` : null,
+    ].filter(Boolean).join('; ');
+    throw new Error(`claude CLI failed (${why || 'no diagnostic available'})`);
   }
   const d = JSON.parse(r.stdout) as {
     result?: string;

@@ -227,4 +227,11 @@ function App() {
   );
 }
 
-render(<App />);
+// Non-interactive mode when arguments are present; the TUI otherwise.
+const argv = process.argv.slice(2);
+if (argv.length > 0) {
+  const { runHeadless } = await import('./commands/headless.js');
+  process.exitCode = await runHeadless(argv);
+} else {
+  render(<App />);
+}

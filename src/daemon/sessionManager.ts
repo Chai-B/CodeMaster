@@ -235,6 +235,7 @@ export class SessionManager {
       const bvResults = bv.lastResults() ?? undefined;
       next.status = result.ir.status === 'completed' ? 'completed' : result.ir.status === 'blocked' ? 'blocked' : 'failed';
       next.completed_at = now();
+      next.output_files = [...new Set([...result.applied, ...result.created])].map((path) => ({ path }));
       Tasks.update(next);
 
       if (next.status === 'completed') {
