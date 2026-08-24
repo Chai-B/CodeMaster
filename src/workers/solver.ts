@@ -10,6 +10,7 @@ import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
 import { throwIfCancelled } from '../util/cancel.js';
 import { Failures } from '../storage/reasoning.js';
+import { applyWikiUpdate } from '../wiki/updater.js';
 import { id, now, uuid } from '../util/id.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
@@ -59,6 +60,7 @@ export async function solveWithVerification(
   // times. Resuming pays it once and sends only the new failure each turn.
   const conversation: Conversation = { id: uuid(), turn: 0, delta: '' };
   let lastFailure = '';
+  let firstFailure = '';
 
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     throwIfCancelled();
@@ -111,6 +113,7 @@ export async function solveWithVerification(
       bus.emit({ type: 'log', level: 'warn', message: 'Same failure as the previous iteration; stopping instead of repeating it.' });
       break;
     }
+    if (!firstFailure) firstFailure = v.output;
     lastFailure = v.output;
 
     if (i < maxIters - 1) {
@@ -137,5 +140,29 @@ export async function solveWithVerification(
 
   task.description = origDesc;
   Learning.recordTier(session.repository.path, task.type, start + iterations - 1, verified);
+  if (verified && iterations > 1 && firstFailure) recordLesson(session, task, firstFailure, last, iterations);
   return { last, iterations, verified, totalTokens };
+}
+
+/**
+ * A verified fix that took more than one attempt is the only place this tool
+ * learns something it could not have looked up: the obvious approach failed
+ * here, and a specific change worked instead. Written to the wiki's `playbook`
+ * namespace, which the reader prioritises for exactly the task types that
+ * iterate — so the next attempt starts from the lesson rather than rediscovering
+ * it. Derived entirely from recorded outcomes; no model is asked to reflect.
+ */
+function recordLesson(session: Session, task: Task, firstFailure: string, last: ExecuteResult, iterations: number): void {
+  const files = [...last.applied, ...last.created];
+  const primary = files[0]?.split('/').pop()?.replace(/\.[^.]+$/, '') ?? task.type;
+  const entry =
+    `## ${task.title}\n\n` +
+    `The first attempt failed with:\n\n\`\`\`\n${firstFailure.slice(0, 400).trim()}\n\`\`\`\n\n` +
+    `Resolved after ${iterations} attempts by: ${last.ir?.summary || 'a follow-up patch'}\n` +
+    (files.length ? `Files changed: ${files.join(', ')}\n` : '');
+  try {
+    applyWikiUpdate({ key: `playbook/${task.type}-${primary}`, content: entry, is_diff: true }, session.id);
+  } catch {
+    /* a lesson is worth having, never worth failing a verified task over */
+  }
 }

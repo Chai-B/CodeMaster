@@ -109,15 +109,26 @@ export function resolveBudget(
   taskType: TaskType,
   maxContextTokens: number,
   tier = 0,
+  /** Learned per-component multipliers (see Learning.componentWeights). A
+   *  component this repository never draws on is shrunk and its share handed to
+   *  the ones that are used, so the budget follows the evidence instead of the
+   *  profile's initial guess. Absent components keep their profile share. */
+  weights: Record<string, number> = {},
 ): { profileName: string; allocations: Record<string, number>; budget: number } {
   const profileName = profileForTask(taskType);
   const profile = BUDGET_PROFILES[profileName]!;
   const budget = budgetForTier(maxContextTokens, tier);
   // Reserve ~12% for instructions + output format + system overhead.
   const usable = Math.floor(budget * 0.88);
+
+  const entries = Object.entries(profile).map(([c, pct]) => [c, (pct ?? 0) * (weights[c] ?? 1)] as const);
+  // Renormalize to the profile's original total so shrinking one component
+  // feeds the others rather than shrinking the whole context.
+  const before = Object.values(profile).reduce((a, p) => a + (p ?? 0), 0);
+  const after = entries.reduce((a, [, p]) => a + p, 0);
+  const scale = after > 0 ? before / after : 1;
+
   const allocations: Record<string, number> = {};
-  for (const [component, pct] of Object.entries(profile)) {
-    allocations[component] = Math.floor(usable * (pct ?? 0));
-  }
+  for (const [component, pct] of entries) allocations[component] = Math.floor(usable * pct * scale);
   return { profileName, allocations, budget };
 }

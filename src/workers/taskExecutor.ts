@@ -56,6 +56,31 @@ function unreferencedTokens(compiled: CompiledPrompt, text: string, repoPath: st
   return wasted;
 }
 
+/** Identifiers long enough to be distinctive rather than English. */
+function terms(text: string): Set<string> {
+  return new Set(text.match(/[A-Za-z_][A-Za-z0-9_]{4,}/g) ?? []);
+}
+
+/**
+ * Which context components the response actually drew on. A component is
+ * credited only through terms unique to it, so two components carrying the same
+ * identifier cannot claim each other's evidence. A component with nothing
+ * unique to say produces no observation at all — silence is not a verdict.
+ */
+function componentUse(compiled: CompiledPrompt, text: string): Array<{ component: string; referenced: boolean }> {
+  const perComponent = compiled.components.map((c) => ({ component: String(c.component), t: terms(c.content) }));
+  const seen = new Map<string, number>();
+  for (const c of perComponent) for (const t of c.t) seen.set(t, (seen.get(t) ?? 0) + 1);
+
+  const out: Array<{ component: string; referenced: boolean }> = [];
+  for (const c of perComponent) {
+    const unique = [...c.t].filter((t) => seen.get(t) === 1);
+    if (unique.length === 0) continue;
+    out.push({ component: c.component, referenced: unique.some((t) => text.includes(t)) });
+  }
+  return out;
+}
+
 export async function executeTask(
   session: Session,
   task: Task,
@@ -179,6 +204,8 @@ export async function executeTask(
       throw e;
     }
   }
+
+  Learning.recordComponents(session.repository.path, task.type, componentUse(compiled, response.text));
 
   // Store the answer against the prompt that bought it, so an identical
   // question later is free. Only clean results are worth keeping.
