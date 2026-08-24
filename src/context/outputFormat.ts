@@ -1,0 +1,97 @@
+// Output format specification injected into every prompt (spec §10.5).
+
+export const OUTPUT_FORMAT = `## Output Format
+
+Respond using the following structure only. No prose outside of these tags.
+
+CODE OUTPUT RULES (important):
+- For EVERY file you create OR modify, output its COMPLETE final content inside a
+  <file path="..."> tag — never a unified diff, never a fragment. Full files apply
+  deterministically; diffs do not.
+- A correct fix OFTEN SPANS MULTIPLE FILES. The relevant files are provided in the
+  context above. Trace the change through: where the value/type is defined, where it
+  is validated or transformed, and where it is documented or serialized — and output
+  the complete content of EVERY file that must change, not just the most obvious one.
+- You MUST output code whenever the task asks for an implementation. Returning an
+  empty <files/> with a "no changes needed" summary is only valid if the task is
+  genuinely already satisfied — and even then, output the existing file's current
+  content in a <file> tag so the result is verifiable.
+- Preserve the surrounding file when modifying: reproduce the whole file with your
+  change integrated, matching the repo's existing style and imports.
+
+<task_result>
+  <status>completed|partial|failed|blocked|needs_clarification</status>
+  <summary>One sentence summary of what was done</summary>
+  <files>
+    <file path="relative/path/to/file">COMPLETE final file content here</file>
+  </files>
+  <reasoning>
+    <decision question="..." answer="..." confidence="0.0-1.0" reversibility="easy|medium|hard|irreversible">
+      <evidence>...</evidence>
+      <alternative option="..." rejected_because="..."/>
+      <implication>...</implication>
+    </decision>
+    <risk likelihood="low|medium|high" impact="low|medium|high|critical">
+      <description>...</description>
+      <mitigation>...</mitigation>
+    </risk>
+    <observation confidence="0.0-1.0">...</observation>
+    <assumption confidence="0.0-1.0">...</assumption>
+  </reasoning>
+  <wiki_updates>
+    <update key="namespace/key">New content for this wiki entry</update>
+  </wiki_updates>
+  <open_questions>
+    <question>...</question>
+  </open_questions>
+  <next_tasks>
+    <task priority="high|medium|low" type="implement|test|review|refactor|debug">...</task>
+  </next_tasks>
+</task_result>`;
+
+// Native JSON output spec (spec §15.1) — providers that emit structured JSON
+// (OpenAI, Gemini) override the XML format with this. Parsed by irFromJson.
+export const JSON_OUTPUT_FORMAT = `## Output Format (OVERRIDE)
+
+Ignore any XML format above. Respond with ONLY a single JSON object, no prose, matching.
+For every file you create OR modify, put its COMPLETE final content in files_created
+(never a diff). Always output the actual code the task asks for.
+
+{
+  "status": "completed|partial|failed|blocked|needs_clarification",
+  "summary": "one sentence",
+  "files_created": [{ "path": "relative/path", "content": "COMPLETE final file content" }],
+  "decisions": [{ "question": "", "answer": "", "detail": "", "confidence": 0.9, "reversibility": "easy|medium|hard|irreversible", "alternatives": [{ "option": "", "rejected_because": "" }] }],
+  "observations": [{ "summary": "", "detail": "", "confidence": 0.8 }],
+  "risks": [{ "description": "", "likelihood": "low|medium|high", "impact": "low|medium|high|critical", "mitigation": "" }],
+  "assumptions": [{ "summary": "", "detail": "", "confidence": 0.6 }],
+  "wiki_updates": [{ "key": "namespace/key", "content": "markdown" }],
+  "next_tasks": [{ "title": "", "type": "implement|test|review|refactor|debug", "priority": "high|medium|low", "depends_on": [] }],
+  "open_questions": ["..."],
+  "blocked_by": ["..."],
+  "confidence": 0.85
+}`;
+
+// Native diff output spec (spec §15.1) — Codex returns raw unified diffs.
+export const DIFF_OUTPUT_FORMAT = `## Output Format (OVERRIDE)
+
+Respond with ONLY unified diff patches (git diff format), no prose. For each changed file:
+
+diff --git a/relative/path b/relative/path
+--- a/relative/path
++++ b/relative/path
+@@ ... @@
+ context
+-removed
++added`;
+
+export const SYSTEM_PROMPT = `You are the execution engine of CodeMaster Next, a persistent reasoning operating system for software engineering.
+
+You receive a deterministically compiled context: objective, plan, prior reasoning, repository knowledge, and the exact files relevant to the current task. This context is assembled from structured state — not conversation history. Trust it as the complete and authoritative picture.
+
+Rules:
+- Output the COMPLETE final content of every file you create or modify (in a <file> tag) — never a diff or a fragment. Always produce the actual code the task asks for.
+- Record every significant decision, risk, and assumption as structured reasoning — it is persisted and reused, so future sessions never re-derive it.
+- Honor all stated constraints and conventions exactly; match the repository's existing style.
+- Do not restate the context back. Do not add prose outside the required output tags.
+- If you lack information to proceed safely, return status needs_clarification with a specific question.`;
