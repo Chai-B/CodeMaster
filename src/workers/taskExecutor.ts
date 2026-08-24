@@ -12,6 +12,16 @@ import { invokeWithBackoff, type ProviderManager } from '../providers/manager.js
 import type { Config } from '../config.js';
 import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
 
+/** One vendor-side conversation, carried across a task's solver iterations.
+ *  The solver owns it; `provider_id` is filled in by the first successful call
+ *  so later turns only resume against the vendor that actually has it. */
+export interface Conversation {
+  id: string;
+  turn: number;
+  provider_id?: string;
+  delta: string;
+}
+
 export interface ExecuteResult {
   ir: IntermediateRepresentation;
   tokens: number;
@@ -51,6 +61,7 @@ export async function executeTask(
   manager: ProviderManager,
   cfg: Config,
   tier = 0,
+  conversation?: Conversation,
 ): Promise<ExecuteResult> {
   const started = Date.now();
   throwIfCancelled();
@@ -82,6 +93,10 @@ export async function executeTask(
     cfg.context.max_context_tokens,
     task.type,
     {
+      conversation,
+      onConversation: (_id, providerId) => {
+        if (conversation) conversation.provider_id = providerId;
+      },
       onVendorSwitch: async (from, to) => {
         const pkg = await compileHandoffPackage(session);
         const valid = validateHandoffPackage(pkg);

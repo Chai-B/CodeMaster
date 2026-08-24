@@ -11,7 +11,8 @@ import { CredentialManager } from './credentials.js';
 import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
-import type { Account, ProviderAdapter, ModelSpec, TaskType, CompiledPrompt, ProviderResponse } from '../types/index.js';
+import { ConversationLost } from '../types/index.js';
+import type { Account, ProviderAdapter, ModelSpec, TaskType, CompiledPrompt, ProviderRequest, ProviderResponse } from '../types/index.js';
 
 export interface SelectedProvider {
   adapter: ProviderAdapter;
@@ -26,6 +27,27 @@ const ENV_REF: Record<string, string> = {
   google: 'env:GEMINI_API_KEY',
   'openai-codex': 'env:OPENAI_API_KEY',
 };
+
+/**
+ * Which request actually goes to the vendor, given a conversation the solver is
+ * carrying. Three cases, in order: the adapter cannot resume, so it gets the
+ * full context and no conversation; this vendor has not seen the conversation
+ * yet, so it opens one under that id with the full context; this vendor already
+ * holds it, so it gets only the new turn.
+ */
+export function continuationRequest(
+  full: ProviderRequest,
+  conv: { id: string; turn: number; provider_id?: string; delta: string } | undefined,
+  adapterSupports: boolean,
+  providerId: string,
+): ProviderRequest {
+  if (!conv || !adapterSupports) return full;
+  const holds = conv.provider_id === providerId;
+  if (!holds || conv.turn === 0 || !conv.delta) {
+    return { ...full, conversation: { id: conv.id, resume: false } };
+  }
+  return { ...full, user: conv.delta, conversation: { id: conv.id, resume: true } };
+}
 
 export class ProviderManager {
   private adapters = new Map<string, ProviderAdapter>();
@@ -242,11 +264,52 @@ export class ProviderManager {
    * Compile → invoke with exponential backoff, automatically failing over to the
    * next healthy provider when one is unavailable (spec §13, §26.7).
    */
+  /**
+   * One provider call, continuing the vendor's own conversation when it can.
+   * The vendor CLI re-charges its whole system prompt on every fresh
+   * invocation, so a solver that iterates three times pays that floor three
+   * times unless the conversation is resumed. Resuming sends only the new turn.
+   */
+  private async invokeOne(
+    sel: SelectedProvider,
+    prompt: CompiledPrompt,
+    conv?: { id: string; turn: number; provider_id?: string; delta: string },
+    onConversation?: (id: string, providerId: string) => void,
+  ): Promise<ProviderResponse> {
+    const pid = sel.adapter.provider_id;
+    const full = (): ProviderRequest => sel.adapter.format_prompt(prompt, sel.model);
+    const request = continuationRequest(full(), conv, !!sel.adapter.supports_continuation, pid);
+
+    if (!request.conversation) return invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
+    try {
+      const r = await invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
+      onConversation?.(request.conversation.id, pid);
+      return r;
+    } catch (e) {
+      if (!(e instanceof ConversationLost)) throw e;
+      // The vendor dropped the conversation; the full context still says
+      // everything the delta assumed, so one honest retry recovers the turn.
+      bus.emit({ type: 'log', level: 'warn', message: 'Vendor conversation expired; resending full context.' });
+      const r = await invokeWithBackoff(() => sel.adapter.invoke(full(), sel.account));
+      onConversation?.(request.conversation.id, pid);
+      return r;
+    }
+  }
+
   async invokeWithFailover(
     compiled: CompiledPrompt,
     requiredTokens: number,
     taskType?: TaskType,
-    opts?: { onVendorSwitch?: (from: string, to: string) => Promise<CompiledPrompt> },
+    opts?: {
+      onVendorSwitch?: (from: string, to: string) => Promise<CompiledPrompt>;
+      /** Continue one vendor-side conversation across solver iterations. `delta`
+       *  is the only content sent when resuming; the full prompt is kept so a
+       *  lost conversation or a vendor switch can fall back to it. */
+      conversation?: { id: string; turn: number; provider_id?: string; delta: string };
+      /** Called when a conversation was actually opened or continued, so the
+       *  caller can bind the id to the vendor that owns it. */
+      onConversation?: (id: string, providerId: string) => void;
+    },
   ): Promise<{ sel: SelectedProvider; response: ProviderResponse }> {
     let lastErr: unknown;
     let prompt = compiled;
@@ -279,8 +342,7 @@ export class ProviderManager {
       tried.push(pid);
 
       try {
-        const request = sel.adapter.format_prompt(prompt, sel.model);
-        const response = await invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
+        const response = await this.invokeOne(sel, prompt, opts?.conversation, opts?.onConversation);
         QuotaLedger.recordSuccess(key, pid);
         sel.account.health.status = 'healthy';
         return { sel, response };

@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import { parseIR } from '../workers/outputParser.js';
 import { CredentialManager } from './credentials.js';
+import { ConversationLost } from '../types/index.js';
 import type {
   ProviderAdapter,
   ProviderRequest,
@@ -17,6 +18,10 @@ import type {
 
 export class AnthropicAdapter implements ProviderAdapter {
   provider_id = 'anthropic';
+  /** Only the CLI path can resume; the SDK path is stateless. */
+  get supports_continuation(): boolean {
+    return claudeCliAvailable();
+  }
   models: ModelSpec[];
   capabilities = {
     max_context_tokens: 200_000,
@@ -187,16 +192,28 @@ function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): s
   return [body ? String(body).slice(0, 400) : null, proc].filter(Boolean).join(' \u00b7 ') || 'no diagnostic available';
 }
 
+/** The CLI says a resumed id is unknown in prose, not in a status code. */
+function isMissingConversation(text: string): boolean {
+  return /no conversation found|session .*not found|no such session|could not find session/i.test(text);
+}
+
 function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
   const started = Date.now();
-  const args = [
-    '--model', cliModelAlias(request.model),
-    '-p',
-    '--system-prompt', request.system,
-    '--disallowed-tools', ...CLI_DISALLOWED_TOOLS,
-    '--exclude-dynamic-system-prompt-sections',
-    '--output-format', 'json',
-  ];
+  const conv = request.conversation;
+  // Resuming replays the vendor's system prompt from its own cache, so the
+  // continuation turn carries only the new content. Opening under a chosen id
+  // is what makes that id resumable later.
+  const args = conv?.resume
+    ? ['--resume', conv.id, '-p', '--output-format', 'json']
+    : [
+        ...(conv ? ['--session-id', conv.id] : []),
+        '--model', cliModelAlias(request.model),
+        '-p',
+        '--system-prompt', request.system,
+        '--disallowed-tools', ...CLI_DISALLOWED_TOOLS,
+        '--exclude-dynamic-system-prompt-sections',
+        '--output-format', 'json',
+      ];
   const run = (): SpawnSyncReturns<string> =>
     spawnSync('claude', args, { input: request.user, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
@@ -218,7 +235,10 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
     d = null;
   }
   if (!d || r.status !== 0 || d.is_error || d.api_error_status || !d.result) {
-    throw new Error(`claude CLI failed (${describeCliFailure(r, d)})`);
+    const detail = describeCliFailure(r, d);
+    // A stale conversation is recoverable by recompiling; a usage limit is not.
+    if (conv?.resume && isMissingConversation(detail)) throw new ConversationLost(detail);
+    throw new Error(`claude CLI failed (${detail})`);
   }
 
   const u = d.usage ?? {};

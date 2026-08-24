@@ -65,6 +65,15 @@ export interface ProviderRequest {
   user: string;
   model: string;
   max_tokens: number;
+  /**
+   * Continue one vendor-side conversation across solver iterations instead of
+   * opening a fresh one each time. The vendor's own system prompt and tooling
+   * cost tens of thousands of tokens per invocation; resuming pays that once
+   * per task rather than once per iteration. `resume: false` opens the
+   * conversation under this id, `true` continues it and `user` carries only the
+   * new turn.
+   */
+  conversation?: { id: string; resume: boolean };
 }
 
 export interface ProviderResponse {
@@ -74,8 +83,20 @@ export interface ProviderResponse {
   latency_ms: number;
 }
 
+/** Thrown when a conversation id no longer exists vendor-side. The caller
+ *  recompiles the full context and retries once without continuation. */
+export class ConversationLost extends Error {
+  constructor(detail: string) {
+    super(`Conversation lost: ${detail}`);
+    this.name = 'ConversationLost';
+  }
+}
+
 export interface ProviderAdapter {
   provider_id: string;
+  /** True when `ProviderRequest.conversation` is honoured. Stateless SDK
+   *  adapters leave this false and always receive the full context. */
+  supports_continuation?: boolean;
   models: ModelSpec[];
   capabilities: ProviderCapabilities;
   characteristics: ProviderCharacteristics;
