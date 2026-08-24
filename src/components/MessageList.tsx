@@ -20,6 +20,7 @@ function LogLine({ entry: { type, text } }: { entry: LogEntry }) {
     case 'error':   return <Box><Text color="#994C4C">  ✗  </Text><Text color="#994C4C">{text}</Text></Box>;
     case 'warn':    return <Box><Text color={BLUE_HI}>  ⚠  </Text><Text color={BLUE_HI}>{text}</Text></Box>;
     case 'dim':     return <Text color={MUTED}>{'     '}{text}</Text>;
+    case 'reasoning': return <Box><Text color={BLUE_HI}>  ◆  </Text><Text color={BLUE}>{text}</Text></Box>;
     case 'sep':     return <Text color={BLUE_DIM}>  {'─'.repeat(56)}</Text>;
     case 'heading': return <Box flexDirection="column"><Text> </Text><Text bold color={BLUE_HI}>  {text}</Text></Box>;
     case 'user':    return <Box flexDirection="column" marginTop={1}><Text bold color={BLUE_HI}>You</Text><Text>{text}</Text></Box>;
