@@ -167,7 +167,7 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-interface CliResult {
+export interface CliResult {
   result?: string;
   subtype?: string;
   is_error?: boolean;
@@ -180,7 +180,7 @@ interface CliResult {
  * non-zero, so an exit code alone explains nothing. Prefer the body, and fall
  * back to the process-level facts when there is no parseable output.
  */
-function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): string {
+export function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): string {
   const body = d ? d.api_error_status || d.result || d.subtype : null;
   const proc = [
     r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
@@ -193,8 +193,23 @@ function describeCliFailure(r: SpawnSyncReturns<string>, d: CliResult | null): s
 }
 
 /** The CLI says a resumed id is unknown in prose, not in a status code. */
-function isMissingConversation(text: string): boolean {
+export function isMissingConversation(text: string): boolean {
   return /no conversation found|session .*not found|no such session|could not find session/i.test(text);
+}
+
+/**
+ * Cache reads and cache writes are billed input the CLI reports separately from
+ * `input_tokens`, so summing all three is what makes the total match the
+ * vendor's own accounting. A renamed field would silently read zero, which is
+ * why the shape is pinned by a contract test.
+ */
+export function usageFromCliResult(d: CliResult): TokenUsage {
+  const u = d.usage ?? {};
+  const cacheRead = u.cache_read_input_tokens ?? 0;
+  const cacheWrite = u.cache_creation_input_tokens ?? 0;
+  const input = (u.input_tokens ?? 0) + cacheRead + cacheWrite;
+  const output = u.output_tokens ?? 0;
+  return { input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, total_tokens: input + output };
 }
 
 function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
@@ -241,14 +256,9 @@ function invokeViaClaudeCli(request: ProviderRequest): ProviderResponse {
     throw new Error(`claude CLI failed (${detail})`);
   }
 
-  const u = d.usage ?? {};
-  const cacheRead = u.cache_read_input_tokens ?? 0;
-  const cacheWrite = u.cache_creation_input_tokens ?? 0;
-  const input = (u.input_tokens ?? 0) + cacheRead + cacheWrite;
-  const output = u.output_tokens ?? 0;
   return {
     text: d.result,
-    usage: { input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, total_tokens: input + output },
+    usage: usageFromCliResult(d),
     model: request.model,
     latency_ms: Date.now() - started,
   };
