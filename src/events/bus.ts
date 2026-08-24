@@ -7,7 +7,9 @@ import type { CodeMasterEvent, EventType } from './types.js';
 type Listener = (event: CodeMasterEvent) => void;
 
 // `daemon.log_level` was inert — every debug line reached every subscriber
-// regardless of the setting. Ordered least to most verbose.
+// regardless of the setting. Ordered least to most verbose. `dim` and the
+// structural levels are absent deliberately: a quiet hint is still something the
+// user is meant to read, so it is styled down, never filtered out.
 const LEVELS = ['error', 'warn', 'success', 'info', 'debug'];
 
 class EventBus {

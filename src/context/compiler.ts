@@ -45,7 +45,7 @@ export async function compileContext(
   // Select files first so prior reasoning/failures can also be retrieved by code
   // locus (spec §8.4/§8.5) — memory that compounds on the files being touched,
   // not just on prose keyword overlap.
-  const fileCosts: Array<{ path: string; tokens: number }> = [];
+  const fileCosts: Array<{ path: string; tokens: number; reasons?: string[] }> = [];
   const fileBudget = allocations[C.RELEVANT_FILES] ?? Math.floor(opts.maxContextTokens * 0.3);
   const files = await selectFiles(api, task, fileBudget, opts.fileCompressionThreshold);
   const selectedPaths = files.map((f) => f.path);
@@ -190,7 +190,7 @@ export async function compileContext(
         return `### ${f.path}${f.compressed ? ' (compressed)' : ''}${ann ? ` — ${ann}` : ''}\n\`\`\`\n${f.content}\n\`\`\``;
       })
       .join('\n\n');
-    for (const f of files) fileCosts.push({ path: f.path, tokens: estimateTokens(f.content) });
+    for (const f of files) fileCosts.push({ path: f.path, tokens: estimateTokens(f.content), reasons: f.reasons });
     components.push({
       component: C.RELEVANT_FILES,
       heading: 'Files for This Task',

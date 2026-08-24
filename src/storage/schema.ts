@@ -204,6 +204,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
 -- Answers already paid for. Keyed by the exact compiled prompt, so a hit means
 -- the model would be asked a question it has already answered against an
 -- identical working tree (token discipline W4).
+-- Pre-images of every file a patch touched, so a run can be taken back without
+-- reaching for git and without discarding edits the tool did not make.
+CREATE TABLE IF NOT EXISTS undo_journal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_path TEXT NOT NULL,
+  session_id TEXT,
+  task_id TEXT,
+  created_at TEXT NOT NULL,
+  summary TEXT,
+  entries_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS prompt_cache (
   hash TEXT PRIMARY KEY,
   model_id TEXT NOT NULL,

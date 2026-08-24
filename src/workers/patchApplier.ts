@@ -9,6 +9,10 @@ export interface ApplyResult {
   applied: string[];
   created: string[];
   failed: Array<{ file: string; reason: string }>;
+  /** What each touched file held before this run. `null` means it did not
+   *  exist. Recorded so `/undo` can put the tree back exactly, without
+   *  discarding edits the tool did not make. */
+  undo: Array<{ path: string; before: string | null }>;
 }
 
 /**
@@ -23,7 +27,17 @@ function resolveInRepo(repoPath: string, rel: string): string | null {
 }
 
 export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFile[]): ApplyResult {
-  const result: ApplyResult = { applied: [], created: [], failed: [] };
+  const result: ApplyResult = { applied: [], created: [], failed: [], undo: [] };
+  const capture = (rel: string, full: string): void => {
+    if (result.undo.some((u) => u.path === rel)) return;
+    let before: string | null = null;
+    try {
+      before = fs.readFileSync(full, 'utf8');
+    } catch {
+      before = null;
+    }
+    result.undo.push({ path: rel, before });
+  };
 
   for (const nf of newFiles) {
     const full = resolveInRepo(repoPath, nf.path);
@@ -32,6 +46,7 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
       continue;
     }
     try {
+      capture(nf.path, full);
       fs.mkdirSync(path.dirname(full), { recursive: true });
       // Trailing newline: the IR parser trims the tag body, so every generated
       // file landed without one and showed up as "\ No newline at end of file"
@@ -45,6 +60,8 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
 
   for (const p of patches) {
     if (!p.diff.trim()) continue;
+    const target = resolveInRepo(repoPath, p.file);
+    if (target) capture(p.file, target);
     const ok = applyOne(repoPath, p);
     if (ok.success) result.applied.push(p.file);
     else result.failed.push({ file: p.file, reason: ok.reason });
