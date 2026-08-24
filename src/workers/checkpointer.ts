@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { sessionsDir } from '../config.js';
+import { sessionsDir, loadConfig } from '../config.js';
 import { Sessions, Tasks } from '../storage/sessions.js';
 import { Reasoning } from '../storage/reasoning.js';
 import { LongTerm } from '../storage/memory.js';
@@ -67,6 +67,9 @@ export async function createCheckpoint(
 
   const sizeBytes = dirSize(dir);
   Checkpoints.insert(manifest, dir, sizeBytes);
+  for (const stale of Checkpoints.prune(session.id, loadConfig().checkpointing.max_checkpoints_per_session)) {
+    fs.rmSync(stale, { recursive: true, force: true });
+  }
   session.checkpoints.push(cpId);
   session.latest_checkpoint = cpId;
   bus.emit({ type: 'checkpoint.created', id: cpId, trigger });

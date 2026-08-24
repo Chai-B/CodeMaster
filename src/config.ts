@@ -60,26 +60,19 @@ export type AnthropicConfig = ProviderModels;
 export interface Config {
   daemon: {
     port: number; // spec Appendix A — IPC port (in-process daemon records it)
-    log_level: 'debug' | 'info' | 'warn' | 'error';
-    data_dir: string;
+    log_level: 'debug' | 'info' | 'warn' | 'error' | 'success';
   };
   indexing: {
     auto_index: boolean;
-    index_interval_ms: number;
-    full_reindex_on_startup: boolean;
     max_file_size_bytes: number;
     excluded_patterns: string[];
     languages: string[];
     embeddings: {
       model: string;
       provider: 'local';
-      batch_size: number;
-      recompute_on_change: boolean;
     };
   };
   memory: {
-    compression_enabled: boolean;
-    compression_schedule: string; // cron (spec Appendix A)
     importance_threshold: number;
     age_days_before_eligible: number;
   };
@@ -88,7 +81,6 @@ export interface Config {
     conflict_strategy: 'queue' | 'auto_merge' | 'reject';
   };
   context: {
-    default_profile: string;
     max_files: number;
     file_compression_threshold: number;
     max_context_tokens: number;
@@ -119,36 +111,28 @@ export interface Config {
   };
   security: {
     credential_backend: 'system_keychain' | 'master_password' | 'plaintext';
-    encrypt_cold_storage: boolean;
     audit_log: boolean;
   };
 }
 
 export const DEFAULT_CONFIG: Config = {
-  daemon: { port: 7432, log_level: 'info', data_dir: DATA_DIR },
+  daemon: { port: 7432, log_level: 'info' },
   indexing: {
     auto_index: true,
-    index_interval_ms: 1000,
-    full_reindex_on_startup: false,
     max_file_size_bytes: 1_000_000,
     excluded_patterns: ['node_modules/**', '.git/**', 'dist/**', '*.min.js', '.codemaster/**'],
     languages: ['python', 'typescript', 'javascript', 'rust', 'go', 'java', 'ruby', 'c', 'cpp', 'swift'],
     embeddings: {
       model: 'Xenova/all-MiniLM-L6-v2',
       provider: 'local',
-      batch_size: 64,
-      recompute_on_change: true,
     },
   },
   memory: {
-    compression_enabled: true,
-    compression_schedule: '0 2 * * *',
     importance_threshold: 0.3,
     age_days_before_eligible: 30,
   },
   wiki: { auto_update: true, conflict_strategy: 'queue' },
   context: {
-    default_profile: 'implementation',
     max_files: 30,
     file_compression_threshold: 8000,
     max_context_tokens: 200_000,
@@ -189,7 +173,7 @@ export const DEFAULT_CONFIG: Config = {
   checkpointing: {
     enabled: true,
     interval_minutes: 10,
-    max_checkpoints_per_session: 50,
+    max_checkpoints_per_session: 20,
     pre_risky_threshold: 10,
   },
   token_budget: {
@@ -199,7 +183,6 @@ export const DEFAULT_CONFIG: Config = {
   },
   security: {
     credential_backend: 'system_keychain',
-    encrypt_cold_storage: true,
     audit_log: true,
   },
 };

@@ -7,6 +7,7 @@ import { getRepoDb } from '../storage/db.js';
 import { languageOf, type ExtractedSymbol } from './extractors.js';
 import { extractWithFallback } from './treesitter.js';
 import { now, uuid } from '../util/id.js';
+import { loadConfig } from '../config.js';
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', '.codemaster', 'build', '.next', 'venv', '.venv',
@@ -19,7 +20,19 @@ export interface IndexStats {
   languages: Record<string, number>;
 }
 
-function walk(root: string, maxSize: number): string[] {
+/** Config-driven exclusions, compiled once per walk. `indexing.excluded_patterns`
+ *  used to be inert, so a vendored directory was indexed like source. */
+function excluder(): (rel: string) => boolean {
+  const globs = loadConfig().indexing.excluded_patterns;
+  const res = globs.map((g) => new RegExp('^' + g.split('*').map(escapeRe).join('.*') + '$'));
+  return (rel: string) => res.some((r) => r.test(rel));
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+}
+
+function walk(root: string, maxSize: number, excluded: (rel: string) => boolean): string[] {
   const out: string[] = [];
   const rec = (dir: string) => {
     let entries: fs.Dirent[];
@@ -31,8 +44,8 @@ function walk(root: string, maxSize: number): string[] {
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) rec(full);
-      } else if (e.isFile() && languageOf(e.name)) {
+        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.') && !excluded(path.relative(root, full))) rec(full);
+      } else if (e.isFile() && languageOf(e.name) && !excluded(path.relative(root, full))) {
         try {
           if (fs.statSync(full).size <= maxSize) out.push(full);
         } catch {
@@ -45,11 +58,11 @@ function walk(root: string, maxSize: number): string[] {
   return out;
 }
 
-export async function indexRepository(repoPath: string, maxSize = 1_000_000): Promise<IndexStats> {
+export async function indexRepository(repoPath: string, maxSize?: number): Promise<IndexStats> {
   const db = getRepoDb(repoPath);
   db.exec('DELETE FROM file_index; DELETE FROM symbols; DELETE FROM symbol_references; DELETE FROM calls;');
 
-  const files = walk(repoPath, maxSize);
+  const files = walk(repoPath, maxSize ?? loadConfig().indexing.max_file_size_bytes, excluder());
   const stats: IndexStats = { files: 0, symbols: 0, languages: {} };
 
   const insFile = db.prepare(

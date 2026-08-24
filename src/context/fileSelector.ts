@@ -6,6 +6,7 @@ import { testFilesFor } from '../util/testFiles.js';
 import { StaticAnalysisAPI } from '../analysis/api.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { Task } from '../types/index.js';
+import { loadConfig } from '../config.js';
 
 export interface SelectedFile {
   path: string;
@@ -132,8 +133,12 @@ export async function selectFiles(
     .filter((s) => s.length >= 4);
 
   const out: SelectedFile[] = [];
+  // `context.max_files` was inert: only the token budget capped selection, so a
+  // task could receive forty small files it had no use for.
+  const maxFiles = loadConfig().context.max_files;
   let used = 0;
   for (const r of ranked) {
+    if (out.length >= maxFiles) break;
     const content = readFile(api.repoPath, r.path);
     if (content === null) continue;
     let body = content;
