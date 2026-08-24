@@ -11,11 +11,26 @@ export interface ApplyResult {
   failed: Array<{ file: string; reason: string }>;
 }
 
+/**
+ * Resolve a model-supplied path inside the repository, or null if it escapes.
+ * `path.join` does not treat an absolute second argument as absolute, so an
+ * absolute or `../`-prefixed path silently wrote outside the repo.
+ */
+function resolveInRepo(repoPath: string, rel: string): string | null {
+  const root = path.resolve(repoPath);
+  const full = path.resolve(root, rel);
+  return full === root || full.startsWith(root + path.sep) ? full : null;
+}
+
 export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFile[]): ApplyResult {
   const result: ApplyResult = { applied: [], created: [], failed: [] };
 
   for (const nf of newFiles) {
-    const full = path.join(repoPath, nf.path);
+    const full = resolveInRepo(repoPath, nf.path);
+    if (!full) {
+      result.failed.push({ file: nf.path, reason: 'path resolves outside the repository' });
+      continue;
+    }
     try {
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, nf.content, 'utf8');
