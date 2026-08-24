@@ -1,55 +1,81 @@
-import stripAnsi from 'strip-ansi';
+// Event → log-entry mapping for the TUI (replaces the old subprocess stdout parser).
 
-export type LogType = 'plain' | 'tool' | 'success' | 'error' | 'warn' | 'dim' | 'heading' | 'sep' | 'user';
+import type { CodeMasterEvent } from '../events/types.js';
 
-export interface LogEntry { id: number; type: LogType; text: string }
+export type LogType =
+  | 'plain'
+  | 'tool'
+  | 'success'
+  | 'error'
+  | 'warn'
+  | 'dim'
+  | 'heading'
+  | 'sep'
+  | 'user'
+  | 'reasoning';
 
-export interface Metrics {
-  calls: number;
-  total_tokens: number;
-  elapsed: number;
-  avg_context: number;
+export interface LogEntry {
+  id: number;
+  type: LogType;
+  text: string;
 }
 
-const METRICS_PREFIX = 'CM_METRICS:';
-
-export function parseMetrics(raw: string): Metrics | null {
-  const line = stripAnsi(raw).trim();
-  if (!line.startsWith(METRICS_PREFIX)) return null;
-  try { return JSON.parse(line.slice(METRICS_PREFIX.length)); } catch { return null; }
+export interface SessionStatusView {
+  id: string;
+  status: string;
+  taskN: number;
+  taskTotal: number;
+  tokens: number;
+  tokenBudget: number;
+  provider: string;
+  lastCheckpoint?: string;
 }
 
-export function classifyLine(raw: string): Omit<LogEntry, 'id'> {
-  const line = stripAnsi(raw).trim();
-  if (!line || line.startsWith(METRICS_PREFIX)) return { type: 'plain', text: '' };
-
-  // Section headers: ── CODER ──
-  if (/^──\s+[A-Z]/.test(line)) return { type: 'heading', text: line.replace(/^──\s+|\s+──$/g, '') };
-
-  // Separators: ─── or ───
-  if (/^[─━─]+$/.test(line)) return { type: 'sep', text: '' };
-
-  // Token accounting lines
-  if (/^\(tokens\)/.test(line)) return { type: 'dim', text: line };
-
-  // Success
-  if (/^[✓✔]|^Applied:|^Modified:|^Created:/.test(line)) return { type: 'success', text: line.replace(/^[✓✔]\s*/, '') };
-
-  // Errors
-  if (/^[✗✘]|^Error:/.test(line)) return { type: 'error', text: line.replace(/^[✗✘]\s*/, '') };
-
-  // Warnings
-  if (/^[⚠]|^Warning:/.test(line)) return { type: 'warn', text: line.replace(/^⚠\s*/, '') };
-
-  // Diff output (show as-is, distinct type)
-  if (/^(---|\+\+\+|@@|[-+] )/.test(line)) return { type: 'tool', text: line };
-
-  // Agent call arrows: → coder  (413 tokens)  /  ← coder  (1.2k tokens)
-  if (/^[→←]/.test(line)) return { type: 'tool', text: line };
-
-  // Tool/pipeline activity
-  if (/^(Found|Searching|Refreshing|Calling|Claude|Building|Expanding|Scoring|Simulating|Minimizing|Running|Applying|Low risk|Review|Patch|Auto-fixed|Step\s+\d)/.test(line)) return { type: 'tool', text: line };
-
-  return { type: 'plain', text: line };
+// Map a bus event to a renderable log line (or null to ignore).
+export function eventToLog(ev: CodeMasterEvent): Omit<LogEntry, 'id'> | null {
+  switch (ev.type) {
+    case 'log': {
+      const map: Record<string, LogType> = {
+        info: 'plain', warn: 'warn', error: 'error', success: 'success',
+        debug: 'dim', heading: 'heading', sep: 'sep',
+      };
+      return { type: map[ev.level] ?? 'plain', text: ev.message };
+    }
+    case 'worker.started':
+      return { type: 'tool', text: `→ Worker: ${ev.worker}${ev.detail ? ` — ${ev.detail}` : ''}` };
+    case 'worker.finished':
+      return { type: 'dim', text: `← Worker: ${ev.worker}${ev.detail ? ` — ${ev.detail}` : ''}` };
+    case 'task.started':
+      return { type: 'sep', text: '' };
+    case 'task.completed':
+      return { type: 'success', text: `Task completed (${(ev.ms / 1000).toFixed(1)}s, ${ev.tokens.toLocaleString()} tokens)` };
+    case 'task.failed':
+      return { type: 'error', text: `Task failed: ${ev.reason}` };
+    case 'reasoning.new':
+      return { type: 'reasoning', text: `${ev.reasoning_type} recorded` };
+    case 'provider.invoked':
+      return { type: 'tool', text: `Provider: ${ev.provider_id} invoked` };
+    case 'provider.response':
+      return { type: 'dim', text: `Provider: response (${ev.tokens.toLocaleString()} tokens)` };
+    case 'provider.switched':
+      return { type: 'warn', text: `Provider switched: ${ev.from} → ${ev.to}` };
+    case 'wiki.created':
+      return { type: 'dim', text: `Wiki created: ${ev.key}` };
+    case 'wiki.updated':
+      return { type: 'dim', text: `Wiki updated: ${ev.key}` };
+    case 'wiki.conflict':
+      return { type: 'warn', text: `Wiki conflict queued: ${ev.key}` };
+    case 'checkpoint.created':
+      return { type: 'dim', text: `Checkpoint created (${ev.trigger})` };
+    case 'checkpoint.restored':
+      return { type: 'success', text: `Checkpoint restored: ${ev.id}` };
+    case 'session.created':
+    case 'session.started':
+    case 'session.paused':
+    case 'session.resumed':
+    case 'session.completed':
+      return null; // reflected in the status bar, not the log
+    default:
+      return null;
+  }
 }
-
