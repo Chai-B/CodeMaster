@@ -1,21 +1,19 @@
 node_modules/
-__pycache__/
-*.pyc
-*.pyo
 .DS_Store
-*.egg-info/
 dist/
 build/
 .env
 .env.*
 
-# Generated at runtime
-repo_map.json
-activity_history.json
-logs/
-core/logs/
+# Per-repository CodeMaster index (spec §19.3)
+.codemaster/
 
 # IDE
 .vscode/
 .idea/
 *.swp
+
+# Leaked E2E temp output (test writes a relative "var/folders/..." path)
+var/
+# Superseded by bench/mf_e2e.ts
+scratch_mf_e2e.mjs

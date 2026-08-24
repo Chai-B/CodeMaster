@@ -1,244 +1,111 @@
 ```
   ▄████▄
-  ██        CodeMaster
-  ▀████▀    AI coding assistant for your terminal
+  ██        CodeMaster Next
+  ▀████▀    A persistent reasoning operating system for AI software engineering
 ```
 
-> Run from any repo. Describe what you want. Get a patch.
+> The model is a replaceable CPU. CodeMaster Next is the OS beneath it.
 
-Codemaster is a terminal interface that turns plain-English tasks into code changes. You type what you want — it finds the relevant files, generates a diff, validates it, and asks before applying anything. Powered by [Claude Code](https://claude.ai/code).
+CodeMaster Next treats LLMs as interchangeable execution engines and supplies the persistent layer they lack: structured session state, a Karpathy-style knowledge wiki, deterministic repository intelligence, reasoning that is stored once and replayed forever, and provider-agnostic checkpointing.
 
-It's designed to be fast and cheap: simple fixes use a single AI call, complex tasks get broken into steps automatically. Nothing runs without your approval.
+See [SPEC.md](SPEC.md) for the full design. This README is the operational summary.
+
+---
+
+## The five hard rules (spec §2.1)
+
+1. **Never ask an LLM something a script can answer** — tree-sitter/regex extraction, git, ripgrep, dependency graphs.
+2. **Never ask the same reasoning twice** — every decision is a structured object, persisted and replayed.
+3. **Never store chats. Store state** — sessions, tasks, reasoning, and a wiki; never transcripts.
+4. **Never send an entire repository to a model** — a deterministic file selector ships ~10–30 files.
+5. **Never allow context drift** — every prompt is compiled from structured state, not history.
+
+---
+
+## Architecture
+
+```
+Intent Parser → Static Analysis ┐
+                                 ├→ Context Compiler → Budget Scheduler → Provider Adapter (LLM)
+            Wiki / Memory Layer ┘                                              │
+                                                                               ▼
+                        Reasoning Extractor ← IR Parser ← Structured Output (IR)
+                                 │
+                                 ▼
+                  Wiki Updater · Checkpointer · Token Ledger  → Persistent Storage
+```
+
+| Layer | Module | LLM? |
+|---|---|---|
+| Static analysis (tree-sitter, LSP, dep graph, call graph, embeddings, coverage, repo map, file watcher) | `src/analysis/` | never |
+| Repository Knowledge Graph (typed nodes/edges + query engine) | `src/rkg/` | never |
+| Storage (SQLite via `node:sqlite`) | `src/storage/` | never |
+| Memory (long-term / session / reasoning, decay, compression, cold storage) | `src/storage/`, `src/memory/` | never |
+| Wiki (markdown + versioning + conflict detection + bootstrap) | `src/wiki/` | bootstrap only |
+| Context compiler + budget scheduler | `src/context/` | never |
+| Event bus | `src/events/` | never |
+| Providers (Anthropic, OpenAI, Gemini) + accounts + encrypted credentials | `src/providers/` | — |
+| Worker framework + scheduler | `src/workers/base.ts`, `scheduler.ts` | — |
+| IR parser, patch applier, intent parser | `src/workers/` | never |
+| Planner, TaskExecutor, Verifier, ModuleSummarizer, MemoryCompressor, ConflictResolver | `src/workers/` | yes |
+| Checkpointer + crash recovery | `src/workers/checkpointer.ts`, `src/daemon/recovery.ts` | never |
+| Token analytics + budget enforcement | `src/analysis/tokenAnalytics.ts`, `src/context/` | never |
+| Plugin system | `src/plugins/` | — |
+| Session lifecycle | `src/daemon/sessionManager.ts` | — |
+| Command router | `src/commands/` | never |
+| TUI (Ink/React) | `src/index.tsx`, `src/components/` | — |
 
 ---
 
 ## Install
 
-**One command:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Chai-B/CodeMaster/main/install.sh | bash
-```
-
-Or clone and install manually:
-
 ```bash
 git clone https://github.com/Chai-B/CodeMaster
-cd codemaster
-bash install.sh
+cd CodeMaster
+npm install
+npm start          # or: node bin/codemaster.js
 ```
 
-**Requirements:**
-- Python 3.10+
-- Node.js 18+
-- [Claude Code CLI](https://claude.ai/code) — `claude` must be in your PATH
-- Optional: `ruff`, `flake8`, `isort` for static analysis
+**Requirements:** Node.js 22+ (uses the built-in `node:sqlite`). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and/or `GEMINI_API_KEY` to enable planning/execution. Optional: `ripgrep` for faster search (falls back to a built-in scanner); `pyright`/`typescript-language-server` for LSP queries (degrades gracefully if absent). The local embedding model (`Xenova/all-MiniLM-L6-v2`) downloads once on first `/reindex`, then runs offline.
+
+Run `npm test` for the suite, `npm run typecheck` for types.
 
 ---
 
 ## Usage
 
-Go to any project and run:
+Run `codemaster` (or `npm start`) inside any repository. Type an objective to start a session, or use a command.
 
-```bash
-codemaster
+```
+/new <objective>     create a session, index the repo, and plan
+/plan                (re)generate the execution plan
+/tasks               list tasks
+/run · /runall       execute the next / all pending tasks
+/context             show the compiled prompt (no LLM call)
+/pause · /resume     checkpoint and restore sessions
+/wiki · /reasoning   browse persisted knowledge
+/tokens · /stats     token accounting
+/help                full command catalog (spec §17.2)
 ```
 
-That's it. The TUI opens in your terminal, already pointed at your project.
+Deterministic commands (`/reindex`, `/graph`, `/wiki`, `/tokens`, …) work without an API key. Only `/plan`, `/run`, and `/runall` invoke the model.
 
 ---
 
-## The TUI
-
-**Main screen:**
+## Data layout (spec §19.3)
 
 ```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│  CodeMaster  │  Tips                                                         │
-│              │  ──────────────────────────────────────────                   │
-│  ▄████▄      │  Type a task to run the pipeline                              │
-│  ██          │  /help for commands                                            │
-│  ▀████▀      │                                                               │
-│              │  Recent                                                        │
-│  ~/myproject │  ──────────────────────────────────────────                   │
-│              │  03/13 10:42  fix divide by zero in calculator                │
-╰──────────────────────────────────────────────────────────────────────────────╯
- files 3  fns 3  debug 2  claude claude
-────────────────────────────────────────────────────────────────────────────────
-❯ Type a task or /help
-────────────────────────────────────────────────────────────────────────────────
- ready  ·  Ctrl+Q quit  ·  Ctrl+L clear               codemaster v1.0.0  ·  myproject
+~/.codemaster/
+├── codemaster.db        # sessions, tasks, reasoning, memory, wiki, tokens, checkpoints
+├── config.yaml          # global config
+├── wiki/                # markdown mirror of the wiki, with .versions/
+└── sessions/<id>/checkpoints/<id>/   # self-sufficient snapshots
+
+<repo>/.codemaster/index.db           # per-repo symbol / file / module index (gitignored)
 ```
-
-**While a task runs:**
-
-```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│  CodeMaster  │  ...                                                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
- files 3  fns 3  debug 2  claude claude  ┄  calls 2  tokens 1,842  elapsed 4.2s
-────────────────────────────────────────────────────────────────────────────────
-  ── TASK ──
-  fix divide by zero in calculate_average  (BUG_FIX)
-  Searching repository...
-  Found 1 file(s): utils/math.py
-  (tokens) sending ~380 tokens (coder.md)
-  --- utils/math.py
-  +++ utils/math.py
-  @@ -12,7 +12,8 @@
-   def calculate_average(nums):
-  -    return sum(nums) / len(nums)
-  +    if not nums:
-  +        return 0
-  +    return sum(nums) / len(nums)
-
-  ── RISK ──
-  Score: 1  Level: LOW
-  · small change (3 lines)
-
-  ✓ Modified: utils/math.py
-  ━━
-
-  ⠿ Running…
-────────────────────────────────────────────────────────────────────────────────
-❯
-────────────────────────────────────────────────────────────────────────────────
- ►► running  ·  Ctrl+C interrupt                       codemaster v1.0.0  ·  myproject
-```
-
-**Config editor** (`/config`):
-
-```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│  Config Editor  —  ↑↓ navigate  ·  Enter edit  ·  Ctrl+S save  ·  Esc cancel│
-│  ────────────────────────────────────────────────────────────                │
-│  Max files per context           3                                           │
-│❯ Max functions per file          3                                           │
-│  Max debug cycles                2                                           │
-│  Claude CLI command              claude                                      │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
----
-
-## Commands
-
-| Command | What it does |
-|---------|-------------|
-| `/fix` | Fix a bug |
-| `/refactor` | Refactor code |
-| `/test` | Write or fix tests |
-| `/explain` | Explain what code does |
-| `/config` | Edit settings in TUI |
-| `/agents` | Open agent prompts in `$EDITOR` |
-| `/clear` | Clear output + reset repo map |
-| `/cc` | Hand off to Claude Code directly |
-| `/help` | Show all commands |
-| `/quit` | Exit |
-
-**Keyboard shortcuts:**
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+Q` | Quit |
-| `Ctrl+L` | Clear screen |
-| `Ctrl+C` | Interrupt running task |
-| `↑↓` | Navigate autocomplete |
-| `Enter` | Submit / select |
-
-You can also prefix anything with `@claude` to pass it directly to Claude without the pipeline:
-
-```
-@claude what does the auth middleware do?
-```
-
----
-
-## Configuration
-
-Settings are stored in `config.json` inside the install directory (`~/.codemaster/config.json`). Edit them in the TUI with `/config` or directly in the file:
-
-```json
-{
-  "max_files": 3,
-  "max_fns": 3,
-  "max_debug": 2,
-  "claude_cmd": "claude"
-}
-```
-
-| Key | What it controls |
-|-----|-----------------|
-| `max_files` | How many files are sent to the coder |
-| `max_fns` | Max functions extracted per file |
-| `max_debug` | Max review→patch cycles before asking you |
-| `claude_cmd` | The Claude CLI command (`claude` by default) |
-
-Override any setting with an environment variable: `CM_MAX_FILES`, `CM_MAX_FNS`, `CM_MAX_DEBUG`, `CM_CLAUDE_CMD`.
-
----
-
-## Agent Prompts
-
-Codemaster uses four agents internally. You can edit their behavior with `/agents`:
-
-| Agent | Role |
-|-------|------|
-| `coder.md` | Generates the diff |
-| `reviewer.md` | Reviews the diff for bugs and security issues |
-| `patcher.md` | Fixes issues found by the reviewer |
-| `planner.md` | Breaks complex tasks into steps |
-
-Each is a plain markdown system prompt. Edit freely.
-
----
-
-## Logs
-
-Every run is logged to `logs/` in the install directory:
-
-| File | Contents |
-|------|----------|
-| `codemaster.log` | Human-readable event log |
-| `calls.jsonl` | Per-call token usage (JSON) |
-| `last_patch.diff` | The last generated patch |
-
----
-
-## Tips
-
-- **Be specific.** The more precise the task, the better the search.
-  - Correct- `fix divide by zero in calculate_average in utils/math.py`
-  - Incorrect- `fix the math`
-
-- **Simple tasks are cheap.** A bug fix uses 1 LLM call. Only complex tasks trigger the planner.
-
-- **You always approve.** No changes are applied until you confirm. Patches are shown before application.
-
-- **Static analysis is optional.** Install `ruff` and `flake8` for lint checking on changed files only.
-
----
-
-## Troubleshooting
-
-**`claude: command not found`**
-Install the Claude Code CLI: https://claude.ai/code
-
-**`No relevant files found`**
-Be more specific in your task, or run from inside the project directory.
-
-**`Patch has syntax errors`**
-The diff is shown and you can choose not to apply it. The raw patch is in `logs/last_patch.diff`.
 
 ---
 
 ## Status
 
-Work in progress — core pipeline is stable and functional. Planned improvements:
-- Smarter repo map caching
-- Session replay from logs
-
-Contributions welcome.
-
----
-
+Implements the full SPEC.md architecture: tree-sitter parsing, LSP, dependency + call graphs, ML embedding index, coverage, incremental file watching, the Repository Knowledge Graph, four memory stores with decay/compression/cold-storage, the Karpathy wiki with bootstrap + versioning, deterministic context compilation with budget enforcement, three provider adapters (Anthropic/OpenAI/Gemini) with encrypted credentials and lossless handoff, the worker framework + scheduler, IR pipeline, reasoning persistence/replay, checkpointing + crash recovery, token analytics, the plugin system, and the complete command surface — verified by an automated test suite.
