@@ -8,6 +8,7 @@
 import { executeTask, type ExecuteResult } from './taskExecutor.js';
 import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
+import { throwIfCancelled } from '../util/cancel.js';
 import { Failures } from '../storage/reasoning.js';
 import { id, now } from '../util/id.js';
 import type { ProviderManager } from '../providers/manager.js';
@@ -53,6 +54,7 @@ export async function solveWithVerification(
   const start = Learning.startTier(session.repository.path, task.type);
 
   for (let i = 0; i < Math.max(1, maxIters); i++) {
+    throwIfCancelled();
     iterations = i + 1;
     bus.emit({ type: 'log', level: 'info', message: `Solver iteration ${iterations}/${maxIters}…` });
     // The context budget climbs only after a pass has actually failed at the

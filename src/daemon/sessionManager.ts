@@ -25,6 +25,7 @@ import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import { spawnSync } from 'child_process';
 import { loadConfig, setActiveRepo, type Config } from '../config.js';
+import { Cancelled, isCancelled } from '../util/cancel.js';
 import type { Session, Task, TokenBudget } from '../types/index.js';
 
 /** Files changed in the working tree (staged + unstaged), for verify test discovery. */
@@ -235,6 +236,7 @@ export class SessionManager {
       try {
         result = (await solveWithVerification(session, next, this.manager, this.cfg, bv.verify, this.cfg.verify.maxIters)).last;
       } catch (e) {
+        if (e instanceof Cancelled) throw e;
         bus.emit({ type: 'log', level: 'warn', message: `Behavioral verify infra error (non-blocking): ${String(e).slice(0, 120)}` });
         result = await executeTask(session, next, this.manager, this.cfg);
       }
@@ -283,6 +285,15 @@ export class SessionManager {
       await createCheckpoint(session, 'task-complete');
       return next;
     } catch (e) {
+      // A cancelled task was not attempted to completion and did not fail on its
+      // merits — it goes back on the queue so /run picks it up again.
+      if (e instanceof Cancelled) {
+        next.status = 'pending';
+        Tasks.update(next);
+        this.persist(session);
+        bus.emit({ type: 'log', level: 'warn', message: `Cancelled: ${next.title} returned to the queue.` });
+        throw e;
+      }
       next.status = 'failed';
       next.failed_at = now();
       next.failure_reason = String(e);
@@ -300,6 +311,7 @@ export class SessionManager {
     const limit = Math.max(Tasks.forSession(session.id).length * 2, 20);
     let ran = 0;
     while (ran < limit) {
+      if (isCancelled()) return;
       const t = await this.runNextTask(session);
       if (!t) break;
       ran += 1;

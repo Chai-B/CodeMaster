@@ -1,6 +1,7 @@
 // Provider + Account manager and selector (spec §13.2-13.3, §13.6).
 
 import { now, id } from '../util/id.js';
+import { throwIfCancelled } from '../util/cancel.js';
 import { AnthropicAdapter, claudeCliAvailable } from './anthropic.js';
 import { codexCliAvailable } from './codex.js';
 import { OpenAIAdapter } from './openai.js';
@@ -253,6 +254,8 @@ export class ProviderManager {
     const tried: string[] = [];
 
     for (const model of this.failoverModelOrder()) {
+      // A cancelled run must not walk on to the next vendor.
+      throwIfCancelled();
       const sel = this.select(model, requiredTokens, taskType);
       if (!this.available(sel.account)) continue;
       const pid = sel.adapter.provider_id;
