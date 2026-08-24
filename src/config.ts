@@ -182,7 +182,7 @@ export const DEFAULT_CONFIG: Config = {
     },
     openai_codex: {
       models: [
-        { id: 'codex-2', context_size: 32_000, cost_per_1m_input: 1.5, cost_per_1m_output: 6 },
+        { id: 'gpt-5-codex', context_size: 200_000, cost_per_1m_input: 1.25, cost_per_1m_output: 10 },
       ],
     },
   },
