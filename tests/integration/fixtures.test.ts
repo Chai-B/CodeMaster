@@ -58,9 +58,12 @@ test('file selector resolves a late-mentioned identifier', async () => {
   assert.ok(sel.some((f) => /server\.ts$/.test(f.path)), `Router should pull api/server.ts, got ${sel.map((f) => f.path)}`);
 });
 
-// Gap #12 regression: .tsx files must be parsed with the tsx grammar, not the
-// plain typescript grammar (which cannot read JSX and silently falls back to
-// the regex extractor, producing an empty call graph).
+// Gap #12 regression. The reported cause (the typescript grammar cannot read
+// JSX) was wrong: it error-recovers around JSX and yields the same symbols and
+// calls as the tsx grammar. The real defect was in resolveImport, which mapped
+// `.js` to `.ts` only, so every `import ... from './Button'` in a React tree
+// resolved to nothing and the dependency edge was silently dropped. The
+// getDependencies assertion below is what catches it.
 test('react-tsx: .tsx files produce symbols and call edges', () => {
   const api = new StaticAnalysisAPI(path.join(FIXTURES, 'react-tsx'));
 

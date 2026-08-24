@@ -287,11 +287,34 @@ export class SessionManager {
   }
 
   async runAll(session: Session): Promise<void> {
-    let guard = 0;
-    while (guard++ < 100) {
+    // Bound by the real plan size (with headroom for tasks added mid-run)
+    // rather than a magic 100 that silently truncated longer plans.
+    const limit = Math.max(Tasks.forSession(session.id).length * 2, 20);
+    let ran = 0;
+    while (ran < limit) {
       const t = await this.runNextTask(session);
       if (!t) break;
+      ran += 1;
     }
+
+    const tasks = Tasks.forSession(session.id);
+    const unrun = tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress');
+    if (unrun.length > 0) {
+      bus.emit({
+        type: 'log',
+        level: 'warn',
+        message:
+          ran >= limit
+            ? `Stopped after ${ran} task runs (iteration limit); ${unrun.length} task(s) unrun.`
+            : `${unrun.length} task(s) unrun — blocked by unmet dependencies.`,
+      });
+      return;
+    }
+
+    // The plan is exhausted, so close the session. Without this, `complete()`
+    // was reachable only from `/complete`: no session ever left `active` and
+    // the long-term memory tier never received a single row.
+    await this.complete(session);
   }
 
   async pause(session: Session): Promise<void> {
@@ -361,5 +384,26 @@ export class SessionManager {
   /** Detect (don't auto-mutate) incomplete sessions at startup (spec §14.5). */
   async recoverOnStartup(): Promise<number> {
     return findIncompleteSessions().length;
+  }
+
+  /**
+   * Close out sessions abandoned by a previous process — a crash or Ctrl-C left
+   * them `active` forever, so their reasoning never reached long-term memory.
+   * A session is stale when every task has reached a terminal state and nothing
+   * has touched it for `olderThanHours`. Returns the ids that were completed.
+   */
+  async reapStaleSessions(olderThanHours = 24): Promise<string[]> {
+    const cutoff = Date.now() - olderThanHours * 3_600_000;
+    const reaped: string[] = [];
+    for (const s of findIncompleteSessions()) {
+      if (s.id === this.current?.id) continue;
+      if (Date.parse(s.updated_at) > cutoff) continue;
+      const tasks = Tasks.forSession(s.id);
+      if (tasks.length === 0) continue;
+      if (tasks.some((t) => t.status === 'pending' || t.status === 'in_progress')) continue;
+      await this.complete(s);
+      reaped.push(s.id);
+    }
+    return reaped;
   }
 }
