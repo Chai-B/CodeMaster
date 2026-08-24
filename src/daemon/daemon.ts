@@ -39,8 +39,8 @@ export class Daemon {
   }
 
   /** Start all subsystems. Returns the count of incomplete sessions detected. */
-  async start(): Promise<{ incomplete: number; plugins: number }> {
-    if (this.started) return { incomplete: 0, plugins: 0 };
+  async start(): Promise<{ incomplete: number; plugins: number; reaped: number }> {
+    if (this.started) return { incomplete: 0, plugins: 0, reaped: 0 };
     this.started = true;
 
     // event-bus is always live (module singleton).
@@ -63,9 +63,12 @@ export class Daemon {
     this.status['provider-manager'] = 'running';
 
     const plugins = (await loadPlugins().catch(() => [])).length;
+    // Sessions abandoned by an earlier crash are closed out first, so their
+    // reasoning reaches long-term memory instead of sitting `active` forever.
+    const reaped = (await this.sm.reapStaleSessions().catch(() => [])).length;
     const incomplete = await this.sm.recoverOnStartup().catch(() => 0);
     bus.emit({ type: 'log', level: 'debug', message: 'Daemon subsystems started.' });
-    return { incomplete, plugins };
+    return { incomplete, plugins, reaped };
   }
 
   async stop(): Promise<void> {

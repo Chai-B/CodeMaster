@@ -16,6 +16,8 @@ const { processIR } = await import('../../src/workers/irProcessor.js');
 const { Sessions, Tasks } = await import('../../src/storage/sessions.js');
 const { Reasoning } = await import('../../src/storage/reasoning.js');
 const { createCheckpoint, restoreCheckpoint } = await import('../../src/workers/checkpointer.js');
+const { LongTerm } = await import('../../src/storage/memory.js');
+const { id, now } = await import('../../src/util/id.js');
 
 after(() => {
   fs.rmSync(TMP, { recursive: true, force: true });
@@ -66,4 +68,34 @@ test('IR processing applies new files, persists reasoning, and checkpoints resto
   const restored = restoreCheckpoint(cp.id);
   assert.ok(restored);
   assert.equal(restored!.id, session.id);
+});
+
+// P0 regression: `complete()` was reachable only from the /complete command, so
+// across 53 recorded sessions none ever left `active` and long_term_memory
+// stayed empty. runAll must close an exhausted plan, and closing must promote
+// high-importance decisions into the memory tier.
+test('an exhausted plan auto-completes and promotes decisions to long-term memory', async () => {
+  const sm = new SessionManager();
+  const session = await sm.createSession('memory tier check', process.cwd());
+
+  Reasoning.insert({
+    id: id('reason'), session_id: session.id, task_id: 'task-none',
+    type: 'decision', summary: 'store state per repository, not globally',
+    detail: 'a shared database interleaves knowledge from unrelated repos',
+    question: 'where should session state live?',
+    answer: 'one state database per repository',
+    alternatives_rejected: [], implications: [], reversibility: 'medium',
+    evidence: [], confidence: 0.9, importance: 0.9,
+    produced_by: { provider_id: 'anthropic', model_id: 'claude-sonnet-4-6' },
+    produced_at: now(), affected_files: [], affected_modules: [], tags: [],
+    wiki_keys: [], permanent: true, reference_count: 0,
+  });
+
+  const before = LongTerm.byNamespace('architecture').length;
+  await sm.runAll(session); // no tasks -> plan already exhausted
+
+  assert.equal(Sessions.get(session.id)!.status, 'completed');
+  const after = LongTerm.byNamespace('architecture');
+  assert.ok(after.length > before, `expected a long-term memory row, got ${after.length}`);
+  assert.ok(after.some((m) => (m.value_markdown ?? '').includes('per repository')));
 });
