@@ -233,7 +233,18 @@ function App() {
 
 // Non-interactive mode when arguments are present; the TUI otherwise.
 const argv = process.argv.slice(2);
-if (argv.length > 0) {
+// `codemaster mcp` is a stdio server: it must never render a TUI, and nothing
+// but JSON-RPC may reach stdout.
+const repoFlag = argv.indexOf('--repo');
+const repoArg = repoFlag >= 0 ? (argv[repoFlag + 1] ?? process.cwd()) : process.cwd();
+if (argv[0] === 'mcp') {
+  const { runMcpServer } = await import('./mcp.js');
+  await runMcpServer(repoArg);
+} else if (argv[0] === 'proxy') {
+  const portFlag = argv.indexOf('--port');
+  const { runProxy } = await import('./proxy.js');
+  await runProxy(repoArg, portFlag >= 0 ? Number(argv[portFlag + 1]) || 7433 : 7433);
+} else if (argv.length > 0) {
   const { runHeadless } = await import('./commands/headless.js');
   process.exitCode = await runHeadless(argv);
 } else {
