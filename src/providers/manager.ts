@@ -52,6 +52,22 @@ export class ProviderManager {
     }
   }
 
+  /**
+   * True when some path to an LLM exists: an env key, a stored credential, or
+   * the authenticated `claude` CLI (subscription mode). Commands gate on this
+   * rather than on ANTHROPIC_API_KEY, which locked out OpenAI/Gemini users and
+   * the `claude setup-token` users the startup banner invites.
+   */
+  hasAnyProvider(): boolean {
+    const env = [
+      'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+      'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+    ];
+    if (env.some((k) => process.env[k])) return true;
+    if (CredentialManager.list().length > 0) return true;
+    return claudeCliAvailable();
+  }
+
   private makeAccount(providerId: string, alias: string, credRef: string): Account {
     const ctx = this.adapters.get(providerId)?.capabilities.max_context_tokens ?? 200_000;
     return {

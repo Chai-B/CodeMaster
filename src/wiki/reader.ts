@@ -4,14 +4,19 @@ import { Wiki } from '../storage/wiki.js';
 import type { WikiSection, TaskType } from '../types/index.js';
 
 // Namespaces most relevant per task type.
+// Only namespaces some writer actually produces: bootstrap emits `architecture`,
+// `modules`, `conventions` and `external_docs`; everything else (LLM wiki
+// updates, /wiki) is normalized into `notes` by updater.normalizeKey. The old
+// table asked for `decisions`, `roadmap` and `failures`, which no writer has
+// ever created — those live in the reasoning and failure stores, not the wiki.
 const NAMESPACE_PRIORITY: Record<TaskType, string[]> = {
-  plan: ['architecture', 'decisions', 'roadmap', 'conventions'],
+  plan: ['architecture', 'modules', 'conventions', 'notes'],
   implement: ['conventions', 'architecture', 'modules'],
   test: ['conventions', 'modules'],
-  review: ['conventions', 'decisions', 'architecture'],
-  verify: ['conventions', 'decisions'],
-  refactor: ['architecture', 'conventions', 'decisions'],
-  debug: ['failures', 'architecture', 'modules'],
+  review: ['conventions', 'architecture', 'notes'],
+  verify: ['conventions', 'architecture'],
+  refactor: ['architecture', 'conventions', 'modules'],
+  debug: ['modules', 'architecture', 'notes'],
 };
 
 export function readRelevantSections(
