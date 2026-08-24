@@ -1,0 +1,41 @@
+{
+  "task": "relative-time",
+  "raw": {
+    "text": "```typescript\nexport function formatRelativeTime(date: Date | string): string {\n  const d = typeof date === \"string\" ? new Date(date) : date;\n  const seconds = Math.floor((Date.now() - d.getTime()) / 1000);\n\n  if (seconds < 60) return \"just now\";\n  if (seconds < 3600) {\n    const m = Math.floor(seconds / 60);\n    return `${m} minute${m === 1 ? \"\" : \"s\"} ago`;\n  }\n  if (seconds < 86400) {\n    const h = Math.floor(seconds / 3600);\n    return `${h} hour${h === 1 ? \"\" : \"s\"} ago`;\n  }\n  if (seconds < 2592000) {\n    const d = Math.floor(seconds / 86400);\n    return `${d} day${d === 1 ? \"\" : \"s\"} ago`;\n  }\n  if (seconds < 31536000) {\n    const mo = Math.floor(seconds / 2592000);\n    return `${mo} month${mo === 1 ? \"\" : \"s\"} ago`;\n  }\n  const y = Math.floor(seconds / 31536000);\n  return `${y} year${y === 1 ? \"\" : \"s\"} ago`;\n}\n```\n\nHandles: `\"just now\"` (< 60s), minutes, hours, days, months, and years — each with correct singular/plural. Accepts both `Date` objects and ISO strings.",
+    "input": 47046,
+    "output": 377,
+    "total": 47423,
+    "ms": 8014,
+    "turns": 1
+  },
+  "cm": {
+    "code": "The `formatRelativeTime` utility already exists at `my-app/lib/format-relative-time.ts` with correct implementation; no changes needed.",
+    "compiledTokens": 13444,
+    "components": [
+      "objective",
+      "current_task",
+      "wiki_sections",
+      "architecture",
+      "repository_map",
+      "prior_reasoning",
+      "conventions",
+      "recent_changes",
+      "relevant_files",
+      "instructions"
+    ],
+    "input": 50580,
+    "output": 561,
+    "total": 51141,
+    "ms": 19304,
+    "hasFiles": 0,
+    "hasPatches": 0
+  },
+  "quality": {
+    "aScore": 8,
+    "bScore": 1,
+    "winner": "RawClaude",
+    "note": "Solution 1 is a complete, correct, and clean implementation; Solution 2 is a non-answer that provides no verifiable code and cannot be evaluated."
+  },
+  "floorLean": 32888,
+  "floorAgentic": 46993
+}

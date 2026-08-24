@@ -1,0 +1,41 @@
+{
+  "task": "debounce-hook",
+  "raw": {
+    "text": "```typescript\n// my-app/hooks/useDebounce.ts\nimport { useState, useEffect } from \"react\";\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState<T>(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delayMs);\n    return () => clearTimeout(timer);\n  }, [value, delayMs]);\n\n  return debouncedValue;\n}\n```",
+    "input": 47053,
+    "output": 138,
+    "total": 47191,
+    "ms": 9732,
+    "turns": 1
+  },
+  "cm": {
+    "code": "The `useDebounce` hook already exists at `my-app/hooks/use-debounce.ts` with the correct typed signature, `useState`/`useEffect` implementation, timer cleanup, and `\"use client\"` directive — no changes needed.",
+    "compiledTokens": 15125,
+    "components": [
+      "objective",
+      "current_task",
+      "wiki_sections",
+      "architecture",
+      "repository_map",
+      "prior_reasoning",
+      "conventions",
+      "recent_changes",
+      "relevant_files",
+      "instructions"
+    ],
+    "input": 52624,
+    "output": 465,
+    "total": 53089,
+    "ms": 14598,
+    "hasFiles": 0,
+    "hasPatches": 0
+  },
+  "quality": {
+    "aScore": 9,
+    "bScore": 2,
+    "winner": "RawClaude",
+    "note": "Solution 1 is a correct, clean, complete implementation; Solution 2 provides no code and makes an unverifiable claim about a pre-existing file."
+  },
+  "floorLean": 32888,
+  "floorAgentic": 46993
+}

@@ -1,0 +1,27 @@
+{
+  "task": "debounce-hook",
+  "raw": {
+    "text": "Here's the hook, matching the existing style in `useLoading.ts`:\n\n```tsx\n// my-app/hooks/useDebounce.ts\nimport { useEffect, useState } from \"react\";\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => {\n      setDebouncedValue(value);\n    }, delayMs);\n\n    return () => {\n      clearTimeout(timer);\n    };\n  }, [value, delayMs]);\n\n  return debouncedValue;\n}\n```\n\nSave it to `my-app/hooks/useDebounce.ts` when you're ready — I haven't modified any files.",
+    "input_tokens": 136177,
+    "output_tokens": 341,
+    "total_tokens": 136518,
+    "ms": 10393,
+    "turns": 2
+  },
+  "cm": {
+    "text": "\"use client\"\n\nimport { useEffect, useState } from \"react\"\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value)\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delayMs)\n    return () => clearTimeout(timer)\n  }, [value, delayMs])\n\n  return debouncedValue\n}",
+    "code": "\"use client\"\n\nimport { useEffect, useState } from \"react\"\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value)\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delayMs)\n    return () => clearTimeout(timer)\n  }, [value, delayMs])\n\n  return debouncedValue\n}",
+    "compiledTokens": 8090,
+    "input_tokens": 62760,
+    "output_tokens": 693,
+    "total_tokens": 63453,
+    "ms": 10378,
+    "turns": 1
+  },
+  "quality": {
+    "aScore": 9,
+    "bScore": 8,
+    "winner": "RawClaude",
+    "note": "Both implementations are functionally identical and correct, but Solution 1 also confirms placement and matches repo style without unilaterally adding a Next.js directive."
+  }
+}

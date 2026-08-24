@@ -1,0 +1,186 @@
+[
+  {
+    "task": "slugify",
+    "raw": {
+      "text": "```typescript\nfunction slugify(text: string): string {\n  return text\n    .toLowerCase()\n    .trim()\n    .replace(/[^a-z0-9]+/g, '-')\n    .replace(/^-+|-+$/g, '');\n}\n```",
+      "input": 47064,
+      "output": 68,
+      "total": 47132,
+      "ms": 5864,
+      "turns": 1
+    },
+    "cm": {
+      "code": "// my-app/lib/utils.ts\nimport { clsx, type ClassValue } from \"clsx\"\nimport { twMerge } from \"tailwind-merge\"\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs))\n}\n\nexport function slugify(text: string): string {\n  return text\n    .trim()\n    .toLowerCase()\n    .replace(/[^a-z0-9]+/g, \"-\")\n    .replace(/^-+|-+$/g, \"\")\n}",
+      "compiledTokens": 11902,
+      "components": [
+        "objective",
+        "current_task",
+        "wiki_sections",
+        "architecture",
+        "repository_map",
+        "prior_reasoning",
+        "conventions",
+        "recent_changes",
+        "relevant_files",
+        "instructions"
+      ],
+      "input": 48705,
+      "output": 661,
+      "total": 49366,
+      "ms": 21142,
+      "hasFiles": 1,
+      "hasPatches": 0
+    },
+    "quality": {
+      "aScore": 7,
+      "bScore": 9,
+      "winner": "CodeMaster",
+      "note": "Solution 2 wins by showing the full file context with proper exports and existing code preserved, making it a complete and immediately usable diff; Solution 1 is functionally equivalent but is a bare snippet with no export keyword or file context."
+    },
+    "floorLean": 39395,
+    "floorAgentic": 46993
+  },
+  {
+    "task": "useMediaQuery",
+    "raw": {
+      "text": "```typescript\n// my-app/hooks/useMediaQuery.ts\nimport { useEffect, useState } from \"react\";\n\nexport function useMediaQuery(query: string): boolean {\n  const [matches, setMatches] = useState(false);\n\n  useEffect(() => {\n    const media = window.matchMedia(query);\n    setMatches(media.matches);\n\n    const listener = (e: MediaQueryListEvent) => setMatches(e.matches);\n    media.addEventListener(\"change\", listener);\n    return () => media.removeEventListener(\"change\", listener);\n  }, [query]);\n\n  return matches;\n}\n```\n\nSSR-safe because `useState(false)` is the server-side default and `window.matchMedia` is only called inside `useEffect` (client-only). The listener is cleaned up via the returned teardown function, and re-registers whenever `query` changes.",
+      "input": 47050,
+      "output": 209,
+      "total": 47259,
+      "ms": 8761,
+      "turns": 1
+    },
+    "cm": {
+      "code": "// my-app/hooks/use-media-query.ts\n\"use client\"\n\nimport { useEffect, useState } from \"react\"\n\nexport function useMediaQuery(query: string): boolean {\n  const [matches, setMatches] = useState(false)\n\n  useEffect(() => {\n    const mql = window.matchMedia(query)\n    setMatches(mql.matches)\n\n    function onChange(e: MediaQueryListEvent) {\n      setMatches(e.matches)\n    }\n\n    mql.addEventListener(\"change\", onChange)\n    return () => mql.removeEventListener(\"change\", onChange)\n  }, [query])\n\n  return matches\n}",
+      "compiledTokens": 9606,
+      "components": [
+        "objective",
+        "current_task",
+        "wiki_sections",
+        "architecture",
+        "repository_map",
+        "prior_reasoning",
+        "conventions",
+        "recent_changes",
+        "relevant_files",
+        "instructions"
+      ],
+      "input": 45376,
+      "output": 896,
+      "total": 46272,
+      "ms": 21240,
+      "hasFiles": 1,
+      "hasPatches": 0
+    },
+    "quality": {
+      "aScore": 7,
+      "bScore": 8,
+      "winner": "CodeMaster",
+      "note": "Solution 1 adds the necessary 'use client' directive for Next.js SSR safety, which is the only meaningful differentiator; both are otherwise equivalent in correctness, cleanup, and typing."
+    },
+    "floorLean": 39395,
+    "floorAgentic": 46993
+  },
+  {
+    "task": "formatBytes",
+    "raw": {
+      "text": "```typescript\nfunction formatBytes(bytes: number, decimals: number = 2): string {\n  if (bytes === 0) return \"0 Bytes\";\n  const k = 1024;\n  const sizes = [\"Bytes\", \"KB\", \"MB\", \"GB\", \"TB\", \"PB\"];\n  const i = Math.floor(Math.log(bytes) / Math.log(k));\n  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(decimals))} ${sizes[i]}`;\n}\n```",
+      "input": 47059,
+      "output": 131,
+      "total": 47190,
+      "ms": 6538,
+      "turns": 1
+    },
+    "cm": {
+      "code": "// my-app/lib/utils.ts\nimport { clsx, type ClassValue } from \"clsx\"\nimport { twMerge } from \"tailwind-merge\"\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs))\n}\n\nexport function formatBytes(bytes: number, decimals = 2): string {\n  if (bytes === 0) return \"0 B\"\n  const k = 1024\n  const units = [\"B\", \"KB\", \"MB\", \"GB\", \"TB\", \"PB\"]\n  const i = Math.floor(Math.log(bytes) / Math.log(k))\n  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(decimals))} ${units[i]}`\n}",
+      "compiledTokens": 4675,
+      "components": [
+        "objective",
+        "current_task",
+        "wiki_sections",
+        "architecture",
+        "repository_map",
+        "prior_reasoning",
+        "conventions",
+        "recent_changes",
+        "relevant_files",
+        "instructions"
+      ],
+      "input": 39477,
+      "output": 450,
+      "total": 39927,
+      "ms": 11936,
+      "hasFiles": 1,
+      "hasPatches": 0
+    },
+    "quality": {
+      "aScore": 7,
+      "bScore": 9,
+      "winner": "CodeMaster",
+      "note": "Solution 2 correctly shows the full file context with existing exports preserved and integrates the helper properly, while Solution 1 is a standalone snippet that ignores the existing file contents and could overwrite them."
+    },
+    "floorLean": 39395,
+    "floorAgentic": 46993
+  },
+  {
+    "task": "magnetic-disabled",
+    "raw": {
+      "text": "Here's the complete solution:\n\n```tsx\n\"use client\"\n\nimport { useRef, type ReactNode, type AnchorHTMLAttributes, type ButtonHTMLAttributes } from \"react\"\n\ntype BaseProps = {\n  children: ReactNode\n  strength?: number\n  disabled?: boolean\n}\n\ntype AnchorProps = BaseProps & AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }\ntype ButtonProps = BaseProps & ButtonHTMLAttributes<HTMLButtonElement> & { href?: never }\n\ntype MagneticButtonProps = AnchorProps | ButtonProps\n\nexport function MagneticButton({ children, strength = 0.12, disabled, ...rest }: MagneticButtonProps) {\n  const ref = useRef<HTMLElement>(null)\n\n  function onMouseMove(e: React.MouseEvent) {\n    if (disabled) return\n    const el = ref.current\n    if (!el) return\n    const rect = el.getBoundingClientRect()\n    const x = e.clientX - rect.left - rect.width / 2\n    const y = e.clientY - rect.top - rect.height / 2\n    el.style.transform = `translate(${x * strength}px, ${y * strength}px)`\n  }\n\n  function onMouseLeave(e: React.MouseEvent) {\n    const el = ref.current\n    if (!el) return\n    el.style.transform = \"translate(0, 0)\"\n    ;(rest as AnchorHTMLAttributes<HTMLAnchorElement>).onMouseLeave?.(e as React.MouseEvent<HTMLAnchorElement>)\n  }\n\n  const disabledStyle: React.CSSProperties = disabled\n    ? { opacity: 0.4, cursor: \"not-allowed\", pointerEvents: \"none\" }\n    : {}\n\n  const magneticStyle: React.CSSProperties = {\n    transition: \"transform 260ms cubic-bezier(0.16, 1, 0.3, 1)\",\n    willChange: \"transform\",\n    ...disabledStyle,\n  }\n\n  if (\"href\" in rest && rest.href) {\n    const { href, ...anchorRest } = rest as AnchorProps\n    return (\n      <a\n        ref={ref as React.RefObject<HTMLAnchorElement>}\n        href={href}\n        aria-disabled={disabled}\n        {...anchorRest}\n        style={{ ...magneticStyle, ...(anchorRest.style ?? {}) }}\n        onMouseMove={onMouseMove}\n        onMouseLeave={onMouseLeave}\n      >\n        {children}\n      </a>\n    )\n  }\n\n  const btnRest = rest as ButtonProps\n  return (\n    <button\n      ref={ref as React.RefObject<HTMLButtonElement>}\n      {...btnRest}\n      disabled={disabled}\n      style={{ ...magneticStyle, ...(btnRest.style ?? {}) }}\n      onMouseMove={onMouseMove}\n      onMouseLeave={onMouseLeave}\n    >\n      {children}\n    </button>\n  )\n}\n```\n\nKey changes:\n- `disabled` extracted from `rest` in `BaseProps` so it doesn't leak into the spread\n- `onMouseMove` early-returns when disabled, killing the magnetic effect\n- `disabledStyle` applies `opacity: 0.4`, `cursor: not-allowed`, and `pointerEvents: none` (blocks clicks without JS)\n- `<button>` gets the native `disabled` prop; `<a>` gets `aria-disabled` since anchors have no native disabled state — `pointerEvents: none` handles click blocking there\n- `disabledStyle` is merged before `anchorRest.style` / `btnRest.style` so callers can still override if needed",
+      "input": 95062,
+      "output": 1032,
+      "total": 96094,
+      "ms": 19526,
+      "turns": 2
+    },
+    "cm": {
+      "code": "// my-app/components/ui/MagneticButton.tsx\n\"use client\"\n\nimport { useRef, type ReactNode, type AnchorHTMLAttributes, type ButtonHTMLAttributes } from \"react\"\n\ntype BaseProps = {\n  children: ReactNode\n  strength?: number\n  disabled?: boolean\n}\n\ntype AnchorProps = BaseProps & AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }\ntype ButtonProps = BaseProps & ButtonHTMLAttributes<HTMLButtonElement> & { href?: never }\n\ntype MagneticButtonProps = AnchorProps | ButtonProps\n\nexport function MagneticButton({ children, strength = 0.12, disabled = false, ...rest }: MagneticButtonProps) {\n  const ref = useRef<HTMLElement>(null)\n\n  function onMouseMove(e: React.MouseEvent) {\n    if (disabled) return\n    const el = ref.current\n    if (!el) return\n    const rect = el.getBoundingClientRect()\n    const x = e.clientX - rect.left - rect.width / 2\n    const y = e.clientY - rect.top - rect.height / 2\n    el.style.transform = `translate(${x * strength}px, ${y * strength}px)`\n  }\n\n  function onMouseLeave(e: React.MouseEvent) {\n    const el = ref.current\n    if (!el) return\n    el.style.transform = \"translate(0, 0)\"\n    ;(rest as AnchorHTMLAttributes<HTMLAnchorElement>).onMouseLeave?.(e as React.MouseEvent<HTMLAnchorElement>)\n  }\n\n  const magneticStyle: React.CSSProperties = {\n    transition: \"transform 260ms cubic-bezier(0.16, 1, 0.3, 1)\",\n    willChange: \"transform\",\n    ...(disabled ? { opacity: 0.4, cursor: \"not-allowed\", pointerEvents: \"none\" } : {}),\n  }\n\n  if (\"href\" in rest && rest.href) {\n    const { href, ...anchorRest } = rest as AnchorProps\n    return (\n      <a\n        ref={ref as React.RefObject<HTMLAnchorElement>}\n        href={disabled ? undefined : href}\n        aria-disabled={disabled || undefined}\n        {...anchorRest}\n        style={{ ...magneticStyle, ...(anchorRest.style ?? {}) }}\n        onMouseMove={onMouseMove}\n        onMouseLeave={onMouseLeave}\n        onClick={disabled ? (e) => e.preventDefault() : anchorRest.onClick}\n      >\n        {children}\n      </a>\n    )\n  }\n\n  const btnRest = rest as ButtonProps\n  return (\n    <button\n      ref={ref as React.RefObject<HTMLButtonElement>}\n      disabled={disabled}\n      {...btnRest}\n      style={{ ...magneticStyle, ...(btnRest.style ?? {}) }}\n      onMouseMove={onMouseMove}\n      onMouseLeave={onMouseLeave}\n    >\n      {children}\n    </button>\n  )\n}",
+      "compiledTokens": 15790,
+      "components": [
+        "objective",
+        "current_task",
+        "wiki_sections",
+        "architecture",
+        "repository_map",
+        "prior_reasoning",
+        "conventions",
+        "recent_changes",
+        "relevant_files",
+        "instructions"
+      ],
+      "input": 53131,
+      "output": 1183,
+      "total": 54314,
+      "ms": 24145,
+      "hasFiles": 1,
+      "hasPatches": 0
+    },
+    "quality": {
+      "aScore": 7,
+      "bScore": 8,
+      "winner": "CodeMaster",
+      "note": "Solution 1 more correctly handles the anchor disabled case by nullifying href and blocking clicks explicitly, whereas Solution 2 keeps the href intact and relies solely on pointerEvents:none (which CSS alone cannot block keyboard/programmatic navigation), making it less robust for accessibility and SEO."
+    },
+    "floorLean": 39395,
+    "floorAgentic": 46993
+  },
+  {
+    "task": "contact-counter",
+    "raw": {
+      "text": "Here's the complete solution — only the message `<div>` block changes, adding a counter below the textarea:\n\n```tsx\n\"use client\"\n\nimport { useState } from \"react\"\nimport { SectionSep } from \"@/components/ui/SectionHeader\"\nimport { PROFILE } from \"@/lib/content\"\n\nconst META = [\n  { label: \"Email\",        value: PROFILE.socials.email },\n  { label: \"Role\",         value: \"AI + Full-stack\"     },\n  { label: \"Availability\", value: PROFILE.status        },\n  { label: \"Response\",     value: \"Within 24 hours\"     },\n]\n\nconst MESSAGE_MAX = 500\n\nexport function ContactSection() {\n  const [form, setForm] = useState({ name: \"\", email: \"\", message: \"\" })\n  const [status, setStatus] = useState<\"idle\" | \"loading\" | \"success\" | \"error\">(\"idle\")\n\n  async function handleSubmit(e: React.FormEvent) {\n    e.preventDefault()\n    setStatus(\"loading\")\n    try {\n      const res = await fetch(\"/api/contact\", {\n        method: \"POST\",\n        headers: { \"Content-Type\": \"application/json\" },\n        body: JSON.stringify(form),\n      })\n      if (res.ok) { setStatus(\"success\"); setForm({ name: \"\", email: \"\", message: \"\" }) }\n      else setStatus(\"error\")\n    } catch { setStatus(\"error\") }\n  }\n\n  const inputStyle: React.CSSProperties = {\n    width: \"100%\",\n    minHeight: 46,\n    border: \"1px solid var(--border-default)\",\n    borderRadius: \"var(--radius-sm)\",\n    background: \"var(--bg)\",\n    color: \"var(--text-primary)\",\n    padding: \"12px 13px\",\n    fontSize: 14,\n    outline: \"none\",\n    fontFamily: \"var(--font-sans)\",\n    transition: \"border-color 180ms var(--ease-standard), background 180ms var(--ease-standard), box-shadow 180ms var(--ease-standard)\",\n    boxSizing: \"border-box\",\n  }\n\n  function onFocus(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {\n    e.currentTarget.style.borderColor = \"var(--border-hover)\"\n    e.currentTarget.style.background = \"var(--surface-2)\"\n    e.currentTarget.style.boxShadow = \"0 0 0 3px rgba(255,255,255,0.055)\"\n  }\n  function onBlur(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {\n    e.currentTarget.style.borderColor = \"var(--border-default)\"\n    e.currentTarget.style.background = \"var(--bg)\"\n    e.currentTarget.style.boxShadow = \"none\"\n  }\n\n  const charsRemaining = MESSAGE_MAX - form.message.length\n  const isOverLimit = charsRemaining < 0\n\n  return (\n    <section id=\"contact\" className=\"section\">\n      <SectionSep number=\"08\" label=\"Contact\" />\n      <div className=\"section-content\">\n        <h2 className=\"section-title\">Let&apos;s Build Something</h2>\n\n        <div\n          style={{\n            display: \"grid\",\n            gridTemplateColumns: \"minmax(0, 0.9fr) minmax(380px, 1.1fr)\",\n            gap: 16,\n            alignItems: \"start\",\n          }}\n        >\n          {/* Left — meta */}\n          <div>\n            <p style={{ fontSize: 15, color: \"var(--text-secondary)\", lineHeight: 1.7, margin: \"0 0 28px\" }}>\n              Have an AI system, backend workflow, or project in mind? Send me a note.\n            </p>\n\n            {/* 2×2 meta grid */}\n            <div\n              style={{\n                display: \"grid\",\n                gridTemplateColumns: \"1fr 1fr\",\n                gap: 10,\n              }}\n            >\n              {META.map(({ label, value }) => (\n                <div\n                  key={label}\n                  style={{\n                    border: \"1px solid var(--border-default)\",\n                    borderRadius: \"var(--radius-md)\",\n                    background: \"var(--surface-1)\",\n                    padding: 16,\n                  }}\n                >\n                  <p style={{ fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", margin: \"0 0 6px\" }}>\n                    {label}\n                  </p>\n                  <p style={{ fontSize: 13, color: \"var(--text-secondary)\", margin: 0 }}>{value}</p>\n                </div>\n              ))}\n            </div>\n          </div>\n\n          {/* Right — form */}\n          <div\n            style={{\n              border: \"1px solid var(--border-default)\",\n              borderRadius: \"var(--radius-lg)\",\n              background: \"var(--surface-1)\",\n              padding: 24,\n            }}\n          >\n            {status === \"success\" ? (\n              <div style={{ textAlign: \"center\", padding: \"40px 0\" }}>\n                <p style={{ fontSize: 28, margin: \"0 0 12px\" }}>✓</p>\n                <p style={{ fontSize: 15, color: \"var(--text-primary)\", margin: \"0 0 6px\", fontWeight: 500 }}>Message sent</p>\n                <p style={{ fontSize: 13, color: \"var(--text-muted)\", margin: 0 }}>I&apos;ll get back to you within 24 hours.</p>\n              </div>\n            ) : (\n              <form onSubmit={handleSubmit} style={{ display: \"flex\", flexDirection: \"column\", gap: 14 }}>\n                <div style={{ display: \"grid\", gridTemplateColumns: \"1fr 1fr\", gap: 12 }}>\n                  <div>\n                    <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Name</label>\n                    <input type=\"text\" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder=\"Your name\" style={inputStyle} onFocus={onFocus} onBlur={onBlur} />\n                  </div>\n                  <div>\n                    <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Email</label>\n                    <input type=\"email\" required value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder=\"you@email.com\" style={inputStyle} onFocus={onFocus} onBlur={onBlur} />\n                  </div>\n                </div>\n                <div>\n                  <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Message</label>\n                  <textarea\n                    required value={form.message}\n                    onChange={e => setForm(f => ({ ...f, message: e.target.value }))}\n                    placeholder=\"Tell me about your project...\"\n                    rows={5}\n                    style={{ ...inputStyle, resize: \"vertical\", minHeight: 132 }}\n                    onFocus={onFocus} onBlur={onBlur}\n                  />\n                  <p style={{\n                    fontSize: 11,\n                    fontFamily: \"var(--font-mono)\",\n                    margin: \"5px 0 0\",\n                    textAlign: \"right\",\n                    color: isOverLimit ? \"var(--color-red, #f87171)\" : \"var(--text-faint)\",\n                    transition: \"color 120ms var(--ease-standard)\",\n                  }}>\n                    {charsRemaining} / {MESSAGE_MAX}\n                  </p>\n                </div>\n                {status === \"error\" && (\n                  <p style={{ fontSize: 12, color: \"var(--text-muted)\", margin: 0 }}>\n                    Something went wrong — email me directly at {PROFILE.socials.email}\n                  </p>\n                )}\n                <button\n                  type=\"submit\"\n                  disabled={status === \"loading\" || isOverLimit}\n                  className=\"btn-primary\"\n                  style={{ opacity: status === \"loading\" || isOverLimit ? 0.7 : 1, cursor: status === \"loading\" ? \"wait\" : isOverLimit ? \"not-allowed\" : \"pointer\" }}\n                >\n                  {status === \"loading\" ? \"Sending…\" : <>Send Message <span className=\"btn-arrow\">→</span></>}\n                </button>\n              </form>\n            )}\n          </div>\n        </div>\n      </div>\n    </section>\n  )\n}\n```\n\n**What changed** (surgical diff):\n\n1. `MESSAGE_MAX = 500` constant at the top.\n2. Two derived values before the return: `charsRemaining` and `isOverLimit`.\n3. A `<p>` counter right after the `<textarea>`, right-aligned, using `var(--font-mono)` and `var(--text-faint)` to match the label style — turns `var(--color-red, #f87171)` when over the limit (with a fallback in case the CSS var isn't defined).\n4. The submit button gains `disabled={... || isOverLimit}` and `cursor: \"not-allowed\"` when over limit, so the form can't be submitted with an invalid message.",
+      "input": 96730,
+      "output": 2648,
+      "total": 99378,
+      "ms": 43622,
+      "turns": 2
+    },
+    "cm": null,
+    "quality": {
+      "aScore": 0,
+      "bScore": 0,
+      "winner": "skip",
+      "note": ""
+    },
+    "floorLean": 39395,
+    "floorAgentic": 46993
+  }
+]
