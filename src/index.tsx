@@ -16,7 +16,8 @@ import { bus } from './events/bus.js';
 import { cancelActive } from './util/cancel.js';
 import { Daemon } from './daemon/daemon.js';
 import { COMMANDS } from './commands/catalog.js';
-import { Tasks } from './storage/sessions.js';
+import { Sessions, Tasks } from './storage/sessions.js';
+import { staticAnalysis } from './analysis/api.js';
 import { Tokens } from './storage/tokens.js';
 
 const require_ = createRequire(import.meta.url);
@@ -104,6 +105,17 @@ function StatusBar({ running, status }: { running: boolean; status: SessionStatu
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
+/** A repository with no index and no prior session has never been worked on
+ *  here — the only state that warrants spelling out the first steps. */
+function firstRunHere(repoPath: string): boolean {
+  try {
+    if (staticAnalysis(repoPath).stats()) return false;
+    return Sessions.list(1, repoPath).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 function App() {
   const { exit } = useApp();
   const [logs, dispatch] = useReducer(logReducer, [] as LogEntry[]);
@@ -126,7 +138,17 @@ function App() {
       setStatus(computeStatus());
     });
     log('heading', 'CodeMaster Next');
-    log('dim', 'Persistent reasoning OS. /new <objective> to begin, /help for commands.');
+    if (firstRunHere(cwd)) {
+      // Nothing has been indexed and nothing has been run here, so the generic
+      // one-liner would leave a new user with no idea what order to do things
+      // in. Three lines, in the order they actually need to happen.
+      log('dim', 'First run in this repository. Three steps to get going:');
+      log('dim', '  1. /doctor      — check Node, git, providers and tooling');
+      log('dim', '  2. /reindex     — build this repository’s symbol index');
+      log('dim', '  3. /new <objective> — start a session; /help lists every command');
+    } else {
+      log('dim', 'Persistent reasoning OS. /new <objective> to begin, /help for commands.');
+    }
     if (!sm.manager.hasAnyProvider())
       log('warn', 'No provider credentials — set an API key or run `claude setup-token` for account login. Deterministic commands still work.');
     void daemon.start().then(({ incomplete, reaped, plugins }) => {
