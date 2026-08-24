@@ -42,7 +42,7 @@ test('create → pause → resume → complete lifecycle persists', async () => 
 
 test('IR processing applies new files, persists reasoning, and checkpoints restore', async () => {
   const sm = new SessionManager();
-  const session = await sm.createSession('demo ir', process.cwd());
+  const session = await sm.createSession('demo ir', TMP);
   const task = {
     id: 'task-e2e', session_id: session.id, title: 'demo', description: 'demo', type: 'implement' as const,
     status: 'in_progress' as const, input_files: [], output_files: [], dependencies: [], blocking: [],
@@ -53,13 +53,14 @@ test('IR processing applies new files, persists reasoning, and checkpoints resto
   const raw = `<task_result>
 <status>completed</status>
 <summary>added file</summary>
-<new_files><file path="${path.join(TMP, 'e2e_demo.txt')}">hello</file></new_files>
+<new_files><file path="e2e_demo.txt">hello</file></new_files>
 <reasoning><decision question="q" answer="put in tmp" confidence="0.9" reversibility="easy"><evidence>e</evidence></decision></reasoning>
 </task_result>`;
   const ir = parseIR(raw, session.id, task.id, { provider_id: 'anthropic', model_id: 'claude-sonnet-4-6' });
   const res = await processIR(ir, session, task, sm.cfg);
 
-  assert.ok(res.apply.created.length === 1 || res.apply.applied.length >= 0);
+  assert.deepEqual(res.apply.created, ['e2e_demo.txt']);
+  assert.equal(fs.readFileSync(path.join(TMP, 'e2e_demo.txt'), 'utf8'), 'hello');
   assert.ok(Reasoning.forSession(session.id).length >= 1);
   assert.ok(ir.raw_output === undefined, 'raw output archived to cold storage');
 
