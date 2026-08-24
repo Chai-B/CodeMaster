@@ -8,7 +8,7 @@ import { Tokens } from '../storage/tokens.js';
 import { bus } from '../events/bus.js';
 import { invokeWithBackoff, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
-import type { Session, Task, IntermediateRepresentation } from '../types/index.js';
+import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
 
 export interface ExecuteResult {
   ir: IntermediateRepresentation;
@@ -21,11 +21,27 @@ export interface ExecuteResult {
   wikiUpdated: string[];
 }
 
+/**
+ * Tokens spent embedding files the response never mentioned (token-discipline
+ * W3). Measured, not estimated: a file is referenced when its path or basename
+ * appears in the model's own output. This is the number the wasteRatio gate is
+ * computed from, so it must stay an observation rather than a heuristic score.
+ */
+function unreferencedTokens(compiled: CompiledPrompt, text: string): number {
+  let wasted = 0;
+  for (const f of compiled.file_costs ?? []) {
+    const base = f.path.split('/').pop() ?? f.path;
+    if (!text.includes(f.path) && !text.includes(base)) wasted += f.tokens;
+  }
+  return wasted;
+}
+
 export async function executeTask(
   session: Session,
   task: Task,
   manager: ProviderManager,
   cfg: Config,
+  tier = 0,
 ): Promise<ExecuteResult> {
   const started = Date.now();
   bus.emit({ type: 'task.started', task_id: task.id, title: task.title });
@@ -36,6 +52,7 @@ export async function executeTask(
   const compiled = await compileContext(session, task, {
     maxContextTokens: primary.spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
+    tier,
   });
   bus.emit({
     type: 'worker.finished',
@@ -63,6 +80,7 @@ export async function executeTask(
         return compileContext(session, task, {
           maxContextTokens: primary.spec.context_size,
           fileCompressionThreshold: cfg.context.file_compression_threshold,
+          tier,
         });
       },
     },
@@ -81,6 +99,7 @@ export async function executeTask(
     usage: response.usage,
     cost_usd: cost,
     components: compiled.included,
+    wasted_tokens: unreferencedTokens(compiled, response.text),
   });
 
   // Parse IR natively per provider; on failure, retry once with a format reminder (spec §15.3).

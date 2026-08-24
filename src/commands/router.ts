@@ -294,6 +294,13 @@ export class CommandRouter {
 
   /** What each subscription window has actually spent, and what is blocked. */
   private cost(): void {
+    const waste = Tokens.wasteRatio();
+    if (waste) {
+      this.out(
+        waste.ratio > 0.25 ? 'warn' : 'info',
+        `Context waste: ${fmtTokens(waste.wasted)} of ${fmtTokens(waste.input)} input tokens went to files no response referenced (${(waste.ratio * 100).toFixed(1)}%).`,
+      );
+    }
     const states = QuotaLedger.all();
     if (!states.length) return this.out('info', 'No provider usage recorded yet.');
     this.out('heading', 'Provider windows');

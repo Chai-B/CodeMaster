@@ -83,6 +83,21 @@ export const Tokens = {
     return { input: r.i, output: r.o, total: r.t, cost: r.c };
   },
 
+  /** Input tokens spent on files the model never referenced, over all input
+   *  tokens — the token-discipline gate (spec §6). Real rows only; a session
+   *  with no recorded invocations reports null rather than a flattering zero. */
+  wasteRatio(sessionId?: string): { wasted: number; input: number; ratio: number } | null {
+    const where = sessionId ? 'WHERE session_id=?' : '';
+    const r = getDb()
+      .prepare(
+        `SELECT COALESCE(SUM(wasted_tokens),0) w, COALESCE(SUM(input_tokens),0) i,
+         COUNT(wasted_tokens) n FROM token_usage ${where}`,
+      )
+      .get(...(sessionId ? [sessionId] : [])) as { w: number; i: number; n: number };
+    if (!r.n || !r.i) return null;
+    return { wasted: r.w, input: r.i, ratio: r.w / r.i };
+  },
+
   byProvider(sessionId: string): Record<string, number> {
     const rows = getDb()
       .prepare(
