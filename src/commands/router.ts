@@ -13,6 +13,10 @@ import { Checkpoints } from '../storage/checkpoints.js';
 import { Undo, revert } from '../storage/undo.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { GitWorker } from '../analysis/git.js';
+import { claudeCliAvailable } from '../providers/anthropic.js';
+import { codexCliAvailable } from '../providers/codex.js';
+import fs from 'fs';
+import path from 'path';
 import { compileContext } from '../context/compiler.js';
 import { createCheckpoint, restoreCheckpoint, verifyCheckpointState } from '../workers/checkpointer.js';
 import { compileHandoffPackage, validateHandoffPackage, renderHandoffPackage } from '../workers/handoff.js';
@@ -65,7 +69,9 @@ export class CommandRouter {
     try {
       await this.route(cmd, arg, parts.slice(1));
     } catch (e) {
-      this.out('error', `${cmd} failed: ${String(e)}`);
+      this.out('error', `${cmd} failed: ${String(e).replace(/^Error:\s*/, '')}`);
+      const hint = nextStepFor(String(e));
+      if (hint) this.out('dim', `  → ${hint}`);
     }
   }
 
@@ -107,6 +113,7 @@ export class CommandRouter {
       case '/context': return this.context();
       case '/stats': return this.stats();
       case '/health': return this.health();
+      case '/doctor': return this.doctor();
       case '/workers': return this.workers();
       case '/replay': return this.replay(arg);
       case '/profile': return this.profile(arg);
@@ -121,6 +128,8 @@ export class CommandRouter {
           return;
         }
         this.out('error', `Unknown command: ${cmd}`);
+        const near = COMMANDS.filter((c) => c.cmd.startsWith(cmd.slice(0, 3))).map((c) => c.cmd);
+        this.out('dim', near.length ? `  → Did you mean ${near.join(' or ')}?` : '  → /help lists every command.');
       }
     }
   }
@@ -140,7 +149,7 @@ export class CommandRouter {
       this.out('warn', 'Usage: /new <objective>');
       return;
     }
-    this.out('heading', 'New Session');
+    this.out('heading', 'New session');
     const session = await this.sm.createSession(text, process.cwd());
     this.out('success', `Session ${session.id} created`);
     this.out('dim', `Objective: ${session.objective}`);
@@ -416,7 +425,7 @@ export class CommandRouter {
     if (args[0] === 'compress') {
       const updated = applyDecay();
       const cands = findCompressionCandidates(this.sm.cfg.memory.importance_threshold, this.sm.cfg.memory.age_days_before_eligible);
-      this.out('heading', 'Memory Compression');
+      this.out('heading', 'Memory compression');
       this.out('info', `Decay applied to ${updated} reasoning objects`);
       if (!cands.length) return this.out('dim', 'No objects eligible for summarization.');
       if (!process.env.ANTHROPIC_API_KEY) return this.out('warn', `${cands.length} eligible, but no API key for summarization.`);
@@ -449,7 +458,7 @@ export class CommandRouter {
       if (!res.length) this.out('dim', 'No matches.');
       return;
     }
-    this.out('heading', 'Long-term Memory');
+    this.out('heading', 'Long-term memory');
     const all = LongTerm.all().slice(0, 25);
     if (!all.length) return this.out('dim', 'Empty.');
     for (const m of all) this.out('info', `[${m.namespace}] ${m.key}`);
@@ -535,7 +544,7 @@ export class CommandRouter {
   private async rebuildMap(): Promise<void> {
     const api = staticAnalysis(process.cwd());
     if (!api.stats()) await api.reindex();
-    this.out('heading', 'Repository Map');
+    this.out('heading', 'Repository map');
     for (const line of api.renderRepositoryMap(20).split('\n')) this.out('info', line);
   }
 
@@ -543,14 +552,14 @@ export class CommandRouter {
     const api = staticAnalysis(process.cwd());
     if (!api.stats()) return this.out('warn', 'Repo not indexed. Run /reindex first.');
     if (arg === 'cycles') {
-      this.out('heading', 'Dependency Cycles');
+      this.out('heading', 'Dependency cycles');
       const cycles = api.getCycles();
       if (!cycles.length) return this.out('dim', 'None.');
       cycles.forEach((c, i) => this.out('info', `${i + 1}. ${c.files.join(' → ')}`));
       return;
     }
     if (arg === 'deadcode') {
-      this.out('heading', 'Dead-code Candidates');
+      this.out('heading', 'Dead-code candidates');
       const dead = api.getDeadCode().slice(0, 30);
       if (!dead.length) return this.out('dim', 'None.');
       for (const d of dead) this.out('info', `${d.name}  ${d.file}:${d.line}`);
@@ -558,7 +567,7 @@ export class CommandRouter {
     }
     if (arg === 'rkg') {
       const s = api.rkg().stats();
-      this.out('heading', 'Repository Knowledge Graph');
+      this.out('heading', 'Repository knowledge graph');
       this.out('info', `Nodes: ${s.nodes}  Edges: ${s.edges}`);
       this.out('info', `By type: ${Object.entries(s.byType).map(([t, c]) => `${t}:${c}`).join(', ')}`);
       return;
@@ -611,7 +620,7 @@ export class CommandRouter {
       return;
     }
     const tot = Tokens.sessionTotal(s.id);
-    this.out('heading', 'Token Usage');
+    this.out('heading', 'Token usage');
     this.out('info', `Input: ${fmtTokens(tot.input)}  Output: ${fmtTokens(tot.output)}  Total: ${fmtTokens(tot.total)}`);
     this.out('info', `Cost: $${tot.cost.toFixed(4)}`);
   }
@@ -636,7 +645,7 @@ export class CommandRouter {
   }
 
   private stats(): void {
-    this.out('heading', 'Runtime Statistics');
+    this.out('heading', 'Runtime statistics');
     const g = Tokens.grandTotal();
     const sessions = Sessions.list(1000);
     this.out('info', `Sessions: ${sessions.length}`);
@@ -672,7 +681,7 @@ export class CommandRouter {
   }
 
   private health(): void {
-    this.out('heading', 'Account Health');
+    this.out('heading', 'Account health');
     for (const a of this.sm.manager.listAccounts()) {
       this.out('info', `${a.alias}: ${a.health.status}  avg latency ${a.health.avg_latency_ms.toFixed(0)}ms`);
     }
@@ -700,7 +709,7 @@ export class CommandRouter {
   }
 
   private async recover(): Promise<void> {
-    this.out('heading', 'Crash Recovery');
+    this.out('heading', 'Crash recovery');
     const reports = await recoverAll();
     if (!reports.length) return this.out('dim', 'No incomplete sessions found.');
     for (const r of reports) {
@@ -879,6 +888,63 @@ export class CommandRouter {
     if (lines.length > 400) this.out('dim', `… ${lines.length - 400} more lines.`);
   }
 
+  /**
+   * One command that answers "is this thing set up correctly?". Every check is
+   * a real probe, and every failure names the command or install that fixes it —
+   * a diagnostic that only says "missing" makes the user go looking.
+   */
+  private async doctor(): Promise<void> {
+    this.out('heading', 'Doctor');
+    const ok = (m: string): void => this.out('success', m);
+    const bad = (m: string, fix: string): void => {
+      this.out('warn', m);
+      this.out('dim', `  → ${fix}`);
+    };
+
+    const major = Number(process.versions.node.split('.')[0]);
+    const minor = Number(process.versions.node.split('.')[1]);
+    if (major > 22 || (major === 22 && minor >= 5)) ok(`Node ${process.versions.node}`);
+    else bad(`Node ${process.versions.node} is too old — node:sqlite needs 22.5 or newer.`, 'Install Node 22.5+ and rerun.');
+
+    const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
+    this.out('info', `Repository: ${repo}`);
+    const git = new GitWorker(repo);
+    if (await git.isRepo()) ok(`Git repository on ${await git.branch()} at ${(await git.headCommit()).slice(0, 8)}`);
+    else bad('Not a git repository.', 'Checkpoints, /diff and change tracking need one — run git init.');
+
+    const api = staticAnalysis(repo);
+    const stats = api.stats();
+    if (stats && stats.files > 0) {
+      ok(`Index: ${stats.files} file(s), ${stats.symbols} symbol(s), ${Object.keys(stats.languages).join(', ') || 'no languages detected'}`);
+      if (!api.embeddingsReady()) this.out('dim', '  Embeddings not built — file selection falls back to symbols and graph signals.');
+    } else {
+      bad('No repository index.', 'Run /reindex — file selection cannot work without it.');
+    }
+
+    if (this.sm.manager.hasAnyProvider()) {
+      const accounts = this.sm.manager.listAccounts();
+      ok(`Providers: ${accounts.map((a) => `${a.provider_id}/${a.alias} (${a.health.status})`).join(', ')}`);
+    } else {
+      bad('No provider credentials.', 'Set ANTHROPIC_API_KEY / OPENAI_API_KEY, run `claude setup-token`, or /account add.');
+    }
+    const clis = [claudeCliAvailable() ? 'claude' : null, codexCliAvailable() ? 'codex' : null].filter(Boolean);
+    if (clis.length) ok(`Subscription CLIs available: ${clis.join(', ')} — vendor plans are used before metered keys.`);
+    else this.out('dim', 'No vendor CLI on PATH; calls go through metered API keys.');
+
+    const blocked = QuotaLedger.all().filter((st) => QuotaLedger.blockedForMs(st.key, st.provider_id) > 0);
+    if (blocked.length) bad(`${blocked.length} provider window(s) are cooling down.`, 'Run /cost to see for how long.');
+
+    for (const [label, bin] of [['ripgrep', 'rg'], ['python', 'python3']] as const) {
+      if (which(bin)) ok(`${label} found`);
+      else bad(`${label} not on PATH.`, label === 'ripgrep' ? 'Install ripgrep for fast repository search.' : 'Install python3 to verify Python repositories.');
+    }
+    const servers = ['pyright-langserver', 'typescript-language-server', 'rust-analyzer', 'gopls'].filter(which);
+    if (servers.length) ok(`Language servers: ${servers.join(', ')}`);
+    else this.out('dim', 'No language server installed — reference lookup falls back to ripgrep, which is less precise.');
+
+    this.out('dim', 'Nothing above needs a model. /waste shows where tokens are going once you start running tasks.');
+  }
+
   private plugins(): void {
     this.out('heading', 'Plugins');
     const plugins = listPlugins();
@@ -894,29 +960,44 @@ export class CommandRouter {
   private workers(): void {
     this.out('heading', 'Workers');
     for (const w of listWorkers()) this.out('info', `${w.name.padEnd(20)} ${w.requires_llm ? 'LLM' : 'deterministic'}`);
-    this.out('heading', 'Task Pipeline (DAG order)');
+    this.out('heading', 'Task pipeline (DAG order)');
     this.out('info', topoOrder().join(' → '));
   }
 
   /** Per-command help, from the same catalog `/help` reads. */
   private usage(cmd: string): void {
     const def = COMMANDS.find((c) => c.cmd === cmd);
-    if (!def) return this.out('warn', `Unknown command: ${cmd}`);
+    if (!def) {
+      this.out('warn', `Unknown command: ${cmd}`);
+      const near = COMMANDS.filter((c) => c.cmd.startsWith(cmd.slice(0, 3))).map((c) => c.cmd);
+      this.out('dim', near.length ? `  → Did you mean ${near.join(' or ')}?` : '  → /help lists every command.');
+      return;
+    }
     this.out('heading', def.cmd);
     this.out('info', def.desc);
     this.out('dim', `Usage: ${def.usage ?? def.cmd}`);
   }
 
+  /** Forty commands listed at once is a wall, not help. Show the groups, and
+   *  let the user walk into the one they want. */
   private help(arg?: string): void {
-    if (arg) return this.usage(arg.startsWith('/') ? arg : `/${arg}`);
-    let group = '';
-    for (const c of COMMANDS) {
-      if (c.group !== group) {
-        group = c.group;
-        this.out('heading', group);
+    const groups = [...new Set(COMMANDS.map((c) => c.group))];
+    if (arg) {
+      const g = groups.find((x) => x.toLowerCase() === arg.toLowerCase());
+      if (g) {
+        this.out('heading', g);
+        for (const c of COMMANDS.filter((x) => x.group === g)) this.out('info', `${c.cmd.padEnd(14)} ${c.desc}`);
+        this.out('dim', 'Any command accepts --help for its exact call form.');
+        return;
       }
-      this.out('info', `${c.cmd.padEnd(14)} ${c.desc}`);
+      return this.usage(arg.startsWith('/') ? arg : `/${arg}`);
     }
+    this.out('heading', 'Help');
+    for (const g of groups) {
+      const cmds = COMMANDS.filter((c) => c.group === g);
+      this.out('info', `${g.padEnd(12)} ${cmds.length} command(s): ${cmds.slice(0, 5).map((c) => c.cmd).join(' ')}${cmds.length > 5 ? ' …' : ''}`);
+    }
+    this.out('dim', '/help <group> lists a group · /<command> --help shows one command · /doctor checks the setup.');
   }
 }
 
@@ -960,4 +1041,31 @@ function setPath(obj: Record<string, unknown>, key: string, raw: string): { ok: 
     cur[leaf] = raw;
   }
   return { ok: true, value: String(cur[leaf]) };
+}
+
+/** PATH lookup without spawning a shell — the same resolution the adapters get
+ *  when they spawn the binary directly, so the report matches reality. */
+function which(bin: string): boolean {
+  return (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .some((dir) => {
+      try {
+        fs.accessSync(path.join(dir, bin), fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+}
+
+/** Turn the failures that actually recur into the command that resolves them.
+ *  An error message that stops at "what went wrong" leaves the user to guess. */
+function nextStepFor(message: string): string | null {
+  const m = message.toLowerCase();
+  if (m.includes('no such table') || m.includes('no index')) return 'Run /reindex to rebuild this repository\u2019s index.';
+  if (m.includes('credential') || m.includes('api key') || m.includes('no provider')) return 'Add credentials with /account add, or set the provider\u2019s API key.';
+  if (m.includes('usage limit') || m.includes('rate limit')) return 'Run /cost to see which window is spent, or /model to switch vendors.';
+  if (m.includes('not a git repository')) return 'Run git init — checkpoints and /diff need a baseline commit.';
+  if (m.includes('enoent') && m.includes('claude')) return 'Install the claude CLI, or set ANTHROPIC_API_KEY to use the metered API.';
+  return null;
 }

@@ -48,6 +48,7 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/tokens', desc: 'Token usage statistics', group: 'Diagnostic', usage: '/tokens | /tokens by-provider' },
   { cmd: '/context', desc: 'Show compiled context (no LLM)', group: 'Diagnostic' },
   { cmd: '/stats', desc: 'Overall runtime statistics', group: 'Diagnostic' },
+  { cmd: '/doctor', desc: 'Check that everything is set up correctly', group: 'Diagnostic' },
   { cmd: '/health', desc: 'Provider account health', group: 'Diagnostic' },
   { cmd: '/cost', desc: 'Subscription windows spent and blocked', group: 'Diagnostic' },
   { cmd: '/waste', desc: 'Where tokens went that bought no reasoning', group: 'Diagnostic' },
@@ -60,7 +61,7 @@ export const COMMANDS: CommandDef[] = [
   // Misc
   { cmd: '/config', desc: 'Show or change settings', group: 'Misc', usage: '/config | /config set <key> <value>' },
   { cmd: '/plugins', desc: 'List loaded plugins', group: 'Misc' },
-  { cmd: '/help', desc: 'Show commands', group: 'Misc' },
+  { cmd: '/help', desc: 'Show commands', group: 'Misc', usage: '/help | /help <group> | /help <command>' },
   { cmd: '/clear', desc: 'Clear the screen', group: 'Misc' },
   { cmd: '/quit', desc: 'Exit CodeMaster', group: 'Misc' },
 ];
