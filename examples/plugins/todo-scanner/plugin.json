@@ -1,0 +1,8 @@
+{
+  "id": "todo-scanner",
+  "version": "1.0.0",
+  "name": "TODO Scanner",
+  "description": "Adds /todos — scans the repo for TODO/FIXME/HACK comments",
+  "type": "command",
+  "entry_point": "index.js"
+}

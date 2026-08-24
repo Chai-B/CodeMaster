@@ -1,0 +1,152 @@
+[
+  {
+    "task": "debounce-hook",
+    "raw": {
+      "text": "Here's the hook, matching the existing style in `useLoading.ts`:\n\n```tsx\n// my-app/hooks/useDebounce.ts\nimport { useEffect, useState } from \"react\";\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value);\n\n  useEffect(() => {\n    const timer = setTimeout(() => {\n      setDebouncedValue(value);\n    }, delayMs);\n\n    return () => {\n      clearTimeout(timer);\n    };\n  }, [value, delayMs]);\n\n  return debouncedValue;\n}\n```\n\nSave it to `my-app/hooks/useDebounce.ts` when you're ready — I haven't modified any files.",
+      "input_tokens": 136177,
+      "output_tokens": 341,
+      "total_tokens": 136518,
+      "ms": 10393,
+      "turns": 2
+    },
+    "cm": {
+      "text": "\"use client\"\n\nimport { useEffect, useState } from \"react\"\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value)\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delayMs)\n    return () => clearTimeout(timer)\n  }, [value, delayMs])\n\n  return debouncedValue\n}",
+      "code": "\"use client\"\n\nimport { useEffect, useState } from \"react\"\n\nexport function useDebounce<T>(value: T, delayMs: number): T {\n  const [debouncedValue, setDebouncedValue] = useState(value)\n\n  useEffect(() => {\n    const timer = setTimeout(() => setDebouncedValue(value), delayMs)\n    return () => clearTimeout(timer)\n  }, [value, delayMs])\n\n  return debouncedValue\n}",
+      "compiledTokens": 8090,
+      "input_tokens": 62760,
+      "output_tokens": 693,
+      "total_tokens": 63453,
+      "ms": 10378,
+      "turns": 1
+    },
+    "quality": {
+      "aScore": 9,
+      "bScore": 8,
+      "winner": "RawClaude",
+      "note": "Both implementations are functionally identical and correct, but Solution 1 also confirms placement and matches repo style without unilaterally adding a Next.js directive."
+    }
+  },
+  {
+    "task": "truncate-util",
+    "raw": {
+      "text": "Here's the complete updated file with the `truncate` helper added:\n\n```typescript\nimport { clsx, type ClassValue } from \"clsx\"\nimport { twMerge } from \"tailwind-merge\"\n\nexport function cn(...inputs: ClassValue[]) {\n  return twMerge(clsx(inputs))\n}\n\nexport function truncate(text: string, maxLength: number): string {\n  if (text.length <= maxLength) return text\n\n  const sliced = text.slice(0, maxLength)\n  const lastSpace = sliced.lastIndexOf(\" \")\n  const cut = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced\n\n  return `${cut.trimEnd()}…`\n}\n```\n\nBehavior: if `text` is within `maxLength`, it's returned unchanged. Otherwise it slices to `maxLength`, backs off to the last space so no word is cut mid-way, and appends `…`. If there's no space in the slice (single long word), it just truncates at `maxLength` and adds the ellipsis.",
+      "input_tokens": 136281,
+      "output_tokens": 441,
+      "total_tokens": 136722,
+      "ms": 9486,
+      "turns": 2
+    },
+    "cm": {
+      "text": "--- a/my-app/lib/utils.ts\n    +++ b/my-app/lib/utils.ts\n    @@ -3,3 +3,13 @@\n     export function cn(...inputs: ClassValue[]) {\n       return twMerge(clsx(inputs))\n     }\n    +\n    +export function truncate(text: string, maxLength: number): string {\n    +  if (text.length <= maxLength) return text\n    +\n    +  const sliced = text.slice(0, maxLength)\n    +  const lastSpace = sliced.lastIndexOf(\" \")\n    +  const cut = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced\n    +\n    +  return `${cut.trimEnd()}...`\n    +}",
+      "code": "--- a/my-app/lib/utils.ts\n    +++ b/my-app/lib/utils.ts\n    @@ -3,3 +3,13 @@\n     export function cn(...inputs: ClassValue[]) {\n       return twMerge(clsx(inputs))\n     }\n    +\n    +export function truncate(text: string, maxLength: number): string {\n    +  if (text.length <= maxLength) return text\n    +\n    +  const sliced = text.slice(0, maxLength)\n    +  const lastSpace = sliced.lastIndexOf(\" \")\n    +  const cut = lastSpace > 0 ? sliced.slice(0, lastSpace) : sliced\n    +\n    +  return `${cut.trimEnd()}...`\n    +}",
+      "compiledTokens": 9727,
+      "input_tokens": 65387,
+      "output_tokens": 731,
+      "total_tokens": 66118,
+      "ms": 11425,
+      "turns": 1
+    },
+    "quality": {
+      "aScore": 6,
+      "bScore": 8,
+      "winner": "CodeMaster",
+      "note": "Identical logic, but Solution 1 is a minimal tight diff per repo conventions while Solution 2 rewrites the whole file with unrequested explanatory prose, violating the no-preamble/no-trailing-summary and tight-diff project rules."
+    }
+  },
+  {
+    "task": "relative-time",
+    "raw": {
+      "text": "Here's the utility, matching this project's TypeScript conventions (`lib/utils.ts` style):\n\n```typescript\nexport function formatRelativeTime(date: Date | string): string {\n  const target = typeof date === \"string\" ? new Date(date) : date;\n  const seconds = Math.round((target.getTime() - Date.now()) / 1000);\n  const absSeconds = Math.abs(seconds);\n\n  const units: { limit: number; divisor: number; unit: Intl.RelativeTimeFormatUnit }[] = [\n    { limit: 60, divisor: 1, unit: \"second\" },\n    { limit: 3600, divisor: 60, unit: \"minute\" },\n    { limit: 86400, divisor: 3600, unit: \"hour\" },\n    { limit: 604800, divisor: 86400, unit: \"day\" },\n    { limit: 2629800, divisor: 604800, unit: \"week\" },\n    { limit: 31557600, divisor: 2629800, unit: \"month\" },\n    { limit: Infinity, divisor: 31557600, unit: \"year\" },\n  ];\n\n  if (absSeconds < 5) return \"just now\";\n\n  const rtf = new Intl.RelativeTimeFormat(\"en\", { numeric: \"auto\" });\n  const { divisor, unit } = units.find(({ limit }) => absSeconds < limit)!;\n  const value = Math.round(seconds / divisor);\n\n  return rtf.format(value, unit);\n}\n```\n\nUses the built-in `Intl.RelativeTimeFormat`, so no extra dependency. Handles both past (\"3 days ago\") and future (\"in 2 hours\") dates, and accepts either a `Date` or an ISO string.",
+      "input_tokens": 136474,
+      "output_tokens": 752,
+      "total_tokens": 137226,
+      "ms": 12960,
+      "turns": 2
+    },
+    "cm": {
+      "text": "export function formatRelativeTime(date: Date | string): string {\n  const d = typeof date === \"string\" ? new Date(date) : date\n  const seconds = Math.round((Date.now() - d.getTime()) / 1000)\n\n  if (seconds < 30) return \"just now\"\n\n  const units: [string, number][] = [\n    [\"year\", 31536000],\n    [\"month\", 2592000],\n    [\"week\", 604800],\n    [\"day\", 86400],\n    [\"hour\", 3600],\n    [\"minute\", 60],\n  ]\n\n  const past = seconds >= 0\n  const abs = Math.abs(seconds)\n\n  for (const [name, secondsInUnit] of units) {\n    const value = Math.floor(abs / secondsInUnit)\n    if (value >= 1) {\n      const label = `${value} ${name}${value === 1 ? \"\" : \"s\"}`\n      return past ? `${label} ago` : `in ${label}`\n    }\n  }\n\n  return \"just now\"\n}",
+      "code": "export function formatRelativeTime(date: Date | string): string {\n  const d = typeof date === \"string\" ? new Date(date) : date\n  const seconds = Math.round((Date.now() - d.getTime()) / 1000)\n\n  if (seconds < 30) return \"just now\"\n\n  const units: [string, number][] = [\n    [\"year\", 31536000],\n    [\"month\", 2592000],\n    [\"week\", 604800],\n    [\"day\", 86400],\n    [\"hour\", 3600],\n    [\"minute\", 60],\n  ]\n\n  const past = seconds >= 0\n  const abs = Math.abs(seconds)\n\n  for (const [name, secondsInUnit] of units) {\n    const value = Math.floor(abs / secondsInUnit)\n    if (value >= 1) {\n      const label = `${value} ${name}${value === 1 ? \"\" : \"s\"}`\n      return past ? `${label} ago` : `in ${label}`\n    }\n  }\n\n  return \"just now\"\n}",
+      "compiledTokens": 4996,
+      "input_tokens": 57758,
+      "output_tokens": 1078,
+      "total_tokens": 58836,
+      "ms": 14632,
+      "turns": 1
+    },
+    "quality": {
+      "aScore": 9,
+      "bScore": 6,
+      "winner": "RawClaude",
+      "note": "Solution 1 uses Intl.RelativeTimeFormat correctly with proper rounding/locale support, while Solution 2 has a fallback-through-units bug returning \"just now\" for negative/zero seconds-in-unit edge cases and lacks pluralization edge handling for value=0 in final unit."
+    }
+  },
+  {
+    "task": "error-boundary",
+    "raw": {
+      "text": "Uses `cn` from `@/lib/utils` and Tailwind classes matching shadcn-style conventions. Here's a class-based `ErrorBoundary` matching that style:\n\n```tsx\n\"use client\"\n\nimport * as React from \"react\"\n\nimport { cn } from \"@/lib/utils\"\n\ninterface ErrorBoundaryProps {\n  children: React.ReactNode\n  fallback?: React.ReactNode | ((error: Error, reset: () => void) => React.ReactNode)\n  onError?: (error: Error, errorInfo: React.ErrorInfo) => void\n  className?: string\n}\n\ninterface ErrorBoundaryState {\n  error: Error | null\n}\n\nclass ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {\n  constructor(props: ErrorBoundaryProps) {\n    super(props)\n    this.state = { error: null }\n  }\n\n  static getDerivedStateFromError(error: Error): ErrorBoundaryState {\n    return { error }\n  }\n\n  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {\n    this.props.onError?.(error, errorInfo)\n  }\n\n  reset = () => {\n    this.setState({ error: null })\n  }\n\n  render() {\n    const { error } = this.state\n    const { children, fallback, className } = this.props\n\n    if (error) {\n      if (typeof fallback === \"function\") {\n        return fallback(error, this.reset)\n      }\n\n      if (fallback) {\n        return fallback\n      }\n\n      return (\n        <div\n          data-slot=\"error-boundary-fallback\"\n          className={cn(\n            \"flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card p-6 text-center\",\n            className\n          )}\n        >\n          <p className=\"text-sm font-medium text-foreground\">\n            Something went wrong\n          </p>\n          <p className=\"text-xs text-muted-foreground\">{error.message}</p>\n          <button\n            type=\"button\"\n            onClick={this.reset}\n            className=\"rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground\"\n          >\n            Try again\n          </button>\n        </div>\n      )\n    }\n\n    return children\n  }\n}\n\nexport { ErrorBoundary }\nexport type { ErrorBoundaryProps }\n```\n\nUsage:\n\n```tsx\n<ErrorBoundary onError={(err) => console.error(err)}>\n  <SomeWidget />\n</ErrorBoundary>\n```\n\nNote: must be a class component — React error boundaries (`getDerivedStateFromError`/`componentDidCatch`) have no hook equivalent. I didn't write this to a file per your instruction; let me know if you'd like it saved to `my-app/components/ui/ErrorBoundary.tsx`.",
+      "input_tokens": 137083,
+      "output_tokens": 1084,
+      "total_tokens": 138167,
+      "ms": 14937,
+      "turns": 2
+    },
+    "cm": {
+      "text": "\"use client\"\n\nimport { Component, type ErrorInfo, type ReactNode } from \"react\"\n\ninterface ErrorBoundaryProps {\n  children: ReactNode\n  fallback?: ReactNode\n}\n\ninterface ErrorBoundaryState {\n  hasError: boolean\n  error: Error | null\n}\n\nexport class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {\n  state: ErrorBoundaryState = { hasError: false, error: null }\n\n  static getDerivedStateFromError(error: Error): ErrorBoundaryState {\n    return { hasError: true, error }\n  }\n\n  componentDidCatch(error: Error, errorInfo: ErrorInfo) {\n    console.error(\"ErrorBoundary caught an error:\", error, errorInfo)\n  }\n\n  reset = () => {\n    this.setState({ hasError: false, error: null })\n  }\n\n  render() {\n    if (this.state.hasError) {\n      if (this.props.fallback) {\n        return this.props.fallback\n      }\n\n      return (\n        <div className=\"flex flex-col items-center justify-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-center\">\n          <p className=\"text-sm font-medium text-neutral-200\">Something went wrong</p>\n          <p className=\"text-xs text-neutral-400\">{this.state.error?.message ?? \"An unexpected error occurred.\"}</p>\n          <button\n            onClick={this.reset}\n            className=\"mt-2 rounded-md bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-700\"\n          >\n            Try again\n          </button>\n        </div>\n      )\n    }\n\n    return this.props.children\n  }\n}",
+      "code": "\"use client\"\n\nimport { Component, type ErrorInfo, type ReactNode } from \"react\"\n\ninterface ErrorBoundaryProps {\n  children: ReactNode\n  fallback?: ReactNode\n}\n\ninterface ErrorBoundaryState {\n  hasError: boolean\n  error: Error | null\n}\n\nexport class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {\n  state: ErrorBoundaryState = { hasError: false, error: null }\n\n  static getDerivedStateFromError(error: Error): ErrorBoundaryState {\n    return { hasError: true, error }\n  }\n\n  componentDidCatch(error: Error, errorInfo: ErrorInfo) {\n    console.error(\"ErrorBoundary caught an error:\", error, errorInfo)\n  }\n\n  reset = () => {\n    this.setState({ hasError: false, error: null })\n  }\n\n  render() {\n    if (this.state.hasError) {\n      if (this.props.fallback) {\n        return this.props.fallback\n      }\n\n      return (\n        <div className=\"flex flex-col items-center justify-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-center\">\n          <p className=\"text-sm font-medium text-neutral-200\">Something went wrong</p>\n          <p className=\"text-xs text-neutral-400\">{this.state.error?.message ?? \"An unexpected error occurred.\"}</p>\n          <button\n            onClick={this.reset}\n            className=\"mt-2 rounded-md bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-700\"\n          >\n            Try again\n          </button>\n        </div>\n      )\n    }\n\n    return this.props.children\n  }\n}",
+      "compiledTokens": 3582,
+      "input_tokens": 55524,
+      "output_tokens": 1507,
+      "total_tokens": 57031,
+      "ms": 17260,
+      "turns": 1
+    },
+    "quality": {
+      "aScore": 8,
+      "bScore": 7,
+      "winner": "RawClaude",
+      "note": "Solution 2 adds onError callback, function-as-fallback, className override, and theme-aware (cn/shadcn) styling, making it more flexible and consistent with shadcn conventions without meaningfully more complexity."
+    }
+  },
+  {
+    "task": "contact-validation",
+    "raw": {
+      "text": "Here's the complete updated component with client-side validation added (name required, email format check, message non-empty), with inline error messages styled to match the existing design language, and error borders on invalid fields. As requested, I have **not** modified the file — this is for you to review and apply.\n\n```tsx\n\"use client\"\n\nimport { useState } from \"react\"\nimport { SectionSep } from \"@/components/ui/SectionHeader\"\nimport { PROFILE } from \"@/lib/content\"\n\nconst META = [\n  { label: \"Email\",        value: PROFILE.socials.email },\n  { label: \"Role\",         value: \"AI + Full-stack\"     },\n  { label: \"Availability\", value: PROFILE.status        },\n  { label: \"Response\",     value: \"Within 24 hours\"     },\n]\n\nconst EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/\n\ntype Errors = { name?: string; email?: string; message?: string }\n\nfunction validate(form: { name: string; email: string; message: string }): Errors {\n  const errors: Errors = {}\n  if (!form.name.trim()) errors.name = \"Name is required\"\n  if (!form.email.trim()) errors.email = \"Email is required\"\n  else if (!EMAIL_RE.test(form.email.trim())) errors.email = \"Enter a valid email\"\n  if (!form.message.trim()) errors.message = \"Message is required\"\n  return errors\n}\n\nexport function ContactSection() {\n  const [form, setForm] = useState({ name: \"\", email: \"\", message: \"\" })\n  const [errors, setErrors] = useState<Errors>({})\n  const [status, setStatus] = useState<\"idle\" | \"loading\" | \"success\" | \"error\">(\"idle\")\n\n  async function handleSubmit(e: React.FormEvent) {\n    e.preventDefault()\n    const nextErrors = validate(form)\n    setErrors(nextErrors)\n    if (Object.keys(nextErrors).length > 0) return\n\n    setStatus(\"loading\")\n    try {\n      const res = await fetch(\"/api/contact\", {\n        method: \"POST\",\n        headers: { \"Content-Type\": \"application/json\" },\n        body: JSON.stringify(form),\n      })\n      if (res.ok) { setStatus(\"success\"); setForm({ name: \"\", email: \"\", message: \"\" }); setErrors({}) }\n      else setStatus(\"error\")\n    } catch { setStatus(\"error\") }\n  }\n\n  function inputStyleFor(field: keyof Errors): React.CSSProperties {\n    return {\n      width: \"100%\",\n      minHeight: 46,\n      border: `1px solid ${errors[field] ? \"var(--accent-error, #e5484d)\" : \"var(--border-default)\"}`,\n      borderRadius: \"var(--radius-sm)\",\n      background: \"var(--bg)\",\n      color: \"var(--text-primary)\",\n      padding: \"12px 13px\",\n      fontSize: 14,\n      outline: \"none\",\n      fontFamily: \"var(--font-sans)\",\n      transition: \"border-color 180ms var(--ease-standard), background 180ms var(--ease-standard), box-shadow 180ms var(--ease-standard)\",\n      boxSizing: \"border-box\",\n    }\n  }\n\n  function onFocus(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {\n    e.currentTarget.style.background = \"var(--surface-2)\"\n    e.currentTarget.style.boxShadow = \"0 0 0 3px rgba(255,255,255,0.055)\"\n  }\n  function onBlur(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) {\n    e.currentTarget.style.background = \"var(--bg)\"\n    e.currentTarget.style.boxShadow = \"none\"\n  }\n\n  function clearError(field: keyof Errors) {\n    setErrors(prev => {\n      if (!prev[field]) return prev\n      const next = { ...prev }\n      delete next[field]\n      return next\n    })\n  }\n\n  const errorTextStyle: React.CSSProperties = {\n    fontSize: 12,\n    color: \"var(--accent-error, #e5484d)\",\n    margin: \"6px 0 0\",\n  }\n\n  return (\n    <section id=\"contact\" className=\"section\">\n      <SectionSep number=\"08\" label=\"Contact\" />\n      <div className=\"section-content\">\n        <h2 className=\"section-title\">Let&apos;s Build Something</h2>\n\n        <div\n          style={{\n            display: \"grid\",\n            gridTemplateColumns: \"minmax(0, 0.9fr) minmax(380px, 1.1fr)\",\n            gap: 16,\n            alignItems: \"start\",\n          }}\n        >\n          {/* Left — meta */}\n          <div>\n            <p style={{ fontSize: 15, color: \"var(--text-secondary)\", lineHeight: 1.7, margin: \"0 0 28px\" }}>\n              Have an AI system, backend workflow, or project in mind? Send me a note.\n            </p>\n\n            {/* 2×2 meta grid */}\n            <div\n              style={{\n                display: \"grid\",\n                gridTemplateColumns: \"1fr 1fr\",\n                gap: 10,\n              }}\n            >\n              {META.map(({ label, value }) => (\n                <div\n                  key={label}\n                  style={{\n                    border: \"1px solid var(--border-default)\",\n                    borderRadius: \"var(--radius-md)\",\n                    background: \"var(--surface-1)\",\n                    padding: 16,\n                  }}\n                >\n                  <p style={{ fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", margin: \"0 0 6px\" }}>\n                    {label}\n                  </p>\n                  <p style={{ fontSize: 13, color: \"var(--text-secondary)\", margin: 0 }}>{value}</p>\n                </div>\n              ))}\n            </div>\n          </div>\n\n          {/* Right — form */}\n          <div\n            style={{\n              border: \"1px solid var(--border-default)\",\n              borderRadius: \"var(--radius-lg)\",\n              background: \"var(--surface-1)\",\n              padding: 24,\n            }}\n          >\n            {status === \"success\" ? (\n              <div style={{ textAlign: \"center\", padding: \"40px 0\" }}>\n                <p style={{ fontSize: 28, margin: \"0 0 12px\" }}>✓</p>\n                <p style={{ fontSize: 15, color: \"var(--text-primary)\", margin: \"0 0 6px\", fontWeight: 500 }}>Message sent</p>\n                <p style={{ fontSize: 13, color: \"var(--text-muted)\", margin: 0 }}>I&apos;ll get back to you within 24 hours.</p>\n              </div>\n            ) : (\n              <form onSubmit={handleSubmit} noValidate style={{ display: \"flex\", flexDirection: \"column\", gap: 14 }}>\n                <div style={{ display: \"grid\", gridTemplateColumns: \"1fr 1fr\", gap: 12 }}>\n                  <div>\n                    <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Name</label>\n                    <input\n                      type=\"text\"\n                      value={form.name}\n                      onChange={e => { setForm(f => ({ ...f, name: e.target.value })); clearError(\"name\") }}\n                      placeholder=\"Your name\"\n                      style={inputStyleFor(\"name\")}\n                      onFocus={onFocus}\n                      onBlur={onBlur}\n                      aria-invalid={!!errors.name}\n                    />\n                    {errors.name && <p style={errorTextStyle}>{errors.name}</p>}\n                  </div>\n                  <div>\n                    <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Email</label>\n                    <input\n                      type=\"email\"\n                      value={form.email}\n                      onChange={e => { setForm(f => ({ ...f, email: e.target.value })); clearError(\"email\") }}\n                      placeholder=\"you@email.com\"\n                      style={inputStyleFor(\"email\")}\n                      onFocus={onFocus}\n                      onBlur={onBlur}\n                      aria-invalid={!!errors.email}\n                    />\n                    {errors.email && <p style={errorTextStyle}>{errors.email}</p>}\n                  </div>\n                </div>\n                <div>\n                  <label style={{ display: \"block\", fontSize: 11, color: \"var(--text-faint)\", fontFamily: \"var(--font-mono)\", textTransform: \"uppercase\", letterSpacing: \"0.06em\", marginBottom: 6 }}>Message</label>\n                  <textarea\n                    value={form.message}\n                    onChange={e => { setForm(f => ({ ...f, message: e.target.value })); clearError(\"message\") }}\n                    placeholder=\"Tell me about your project...\"\n                    rows={5}\n                    style={{ ...inputStyleFor(\"message\"), resize: \"vertical\", minHeight: 132 }}\n                    onFocus={onFocus}\n                    onBlur={onBlur}\n                    aria-invalid={!!errors.message}\n                  />\n                  {errors.message && <p style={errorTextStyle}>{errors.message}</p>}\n                </div>\n                {status === \"error\" && (\n                  <p style={{ fontSize: 12, color: \"var(--text-muted)\", margin: 0 }}>\n                    Something went wrong — email me directly at {PROFILE.socials.email}\n                  </p>\n                )}\n                <button\n                  type=\"submit\"\n                  disabled={status === \"loading\"}\n                  className=\"btn-primary\"\n                  style={{ opacity: status === \"loading\" ? 0.7 : 1, cursor: status === \"loading\" ? \"wait\" : \"pointer\" }}\n                >\n                  {status === \"loading\" ? \"Sending…\" : <>Send Message <span className=\"btn-arrow\">→</span></>}\n                </button>\n              </form>\n            )}\n          </div>\n        </div>\n      </div>\n    </section>\n  )\n}\n```\n\nNotes on the approach:\n- Removed `required` HTML attributes (and added `noValidate`) in favor of custom validation, so error messages are styled consistently rather than using the browser's native tooltip.\n- Errors clear as soon as the user edits the corresponding field, and are (re)computed on submit.\n- Used `var(--accent-error, #e5484d)` as the error color with a fallback in case that CSS variable isn't defined in `globals.css` — worth checking and swapping for an exact token if one exists.\n- Kept the focus/blur hover styling but stopped it from overriding the error border color (border color now derives from `errors[field]` instead of being reset by `onFocus`/`onBlur`).",
+      "input_tokens": 208290,
+      "output_tokens": 3956,
+      "total_tokens": 212246,
+      "ms": 34512,
+      "turns": 3
+    },
+    "cm": {
+      "text": "ContactSection component file was not included in the provided context, so the validation patch cannot be written against its actual markup/state.",
+      "code": "ContactSection component file was not included in the provided context, so the validation patch cannot be written against its actual markup/state.",
+      "compiledTokens": 9517,
+      "input_tokens": 65076,
+      "output_tokens": 744,
+      "total_tokens": 65820,
+      "ms": 12034,
+      "turns": 1
+    },
+    "quality": {
+      "aScore": 6,
+      "bScore": 0,
+      "winner": "RawClaude",
+      "note": "Solution 1 delivers a styled, working validation implementation (though truncated mid-file), while Solution 2 is a non-answer that does no work."
+    }
+  },
+  {
+    "task": "reuse-task1",
+    "firstCtx": 8090,
+    "secondCtx": 8601,
+    "cm": {
+      "text": "useDebounce hook already exists at my-app/hooks/use-debounce.ts and fully satisfies the task requirements; no changes needed.",
+      "code": "useDebounce hook already exists at my-app/hooks/use-debounce.ts and fully satisfies the task requirements; no changes needed.",
+      "compiledTokens": 8601,
+      "input_tokens": 63612,
+      "output_tokens": 629,
+      "total_tokens": 64241,
+      "ms": 9940,
+      "turns": 1
+    }
+  }
+]
