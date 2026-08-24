@@ -3,7 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { SESSIONS_DIR } from '../config.js';
+import { sessionsDir } from '../config.js';
 import { CredentialManager } from '../providers/credentials.js';
 
 // Reuse the credential machine key for at-rest encryption of archived output.
@@ -18,7 +18,7 @@ function key(): Buffer {
 }
 
 export function archiveRawOutput(sessionId: string, taskId: string, raw: string): void {
-  const dir = path.join(SESSIONS_DIR, sessionId, 'cold');
+  const dir = path.join(sessionsDir(), sessionId, 'cold');
   fs.mkdirSync(dir, { recursive: true });
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key(), iv);
@@ -28,7 +28,7 @@ export function archiveRawOutput(sessionId: string, taskId: string, raw: string)
 }
 
 export function readRawOutput(sessionId: string, taskId: string): string | null {
-  const file = path.join(SESSIONS_DIR, sessionId, 'cold', `${taskId}.enc`);
+  const file = path.join(sessionsDir(), sessionId, 'cold', `${taskId}.enc`);
   if (!fs.existsSync(file)) return null;
   try {
     const buf = fs.readFileSync(file);

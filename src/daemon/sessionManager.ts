@@ -24,7 +24,7 @@ import { ProviderManager } from '../providers/manager.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import { spawnSync } from 'child_process';
-import { loadConfig, type Config } from '../config.js';
+import { loadConfig, setActiveRepo, type Config } from '../config.js';
 import type { Session, Task, TokenBudget } from '../types/index.js';
 
 /** Files changed in the working tree (staged + unstaged), for verify test discovery. */
@@ -60,7 +60,7 @@ export class SessionManager {
   /** Periodic checkpoint timer (spec §14.3). */
   startCheckpointTimer(): void {
     if (this.checkpointTimer) return;
-    const ms = Math.max(1, this.cfg.checkpoint.interval_minutes) * 60_000;
+    const ms = Math.max(1, this.cfg.checkpointing.interval_minutes) * 60_000;
     this.checkpointTimer = setInterval(() => {
       const s = this.current;
       if (s && (s.status === 'active' || s.status === 'planning')) {
@@ -104,6 +104,7 @@ export class SessionManager {
 
   // ── create (spec §14.1) ──────────────────────────────────
   async createSession(objective: string, repoPath: string): Promise<Session> {
+    setActiveRepo(repoPath);
     const api = staticAnalysis(repoPath);
     const isRepo = await api.git.isRepo();
     const commit = isRepo ? await api.git.headCommit() : 'no-git';

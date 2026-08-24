@@ -45,7 +45,7 @@ function computeStatus(): SessionStatusView | null {
     taskN: tasks.filter((t) => t.status === 'completed').length,
     taskTotal: tasks.length,
     tokens: tok.total,
-    tokenBudget: sm.cfg.context.session_token_budget,
+    tokenBudget: sm.cfg.token_budget.session_default,
     provider: s.current_provider?.model_id ?? sm.cfg.providers.default,
     lastCheckpoint: s.latest_checkpoint?.slice(0, 12),
   };
