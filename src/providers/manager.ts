@@ -1,0 +1,276 @@
+// Provider + Account manager and selector (spec §13.2-13.3, §13.6).
+
+import { now, id } from '../util/id.js';
+import { AnthropicAdapter, claudeCliAvailable } from './anthropic.js';
+import { OpenAIAdapter } from './openai.js';
+import { GeminiAdapter } from './gemini.js';
+import { CodexAdapter } from './codex.js';
+import { CredentialManager } from './credentials.js';
+import { bus } from '../events/bus.js';
+import type { Config } from '../config.js';
+import type { Account, ProviderAdapter, ModelSpec, TaskType, CompiledPrompt, ProviderResponse } from '../types/index.js';
+
+export interface SelectedProvider {
+  adapter: ProviderAdapter;
+  account: Account;
+  model: string;
+  spec: ModelSpec;
+}
+
+const ENV_REF: Record<string, string> = {
+  anthropic: 'env:ANTHROPIC_API_KEY',
+  openai: 'env:OPENAI_API_KEY',
+  google: 'env:GEMINI_API_KEY',
+  'openai-codex': 'env:OPENAI_API_KEY',
+};
+
+export class ProviderManager {
+  private adapters = new Map<string, ProviderAdapter>();
+  private accounts: Account[] = [];
+  private modelToProvider = new Map<string, string>();
+
+  constructor(private cfg: Config) {
+    this.adapters.set('anthropic', new AnthropicAdapter(cfg.providers.anthropic.models));
+    this.adapters.set('openai', new OpenAIAdapter(cfg.providers.openai.models));
+    this.adapters.set('google', new GeminiAdapter(cfg.providers.google.models));
+    this.adapters.set('openai-codex', new CodexAdapter(cfg.providers.openai_codex.models));
+
+    for (const [pid, group] of [
+      ['anthropic', cfg.providers.anthropic],
+      ['openai', cfg.providers.openai],
+      ['google', cfg.providers.google],
+      ['openai-codex', cfg.providers.openai_codex],
+    ] as const) {
+      for (const m of group.models) this.modelToProvider.set(m.id, pid);
+      this.accounts.push(this.makeAccount(pid, 'default', ENV_REF[pid]!));
+    }
+
+    // Restore any stored encrypted accounts.
+    for (const credId of CredentialManager.list()) {
+      const [pid, alias] = credId.split('::');
+      if (pid && this.adapters.has(pid)) this.accounts.push(this.makeAccount(pid, alias ?? 'stored', `cred:${credId}`));
+    }
+  }
+
+  private makeAccount(providerId: string, alias: string, credRef: string): Account {
+    const ctx = this.adapters.get(providerId)?.capabilities.max_context_tokens ?? 200_000;
+    return {
+      id: id('acct'),
+      provider_id: providerId,
+      alias,
+      credential_ref: credRef,
+      auth_type: 'api_key',
+      quota: {
+        daily_token_limit: 50_000_000,
+        tokens_used_today: 0,
+        rate_limit_rpm: 50,
+        rate_limit_tpm: 200_000,
+        current_rpm: 0,
+        current_tpm: 0,
+        context_size: ctx,
+        resets_at: now(),
+      },
+      health: {
+        status: 'healthy',
+        last_latency_ms: 0,
+        avg_latency_ms: 0,
+        error_rate_last_hour: 0,
+        last_checked_at: now(),
+      },
+      last_used_at: now(),
+    };
+  }
+
+  providerOf(modelId: string): string {
+    return this.modelToProvider.get(modelId) ?? 'anthropic';
+  }
+
+  listProviders(): string[] {
+    return [...this.adapters.keys()];
+  }
+  listModels(): ModelSpec[] {
+    return [
+      ...this.cfg.providers.anthropic.models,
+      ...this.cfg.providers.openai.models,
+      ...this.cfg.providers.google.models,
+      ...this.cfg.providers.openai_codex.models,
+    ];
+  }
+  listAccounts(): Account[] {
+    return this.accounts;
+  }
+  modelSpec(modelId: string): ModelSpec | undefined {
+    return this.listModels().find((m) => m.id === modelId);
+  }
+
+  addAccount(providerId: string, alias: string, apiKey: string): Account | null {
+    if (!this.adapters.has(providerId)) return null;
+    const credId = `${providerId}::${alias}`;
+    CredentialManager.store(credId, apiKey);
+    const acct = this.makeAccount(providerId, alias, `cred:${credId}`);
+    this.accounts.push(acct);
+    return acct;
+  }
+
+  removeAccount(alias: string): boolean {
+    const idx = this.accounts.findIndex((a) => a.alias === alias && a.credential_ref.startsWith('cred:'));
+    if (idx < 0) return false;
+    const acct = this.accounts[idx]!;
+    CredentialManager.delete(acct.credential_ref.slice(5));
+    this.accounts.splice(idx, 1);
+    return true;
+  }
+
+  /** Account selector (spec §13.3) — health → capacity → rate → context → score. */
+  select(modelId: string, requiredTokens: number, taskType?: TaskType): SelectedProvider {
+    const providerId = this.providerOf(modelId);
+    const spec = this.modelSpec(modelId) ?? this.cfg.providers.anthropic.models[0]!;
+    const adapter = this.adapters.get(providerId)!;
+
+    const candidates = this.accounts
+      .filter((a) => a.provider_id === providerId)
+      .filter((a) => a.health.status === 'healthy')
+      .filter((a) => a.quota.tokens_used_today < a.quota.daily_token_limit * 0.95)
+      .filter((a) => a.quota.current_rpm < a.quota.rate_limit_rpm * 0.8)
+      .filter((a) => a.quota.context_size >= requiredTokens);
+
+    const scored = candidates
+      .map((a) => ({
+        a,
+        score:
+          this.capabilityMatch(providerId, taskType) *
+          (1 - a.quota.tokens_used_today / a.quota.daily_token_limit) *
+          (1 / Math.max(1, a.health.avg_latency_ms || 1)),
+      }))
+      .sort((x, y) => y.score - x.score);
+
+    const account = scored[0]?.a ?? this.accounts.find((a) => a.provider_id === providerId) ?? this.accounts[0]!;
+    return { adapter, account, model: spec.id, spec };
+  }
+
+  private capabilityMatch(providerId: string, taskType?: TaskType): number {
+    const c = this.adapters.get(providerId)?.characteristics;
+    if (!c) return 1;
+    if (taskType === 'plan') return c.planning_quality;
+    if (taskType === 'refactor') return c.refactoring_quality;
+    return c.code_generation_quality;
+  }
+
+  /** Whether a provider actually has usable credentials — so failover never tries
+   *  a keyless provider and throws a confusing error (spec §13.3 filter by health). */
+  providerHasCredentials(providerId: string): boolean {
+    switch (providerId) {
+      case 'anthropic':
+        return claudeCliAvailable() || !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN);
+      case 'openai':
+      case 'openai-codex':
+        return !!process.env.OPENAI_API_KEY;
+      case 'google':
+        return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+      default:
+        return true;
+    }
+  }
+
+  /** Provider preference order for failover: configured default first (spec §26.7),
+   *  restricted to providers that actually have credentials. */
+  private failoverModelOrder(): string[] {
+    const def = this.cfg.providers.default;
+    const seenProvider = new Set<string>();
+    const order: string[] = [];
+    if (this.providerHasCredentials(this.providerOf(def))) {
+      order.push(def);
+      seenProvider.add(this.providerOf(def));
+    }
+    // One model per remaining CREDENTIALED provider, so failover switches providers.
+    for (const m of this.listModels()) {
+      const pid = this.providerOf(m.id);
+      if (!seenProvider.has(pid) && this.providerHasCredentials(pid)) {
+        seenProvider.add(pid);
+        order.push(m.id);
+      }
+    }
+    // Fallback: if nothing is credentialed, still try the default so the error is honest.
+    return order.length ? order : [def];
+  }
+
+  /**
+   * Compile → invoke with exponential backoff, automatically failing over to the
+   * next healthy provider when one is unavailable (spec §13, §26.7).
+   */
+  async invokeWithFailover(
+    compiled: CompiledPrompt,
+    requiredTokens: number,
+    taskType?: TaskType,
+  ): Promise<{ sel: SelectedProvider; response: ProviderResponse }> {
+    let lastErr: unknown;
+    for (const model of this.failoverModelOrder()) {
+      const sel = this.select(model, requiredTokens, taskType);
+      if (sel.account.health.status === 'unavailable') continue;
+      try {
+        const request = sel.adapter.format_prompt(compiled, sel.model);
+        const response = await invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
+        return { sel, response };
+      } catch (e) {
+        lastErr = e;
+        sel.account.health.status = 'unavailable';
+        sel.account.health.unavailable_since = now();
+        sel.account.health.unavailable_reason = String(e);
+        bus.emit({ type: 'provider.error', provider_id: sel.adapter.provider_id, error: String(e) });
+      }
+    }
+    throw lastErr ?? new Error('No available provider account');
+  }
+
+  /** Health-check every account (spec §13 provider health monitoring). */
+  async pingAll(): Promise<void> {
+    await Promise.all(this.accounts.map((a) => this.ping(a).catch(() => undefined)));
+  }
+
+  recordUsage(account: Account, totalTokens: number, latencyMs: number): void {
+    account.quota.tokens_used_today += totalTokens;
+    account.quota.current_rpm += 1;
+    account.last_used_at = now();
+    account.health.last_latency_ms = latencyMs;
+    account.health.avg_latency_ms = account.health.avg_latency_ms
+      ? (account.health.avg_latency_ms + latencyMs) / 2
+      : latencyMs;
+    if (account.quota.tokens_used_today > account.quota.daily_token_limit * 0.8) {
+      bus.emit({ type: 'quota.warning', account_id: account.id, percent_used: Math.round((account.quota.tokens_used_today / account.quota.daily_token_limit) * 100) });
+    }
+  }
+
+  markRateLimited(account: Account, retryAfterMs: number): void {
+    account.health.status = 'degraded';
+    bus.emit({ type: 'provider.rate_limited', account_id: account.id, retry_after_ms: retryAfterMs });
+  }
+
+  async ping(account: Account): Promise<void> {
+    const adapter = this.adapters.get(account.provider_id);
+    if (!adapter) return;
+    account.health.status = await adapter.ping(account);
+    account.health.last_checked_at = now();
+  }
+
+  costOf(spec: ModelSpec, inputTokens: number, outputTokens: number): number {
+    return (inputTokens / 1_000_000) * spec.cost_per_1m_input + (outputTokens / 1_000_000) * spec.cost_per_1m_output;
+  }
+}
+
+/** Invoke with exponential backoff on rate limits (spec §13). */
+export async function invokeWithBackoff<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
+  let attempt = 0;
+  let delay = 1000;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = String(e);
+      const rateLimited = /rate.?limit|429|overloaded|529|empty response|empty result|no output|transient/i.test(msg);
+      if (!rateLimited || attempt >= maxRetries) throw e;
+      attempt += 1;
+      await new Promise((r) => setTimeout(r, delay + Math.random() * 250));
+      delay *= 2;
+    }
+  }
+}
