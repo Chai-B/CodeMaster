@@ -33,6 +33,18 @@ export const Checkpoints = {
     return r ? { ...(JSON.parse(r.manifest_json) as CheckpointManifest), path: r.path } : null;
   },
 
+  /** Drop the oldest snapshots beyond `keep`, returning their disk paths so the
+   *  caller can remove the artifacts. `max_checkpoints_per_session` was inert,
+   *  so a long session accumulated a full snapshot every interval forever. */
+  prune(sessionId: string, keep: number): string[] {
+    const rows = getDb()
+      .prepare('SELECT id, path FROM checkpoints WHERE session_id=? ORDER BY created_at DESC')
+      .all(sessionId) as { id: string; path: string }[];
+    const stale = rows.slice(Math.max(1, keep));
+    for (const r of stale) getDb().prepare('DELETE FROM checkpoints WHERE id=?').run(r.id);
+    return stale.map((r) => r.path);
+  },
+
   get(idVal: string): (CheckpointManifest & { path: string }) | null {
     const r = getDb()
       .prepare('SELECT manifest_json, path FROM checkpoints WHERE id=?')

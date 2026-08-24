@@ -47,9 +47,12 @@ export async function processIR(
     }
   }
 
-  // Pre-risky checkpoint (spec §14.3) — large patches or deletions.
+  // Pre-risky checkpoint (spec §14.3) — a patch touching many files, a large
+  // diff, or any deletion. The configured file threshold was inert; only the
+  // hard-coded line count decided.
   const diffLines = ir.patches.reduce((n, p) => n + p.diff.split('\n').length, 0);
-  if (diffLines > 200 || ir.files_deleted.length > 0) {
+  const touched = new Set([...ir.patches.map((p) => p.file), ...ir.files_created.map((f) => f.path)]).size;
+  if (diffLines > 200 || touched >= cfg.checkpointing.pre_risky_threshold || ir.files_deleted.length > 0) {
     await createCheckpoint(session, 'pre-risky').catch(() => undefined);
   }
 
