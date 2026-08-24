@@ -98,6 +98,21 @@ export const Tokens = {
     return { wasted: r.w, input: r.i, ratio: r.w / r.i };
   },
 
+  /** How much of the input was served from the vendor's prefix cache. The
+   *  vendor CLI's fixed system prompt dominates every call, so this — not the
+   *  compiled context — is where most input tokens go and where reuse pays. */
+  cacheReuse(sessionId?: string): { fresh: number; cached: number; input: number; ratio: number } | null {
+    const where = sessionId ? 'WHERE session_id=?' : '';
+    const r = getDb()
+      .prepare(
+        `SELECT COALESCE(SUM(input_tokens),0) i, COALESCE(SUM(cache_read_tokens),0) c
+         FROM token_usage ${where}`,
+      )
+      .get(...(sessionId ? [sessionId] : [])) as { i: number; c: number };
+    if (!r.i) return null;
+    return { fresh: r.i - r.c, cached: r.c, input: r.i, ratio: r.c / r.i };
+  },
+
   byProvider(sessionId: string): Record<string, number> {
     const rows = getDb()
       .prepare(
