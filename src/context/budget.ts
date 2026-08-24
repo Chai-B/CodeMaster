@@ -90,17 +90,34 @@ export function profileForTask(taskType: TaskType): string {
   }
 }
 
+/**
+ * Escalation ladder (spec §11, token-discipline W2). The percentages below are
+ * shares of the budget actually granted, not of the model's whole window — the
+ * old code multiplied by max_context_tokens, so every task filled ~176k
+ * regardless of how small it was, and the file selector happily spent the
+ * allowance it was handed. A task now starts on the smallest rung and only
+ * climbs when a verification pass has actually failed at the current size.
+ */
+const LADDER = [24_000, 64_000, 160_000];
+
+export function budgetForTier(maxContextTokens: number, tier: number): number {
+  const rung = LADDER[Math.min(Math.max(tier, 0), LADDER.length - 1)]!;
+  return Math.min(maxContextTokens, rung);
+}
+
 export function resolveBudget(
   taskType: TaskType,
   maxContextTokens: number,
-): { profileName: string; allocations: Record<string, number> } {
+  tier = 0,
+): { profileName: string; allocations: Record<string, number>; budget: number } {
   const profileName = profileForTask(taskType);
   const profile = BUDGET_PROFILES[profileName]!;
+  const budget = budgetForTier(maxContextTokens, tier);
   // Reserve ~12% for instructions + output format + system overhead.
-  const usable = Math.floor(maxContextTokens * 0.88);
+  const usable = Math.floor(budget * 0.88);
   const allocations: Record<string, number> = {};
   for (const [component, pct] of Object.entries(profile)) {
     allocations[component] = Math.floor(usable * (pct ?? 0));
   }
-  return { profileName, allocations };
+  return { profileName, allocations, budget };
 }

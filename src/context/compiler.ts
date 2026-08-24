@@ -20,6 +20,9 @@ export interface CompileOptions {
   fileCompressionThreshold: number;
   conflictKeywords?: string[];
   taskInstructions?: string;
+  /** Escalation rung (spec §11): 0 = smallest budget. Raised only after a
+   *  verification pass has failed at the current size. */
+  tier?: number;
 }
 
 export async function compileContext(
@@ -28,7 +31,7 @@ export async function compileContext(
   opts: CompileOptions,
 ): Promise<CompiledPrompt> {
   const api = staticAnalysis(session.repository.path);
-  const { profileName, allocations } = resolveBudget(task.type, opts.maxContextTokens);
+  const { profileName, allocations, budget } = resolveBudget(task.type, opts.maxContextTokens, opts.tier ?? 0);
   const kws = session.objective_parsed?.keywords ?? [];
   const taskKws = `${task.title} ${task.description}`.match(/[A-Za-z_][A-Za-z0-9_]{3,}/g)?.slice(0, 8) ?? [];
   const allKws = [...new Set([...kws, ...taskKws])];
@@ -36,6 +39,7 @@ export async function compileContext(
   // Select files first so prior reasoning/failures can also be retrieved by code
   // locus (spec §8.4/§8.5) — memory that compounds on the files being touched,
   // not just on prose keyword overlap.
+  const fileCosts: Array<{ path: string; tokens: number }> = [];
   const fileBudget = allocations[C.RELEVANT_FILES] ?? Math.floor(opts.maxContextTokens * 0.3);
   const files = await selectFiles(api, task, fileBudget, opts.fileCompressionThreshold);
   const selectedPaths = files.map((f) => f.path);
@@ -180,6 +184,7 @@ export async function compileContext(
         return `### ${f.path}${f.compressed ? ' (compressed)' : ''}${ann ? ` — ${ann}` : ''}\n\`\`\`\n${f.content}\n\`\`\``;
       })
       .join('\n\n');
+    for (const f of files) fileCosts.push({ path: f.path, tokens: estimateTokens(f.content) });
     components.push({
       component: C.RELEVANT_FILES,
       heading: 'Files for This Task',
@@ -206,24 +211,26 @@ export async function compileContext(
   // Graded budget enforcement (spec §11.4): compress low-priority components,
   // then drop them, until the context fits the model window (reserving output room).
   const overhead = estimateTokens(OUTPUT_FORMAT) + estimateTokens(SYSTEM_PROMPT);
-  const ceiling = Math.max(1, opts.maxContextTokens - 8192 - overhead);
+  const ceiling = Math.max(1, budget - 8192 - overhead);
   const { compressed, dropped } = enforceBudget(ordered, ceiling);
   for (const d of dropped) omitted.push(d);
 
   const totalTokens = ordered.reduce((a, c) => a + c.estimated_tokens, 0) + estimateTokens(OUTPUT_FORMAT);
 
-  const budgetComment = `<!-- Context compiled at ${now()}
-     Profile: ${profileName}
+  const budgetComment = `<!-- Profile: ${profileName}
+     Compiled: ${now()}
      Tokens (est): ${totalTokens} / ${opts.maxContextTokens}
      Components: ${ordered.map((c) => c.component).join(', ')}
      Compressed: ${compressed.length ? compressed.join(', ') : 'none'}
      Omitted: ${omitted.length ? omitted.join(', ') : 'none'} -->`;
 
+  // The manifest goes last: it carries a timestamp, and as the first line it
+  // broke prefix caching for every prompt the tool had ever sent.
   const body = [
-    budgetComment,
     '# CodeMaster Context',
     ...ordered.map((c) => `## ${c.heading}\n${c.content}`),
     OUTPUT_FORMAT,
+    budgetComment,
   ].join('\n\n');
 
   return {
@@ -237,14 +244,19 @@ export async function compileContext(
     total_tokens: totalTokens,
     max_tokens: opts.maxContextTokens,
     included: ordered.map((c) => c.component),
+    file_costs: fileCosts,
     omitted,
   };
 }
 
+// Ordered most-stable first. Everything above CURRENT_TASK is identical across
+// the iterations of a task, so the vendor's prompt cache can match a long shared
+// prefix; the parts that change every iteration are pushed to the tail.
 const ORDER: ContextComponent[] = [
-  C.OBJECTIVE, C.CURRENT_TASK, C.EXECUTION_PLAN, C.PROVIDER_HANDOFF, C.WIKI_SECTIONS, C.ARCHITECTURE,
-  C.REPOSITORY_MAP, C.PRIOR_REASONING, C.KNOWN_FAILURES, C.CONVENTIONS, C.CONSTRAINTS,
-  C.OPEN_QUESTIONS, C.RECENT_CHANGES, C.RELEVANT_FILES, C.INSTRUCTIONS,
+  C.CONVENTIONS, C.ARCHITECTURE, C.REPOSITORY_MAP, C.WIKI_SECTIONS, C.CONSTRAINTS,
+  C.OBJECTIVE, C.EXECUTION_PLAN, C.PRIOR_REASONING, C.KNOWN_FAILURES,
+  C.PROVIDER_HANDOFF, C.OPEN_QUESTIONS, C.RELEVANT_FILES, C.CURRENT_TASK,
+  C.RECENT_CHANGES, C.INSTRUCTIONS,
 ];
 
 function orderComponents(components: CompiledComponent[]): CompiledComponent[] {

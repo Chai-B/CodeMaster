@@ -34,7 +34,7 @@ export async function solveWithVerification(
   verify: VerifyFn,
   maxIters = 3,
   // Injectable for testing; defaults to the real LLM-backed executor.
-  exec: (s: Session, t: Task, m: ProviderManager, c: Config) => Promise<ExecuteResult> = executeTask,
+  exec: (s: Session, t: Task, m: ProviderManager, c: Config, tier?: number) => Promise<ExecuteResult> = executeTask,
 ): Promise<SolveResult> {
   const origDesc = task.description;
   let last!: ExecuteResult;
@@ -45,7 +45,9 @@ export async function solveWithVerification(
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     iterations = i + 1;
     bus.emit({ type: 'log', level: 'info', message: `Solver iteration ${iterations}/${maxIters}…` });
-    last = await exec(session, task, manager, cfg);
+    // The context budget climbs only after a pass has actually failed at the
+    // current size — the first attempt never pays for a window it did not need.
+    last = await exec(session, task, manager, cfg, i);
     totalTokens += last.tokens;
 
     const v = await verify();
