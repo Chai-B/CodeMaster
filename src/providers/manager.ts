@@ -2,6 +2,7 @@
 
 import { now, id } from '../util/id.js';
 import { AnthropicAdapter, claudeCliAvailable } from './anthropic.js';
+import { codexCliAvailable } from './codex.js';
 import { OpenAIAdapter } from './openai.js';
 import { GeminiAdapter } from './gemini.js';
 import { CodexAdapter } from './codex.js';
@@ -24,8 +25,6 @@ const ENV_REF: Record<string, string> = {
   google: 'env:GEMINI_API_KEY',
   'openai-codex': 'env:OPENAI_API_KEY',
 };
-
-const UNAVAILABLE_COOLDOWN_MS = 60_000;
 
 export class ProviderManager {
   private adapters = new Map<string, ProviderAdapter>();
@@ -68,7 +67,7 @@ export class ProviderManager {
     ];
     if (env.some((k) => process.env[k])) return true;
     if (CredentialManager.list().length > 0) return true;
-    return claudeCliAvailable();
+    return claudeCliAvailable() || codexCliAvailable();
   }
 
   private makeAccount(providerId: string, alias: string, credRef: string): Account {
@@ -182,8 +181,9 @@ export class ProviderManager {
       case 'anthropic':
         return claudeCliAvailable() || !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN);
       case 'openai':
-      case 'openai-codex':
         return !!process.env.OPENAI_API_KEY;
+      case 'openai-codex':
+        return !!process.env.OPENAI_API_KEY || codexCliAvailable();
       case 'google':
         return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
       default:

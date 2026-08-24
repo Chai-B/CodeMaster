@@ -2,6 +2,10 @@
 // Codex returns raw unified diffs; the adapter parses them natively via irFromDiff.
 
 import OpenAI from 'openai';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { spawnSync } from 'child_process';
 import { irFromDiff } from '../workers/irFromDiff.js';
 import { DIFF_OUTPUT_FORMAT } from '../context/outputFormat.js';
 import { CredentialManager } from './credentials.js';
@@ -20,7 +24,7 @@ export class CodexAdapter implements ProviderAdapter {
   provider_id = 'openai-codex';
   models: ModelSpec[];
   capabilities = {
-    max_context_tokens: 32_000,
+    max_context_tokens: 200_000,
     supports_streaming: true,
     supports_tool_use: false,
     supports_vision: false,
@@ -37,7 +41,7 @@ export class CodexAdapter implements ProviderAdapter {
   constructor(models: ModelSpec[]) {
     this.models = models.length
       ? models
-      : [{ id: 'codex-2', context_size: 32_000, cost_per_1m_input: 1.5, cost_per_1m_output: 6 }];
+      : [{ id: 'gpt-5-codex', context_size: 200_000, cost_per_1m_input: 1.25, cost_per_1m_output: 10 }];
   }
 
   format_prompt(compiled: CompiledPrompt, model: string): ProviderRequest {
@@ -47,7 +51,13 @@ export class CodexAdapter implements ProviderAdapter {
 
   async invoke(request: ProviderRequest, account: Account): Promise<ProviderResponse> {
     const apiKey = resolveKey(account);
-    if (!apiKey) throw new Error('No OpenAI API key for Codex. Set OPENAI_API_KEY or add an account.');
+    // No API key but the authenticated `codex` CLI is present -> run on the
+    // user's ChatGPT subscription, the same way the Anthropic adapter falls back
+    // to the `claude` CLI. This is what gives failover a second vendor to reach.
+    if (!apiKey) {
+      if (codexCliAvailable()) return invokeViaCodexCli(request);
+      throw new Error('No OpenAI credentials for Codex. Set OPENAI_API_KEY or install the authenticated `codex` CLI.');
+    }
     const client = new OpenAI({ apiKey });
     const started = Date.now();
     const resp = await client.chat.completions.create({
@@ -78,7 +88,7 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   async ping(account: Account): Promise<'healthy' | 'degraded' | 'unavailable'> {
-    return resolveKey(account) ? 'healthy' : 'unavailable';
+    return resolveKey(account) || codexCliAvailable() ? 'healthy' : 'unavailable';
   }
 
   extract_token_usage(response: ProviderResponse): TokenUsage {
@@ -90,4 +100,84 @@ function resolveKey(account: Account): string | undefined {
   if (account.credential_ref.startsWith('env:')) return process.env[account.credential_ref.slice(4)];
   if (account.credential_ref.startsWith('cred:')) return CredentialManager.retrieve(account.credential_ref.slice(5)) ?? undefined;
   return process.env.OPENAI_API_KEY || account.credential_ref || undefined;
+}
+
+let _cliChecked: boolean | null = null;
+export function codexCliAvailable(): boolean {
+  if (_cliChecked !== null) return _cliChecked;
+  try {
+    _cliChecked = spawnSync('codex', ['--version'], { encoding: 'utf8' }).status === 0;
+  } catch {
+    _cliChecked = false;
+  }
+  return _cliChecked;
+}
+
+interface CodexUsage {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+}
+
+/** Last `turn.completed` usage in the JSONL event stream — the only real token
+ *  numbers the CLI reports. Absent means we record nothing rather than guess. */
+export function usageFromEvents(jsonl: string): CodexUsage | null {
+  let found: CodexUsage | null = null;
+  for (const line of jsonl.split('\n')) {
+    if (!line.includes('turn.completed')) continue;
+    try {
+      const ev = JSON.parse(line) as { type?: string; usage?: CodexUsage };
+      if (ev.type === 'turn.completed' && ev.usage) found = ev.usage;
+    } catch {
+      // Partial line; the next complete one wins.
+    }
+  }
+  return found;
+}
+
+/**
+ * Single-shot completion via the authenticated `codex` CLI (ChatGPT plan).
+ * CodeMaster has already compiled the context, so the sandbox is read-only and
+ * the prompt states the context is complete — otherwise Codex explores the repo
+ * on its own and spends tokens re-deriving what the compiler already supplied.
+ */
+function invokeViaCodexCli(request: ProviderRequest): ProviderResponse {
+  const started = Date.now();
+  const outFile = path.join(os.tmpdir(), `codex-out-${process.pid}-${Date.now()}.txt`);
+  const args = [
+    'exec',
+    '--json',
+    '--sandbox', 'read-only',
+    '--skip-git-repo-check',
+    '--output-last-message', outFile,
+    '-',
+  ];
+  // Codex has no system-prompt flag, so the system block is prepended.
+  const input = `${request.system}\n\nAll context needed is below. Do not read files or run commands; answer from the context provided.\n\n${request.user}`;
+  try {
+    const r = spawnSync('codex', args, { input, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const text = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : '';
+    if (r.status !== 0 || !text) {
+      const why = [
+        r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
+        r.signal ? `signal ${r.signal}` : null,
+        r.status ? `exit ${r.status}` : null,
+        text ? null : 'no final message',
+        r.stderr ? `stderr: ${r.stderr.slice(0, 400)}` : null,
+      ].filter(Boolean).join('; ');
+      throw new Error(`codex CLI failed (${why || 'no diagnostic available'})`);
+    }
+    const u = usageFromEvents(r.stdout ?? '') ?? {};
+    const cacheRead = u.cached_input_tokens ?? 0;
+    const input_tokens = u.input_tokens ?? 0;
+    const output_tokens = u.output_tokens ?? 0;
+    return {
+      text,
+      usage: { input_tokens, output_tokens, cache_read_tokens: cacheRead, total_tokens: input_tokens + output_tokens },
+      model: request.model,
+      latency_ms: Date.now() - started,
+    };
+  } finally {
+    fs.rmSync(outFile, { force: true });
+  }
 }
