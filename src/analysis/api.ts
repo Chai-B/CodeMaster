@@ -194,7 +194,11 @@ export class StaticAnalysisAPI {
     const rkg = this.rkg();
     for (const f of changedFiles) {
       for (const t of rkg.testsFor(f)) out.add(t);
-      for (const dep of this.getDependents(f)) if (isTestFile(dep)) out.add(dep);
+      // Transitive, not one hop: a suite that does `from pkg import thing`
+      // depends on `pkg/__init__.py`, which depends on the module that was
+      // actually changed. One hop finds neither, so a real pre-existing oracle
+      // reads as "no relevant tests" for most Python packages.
+      for (const dep of this.getImpactOf(f)) if (isTestFile(dep)) out.add(dep);
       for (const sib of testFilesFor(this.repoPath, f)) out.add(sib);
     }
     return [...out].filter((t) => fs.existsSync(path.join(this.repoPath, t)));
