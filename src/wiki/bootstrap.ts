@@ -21,6 +21,8 @@ export interface BootstrapResult {
 }
 
 const MIN_FILES_FOR_MODULE = 2;
+/** Below this much sampled source there is nothing a conventions call can learn. */
+const MIN_SOURCE_FOR_CONVENTIONS = 1500;
 const DOC_FILES = ['README.md', 'readme.md', 'CONTRIBUTING.md', 'ARCHITECTURE.md'];
 
 export async function bootstrapWiki(
@@ -112,6 +114,13 @@ export async function bootstrapWiki(
         })
         .filter(Boolean)
         .join('\n\n');
+      // A repository with almost no source has no conventions to extract, and
+      // this call is paid in full — one vendor floor — before any work begins.
+      // Measured on a two-line repository: 26,084 tokens for "0 modules, 0 docs".
+      if (sampleFiles.length < MIN_SOURCE_FOR_CONVENTIONS) {
+        bus.emit({ type: 'log', level: 'info', message: 'Skipping conventions: too little source to learn from.' });
+        return { modules, docsImported, architectureWritten };
+      }
       const { text } = await callLlm(manager, cfg, {
         system:
           'Extract the coding conventions of this repository for future code generation. Output concise markdown bullets covering: language/framework, file & naming conventions, component/module patterns, styling approach, and error-handling style. No preamble.',
