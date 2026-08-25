@@ -9,10 +9,29 @@ import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, ExecutionPlan, TaskType, TaskSpec } from '../types/index.js';
 
-const PLAN_INSTRUCTIONS = `Decompose the objective into an ordered list of concrete, verifiable tasks.
-Each task must be a single unit of work (implement one component, write one test suite, etc.).
-Return the tasks via <next_tasks> with a type attribute. Record the high-level approach as a planning decision.
-Do not write code in this step — only plan.`;
+const PLAN_INSTRUCTIONS = `Decompose the objective into the SMALLEST number of concrete tasks that actually change code.
+Each task is a single unit of work (implement one component, write one test suite, etc.).
+
+Do NOT plan tasks that only check, verify, confirm, validate or measure work another task does.
+Every change is already run against the repository's tests, a crash guard and a generated
+reproduction test before it is accepted. A task that only re-checks that costs a full model
+call and buys nothing.
+
+Titles must be short imperative phrases under 80 characters. Never continue one task's
+sentence into the next task's title.
+
+Return the tasks via <next_tasks> with a type attribute. Record the high-level approach as a
+planning decision. Do not write code in this step — only plan.`;
+
+/** Titles the planner emits when it plans its own verification. Those tasks are
+ *  pure W5 waste: the orchestrator already runs the suite, the crash guard and
+ *  an admitted repro deterministically. Measured on the benchmark, three of six
+ *  tasks were these, they consumed half the budget, and all three failed. */
+const VERIFICATION_ONLY = /^\s*(verify|confirm|validate|check|ensure|measure|assert)\b/i;
+
+export function isSelfVerificationTask(title: string): boolean {
+  return VERIFICATION_ONLY.test(title);
+}
 
 export async function generatePlan(
   session: Session,
@@ -66,9 +85,17 @@ export async function generatePlan(
 
   const ir = sel.adapter.parse_response(response, session.id, planningTask.id);
 
-  const specs: TaskSpec[] = ir.next_tasks.length
+  const emitted: TaskSpec[] = ir.next_tasks.length
     ? ir.next_tasks
     : [{ title: session.objective, priority: 'high', type: session.objective_parsed?.task_type }];
+  const kept = emitted.filter((s) => !VERIFICATION_ONLY.test(s.title));
+  for (const s of emitted) {
+    if (!kept.includes(s)) {
+      bus.emit({ type: 'log', level: 'info', message: `Dropped self-verification task: ${s.title.slice(0, 80)}` });
+    }
+  }
+  // If it planned nothing but verification, the work itself still has to happen.
+  const specs: TaskSpec[] = kept.length ? kept : emitted;
 
   // First pass: allocate ids so dependencies can reference siblings by title (spec §4.2.2).
   const ids = specs.map(() => id('task'));

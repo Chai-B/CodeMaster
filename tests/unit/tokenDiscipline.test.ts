@@ -85,3 +85,16 @@ test('a cached answer is returned without a provider call and counted as saved',
   // One hit recorded → 4200 tokens that were not bought a second time.
   assert.deepEqual(PromptCache.saved(), { hits: 1, tokens: 4200 });
 });
+
+test('a plan that verifies its own work is trimmed before it costs anything', async () => {
+  const { isSelfVerificationTask } = await import('../../src/workers/planner.js');
+  // Measured: three of six planned tasks on the benchmark were these. They spent
+  // half the budget re-checking what the deterministic verifier already runs.
+  assert.equal(isSelfVerificationTask('Verify join correctness is preserved'), true);
+  assert.equal(isSelfVerificationTask('Confirm memory scaling bound'), true);
+  assert.equal(isSelfVerificationTask('Measure matches() call scaling'), true);
+  // Real work that happens to mention testing is not verification-only.
+  assert.equal(isSelfVerificationTask('Implement _evict()'), false);
+  assert.equal(isSelfVerificationTask('Write a test suite for the join contract'), false);
+  assert.equal(isSelfVerificationTask('Checkout the release branch'), false);
+});
