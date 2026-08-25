@@ -8,7 +8,7 @@ import path from 'path';
 
 process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bv-'));
 
-const { detectFramework, typeOrImportCheck, runTests } = await import('../../src/analysis/testRunner.js');
+const { detectFramework, frameworkForNewTest, typeOrImportCheck, runTests } = await import('../../src/analysis/testRunner.js');
 const { makeBehavioralVerify } = await import('../../src/workers/verify/behavioralVerify.js');
 const { rkgQuery } = await import('../../src/rkg/query.js');
 const { getRepoDb } = await import('../../src/storage/db.js');
@@ -200,4 +200,22 @@ test('behavioralVerify: the use-site gate fails the run and names the callers', 
   assert.equal(r.ok, false);
   assert.match(r.output, /checkout\.py/);
   assert.equal(lastResults()?.framework, 'use-sites');
+});
+
+// A repo with no tests at all has no oracle — but it can be GIVEN one, and
+// refusing to name a framework is what stopped the repro generator before it
+// ever reached a model. This is the exact shape of the benchmark repo.
+test('a test-less python repo still names a framework a new test could use', () => {
+  const dir = mkRepo({
+    'streamjoin/__init__.py': '',
+    'streamjoin/join.py': 'def join(a, b):\n    return []\n',
+    'streamjoin/pairing.py': 'def pair(x):\n    return x\n',
+  });
+  assert.equal(detectFramework(dir), 'unknown', 'there is genuinely no oracle here');
+  assert.equal(frameworkForNewTest(dir), 'pytest', 'but one could be written');
+});
+
+test('a repo of nothing recognisable names no framework', () => {
+  const dir = mkRepo({ 'README.md': '# hi\n', 'data.csv': 'a,b\n1,2\n' });
+  assert.equal(frameworkForNewTest(dir), 'unknown');
 });

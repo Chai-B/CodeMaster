@@ -8,12 +8,12 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { callLlm } from '../llm.js';
-import { detectFramework, type Framework } from '../../analysis/testRunner.js';
+import { frameworkForNewTest, resolvePytest, type Framework } from '../../analysis/testRunner.js';
 import type { ProviderManager } from '../../providers/manager.js';
-import type { Config } from '../../config.js';
+import { repoDataDir, type Config } from '../../config.js';
 
 export interface Repro {
-  path: string; // repo-relative temp test file
+  path: string; // absolute path to the generated test, outside the repo
   run(): { ok: boolean; output: string }; // ok=true => repro passes (fix satisfies it)
   cleanup(): void;
 }
@@ -36,30 +36,45 @@ function extractCode(text: string): string | null {
   return code.length > 20 ? code : null;
 }
 
+/** Outside the repository, always. A generated test is scaffolding, not work
+ *  product: it must not appear in the user's `git status`, be picked up by
+ *  their own test run, or survive a crash as litter in their tree. */
 function reproDir(repoPath: string): string {
-  return path.join(repoPath, '.cm_repro');
+  return path.join(repoDataDir(repoPath), 'repro');
 }
 
 /** pytest: exit 1 = assertion failures (bug captured); 2 = collection/syntax error
  *  (broken test); 0 = passed. js runners: exit 1 = failures. We admit ONLY on a
  *  genuine assertion failure, so a broken generated test is never admitted. */
-function runReproFile(repoPath: string, rel: string, fw: Framework, opts: ReproOpts): { status: number | null; output: string } {
+function runReproFile(repoPath: string, file: string, fw: Framework, opts: ReproOpts): { status: number | null; output: string } {
   const timeout = opts.timeoutMs ?? 90_000;
   let cmd: string;
   let args: string[];
   if (fw === 'pytest') {
-    cmd = opts.pythonBin ?? 'python3';
-    args = ['-m', 'pytest', rel, '-q', '-p', 'no:cacheprovider', '--no-header'];
+    // Same resolution the real test run uses: `python3 -m pytest` is not a
+    // given, and "pytest is not installed" must never read as "the bug is not
+    // reproduced" — that silently discards every repro on such a machine.
+    const runner = resolvePytest(opts.pythonBin ?? 'python3');
+    if (!runner) return { status: 2, output: 'no pytest runner available' };
+    cmd = runner.cmd;
+    args = [...runner.pre, file, '-q', '-p', 'no:cacheprovider', '--no-header'];
   } else if (fw === 'jest') {
     cmd = 'npx';
-    args = ['jest', rel];
+    args = ['jest', file];
   } else if (fw === 'vitest') {
     cmd = 'npx';
-    args = ['vitest', 'run', rel];
+    args = ['vitest', 'run', file];
   } else {
     return { status: 2, output: 'unsupported framework for repro' };
   }
-  const r = spawnSync(cmd, args, { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8 });
+  // The repro lives in `.cm_repro/`, so the repository root is not on the
+  // import path by default and every `import <project>` would fail collection.
+  const env = {
+    ...process.env,
+    PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONPATH: [repoPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+  };
+  const r = spawnSync(cmd, args, { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8, env });
   if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 2, output: 'runner not found' };
   return { status: r.status, output: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-2500) };
 }
@@ -80,7 +95,7 @@ export async function generateRepro(
   sessionId: string,
   opts: ReproOpts = {},
 ): Promise<Repro | null> {
-  const fw = detectFramework(repoPath);
+  const fw = frameworkForNewTest(repoPath);
   const ext = fw === 'pytest' ? 'py' : fw === 'jest' || fw === 'vitest' ? 'test.ts' : null;
   if (!ext) return null; // only python/js supported for now
 
@@ -100,27 +115,27 @@ export async function generateRepro(
 
   const dir = reproDir(repoPath);
   const fileName = fw === 'pytest' ? 'test_cm_repro.py' : 'cm_repro.test.ts';
-  const rel = path.join('.cm_repro', fileName);
+  const file = path.join(dir, fileName);
   const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(repoPath, rel), code);
+    fs.writeFileSync(file, code);
   } catch {
     cleanup();
     return null;
   }
 
   // Admission gate: must genuinely FAIL on the current (buggy) code.
-  const first = runReproFile(repoPath, rel, fw, opts);
+  const first = runReproFile(repoPath, file, fw, opts);
   if (!isGenuineFailure(fw, first.status, first.output)) {
     cleanup();
     return null;
   }
 
   return {
-    path: rel,
+    path: file,
     run: () => {
-      const r = runReproFile(repoPath, rel, fw, opts);
+      const r = runReproFile(repoPath, file, fw, opts);
       return { ok: r.status === 0, output: r.output };
     },
     cleanup,

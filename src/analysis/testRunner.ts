@@ -61,6 +61,56 @@ export function detectFramework(repoPath: string): Framework {
   return scanForTestFiles(repoPath);
 }
 
+/**
+ * Which framework a NEW test should be written in. Detection proper answers
+ * "what judges this repo already"; this answers "what could judge it". A repo
+ * of loose `.py` files with no tests at all has no oracle — but it can still be
+ * given one, and refusing to name a framework is what left the repro generator
+ * returning null before it ever reached a model.
+ */
+export function frameworkForNewTest(repoPath: string): Framework {
+  const known = detectFramework(repoPath);
+  if (known !== 'unknown') return known;
+  const ext = dominantSourceExt(repoPath);
+  if (ext === 'py') return 'pytest';
+  if (ext === 'ts' || ext === 'js') return jsRunnerFrom(repoPath) ?? 'vitest';
+  if (ext === 'go') return 'gotest';
+  if (ext === 'rs') return 'cargo';
+  return 'unknown';
+}
+
+/** The extension most of this repo's source is written in. */
+function dominantSourceExt(repoPath: string, maxEntries = 4000): string | null {
+  const counts = new Map<string, number>();
+  let seen = 0;
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6 || seen > maxEntries) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (seen++ > maxEntries) return;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(path.join(dir, e.name), depth + 1);
+        continue;
+      }
+      const m = /\.(py|ts|tsx|js|jsx|mjs|cjs|go|rs)$/.exec(e.name);
+      if (!m) continue;
+      const raw = m[1]!;
+      const key = raw === 'rs' ? 'rs' : raw === 'go' ? 'go' : raw.startsWith('t') ? 'ts' : raw === 'py' ? 'py' : 'js';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  };
+  walk(repoPath, 0);
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [k, n] of counts) if (n > bestN) { best = k; bestN = n; }
+  return best;
+}
+
 const SKIP_DIRS = new Set([
   '.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env', 'dist', 'build',
   'target', '.tox', '.mypy_cache', '.pytest_cache', 'vendor', '.next', 'coverage',
@@ -127,7 +177,7 @@ function jsRunnerFrom(repoPath: string): Framework | null {
  * touching the user's environment or their repository.
  */
 let pytestRunner: { cmd: string; pre: string[] } | null | undefined;
-function resolvePytest(pythonBin: string): { cmd: string; pre: string[] } | null {
+export function resolvePytest(pythonBin: string): { cmd: string; pre: string[] } | null {
   if (pytestRunner !== undefined) return pytestRunner;
   const importable = spawnSync(pythonBin, ['-c', 'import pytest'], { encoding: 'utf8', timeout: 20_000 });
   if (!importable.error && importable.status === 0) {
