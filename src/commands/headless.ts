@@ -3,7 +3,7 @@
 
 import fs from 'fs';
 import { spawnSync } from 'child_process';
-import { setActiveRepo } from '../config.js';
+import { allModels, setActiveRepo } from '../config.js';
 import { beginCancellable, cancelActive, endCancellable } from '../util/cancel.js';
 import { bus } from '../events/bus.js';
 import { Daemon } from '../daemon/daemon.js';
@@ -24,6 +24,7 @@ const USAGE = `codemaster — persistent reasoning layer for AI coding agents
 Options for run:
   --json            emit a machine-readable result on stdout
   --repo <path>     repository to work in (default: cwd)
+  --model <id>      model to run on (default: the configured default)
   --verbose         stream progress to stderr even with --json
 
 The objective may be piped instead of passed as an argument:
@@ -36,17 +37,19 @@ interface Flags {
   json: boolean;
   verbose: boolean;
   repo: string;
+  model: string;
   objective: string;
 }
 
 function parse(argv: string[]): Flags | null {
-  const flags: Flags = { json: false, verbose: false, repo: process.cwd(), objective: '' };
+  const flags: Flags = { json: false, verbose: false, repo: process.cwd(), model: '', objective: '' };
   const words: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--json') flags.json = true;
     else if (a === '--verbose') flags.verbose = true;
     else if (a === '--repo') { const v = argv[++i]; if (!v) return null; flags.repo = v; }
+    else if (a === '--model') { const v = argv[++i]; if (!v) return null; flags.model = v; }
     else if (a.startsWith('-')) return null;
     else words.push(a);
   }
@@ -106,6 +109,16 @@ export async function runHeadless(argv: string[]): Promise<number> {
 
   const daemon = new Daemon();
   const sm = daemon.sm;
+  // Pinning a model is what makes a run reproducible: a benchmark or a CI job
+  // must not silently follow whatever default the config drifted to.
+  if (flags.model) {
+    const known = allModels(sm.cfg).some((m) => m.id === flags.model);
+    if (!known) {
+      process.stderr.write(`Unknown model: ${flags.model}\nKnown: ${allModels(sm.cfg).map((m) => m.id).join(', ')}\n`);
+      return 2;
+    }
+    sm.cfg.providers.default = flags.model;
+  }
 
   // Ctrl-C pauses rather than abandons: applied work stays on disk and the
   // session is resumable, instead of being left `active` for the startup
