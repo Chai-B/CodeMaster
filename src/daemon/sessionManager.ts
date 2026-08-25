@@ -13,7 +13,8 @@ import { generatePlan } from '../workers/planner.js';
 import { executeTask, type ExecuteResult } from '../workers/taskExecutor.js';
 import { solveWithVerification } from '../workers/solver.js';
 import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
-import { generateRepro, generateCharacterization } from '../workers/verify/reproGenerator.js';
+import { generateRepro, generateCharacterization, type Repro } from '../workers/verify/reproGenerator.js';
+import { detectFramework } from '../analysis/testRunner.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
 import { registerCoreWorkers, nextReadyTask } from '../workers/scheduler.js';
@@ -129,6 +130,9 @@ export class SessionManager {
   // Left off when SessionManager is driven directly (tests, scripts) so a
   // persistent watcher never keeps the process alive.
   private watchEnabled = false;
+  /** One per session; see characterizationFor. `null` records a generation that
+   *  was tried and failed, so it is not retried on every task. */
+  private characterizations = new Map<string, Repro | null>();
 
   constructor() {
     this.cfg = loadConfig();
@@ -337,13 +341,7 @@ export class SessionManager {
       const repro = this.cfg.verify.genRepro && !covered
         ? await generateRepro(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
         : null;
-      // The regression half. Without it a task can satisfy its repro by breaking
-      // everything around it and still be called verified — measured, four times
-      // in one benchmark run. Only worth a call where the repo has no tests of
-      // its own; where it does, those tests already say this and say it better.
-      const characterization = this.cfg.verify.genRepro && !covered
-        ? await generateCharacterization(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
-        : null;
+      const characterization = await this.characterizationFor(session, hint);
       const bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, repro, locus, characterization);
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
@@ -360,7 +358,6 @@ export class SessionManager {
         result = await executeTask(session, next, this.manager, this.cfg);
       }
       repro?.cleanup();
-      characterization?.cleanup();
       const bvResults = bv.lastResults() ?? undefined;
       next.evidence = buildEvidence(solverVerified, bvResults, result);
       const derived = deriveStatus(result, next.evidence);
@@ -428,6 +425,30 @@ export class SessionManager {
       bus.emit({ type: 'task.failed', task_id: next.id, reason: String(e) });
       throw e;
     }
+  }
+
+  /** The regression half of the oracle, generated ONCE per session and admitted
+   *  against the pristine tree. Regenerating it per task would admit a test that
+   *  passes on code an earlier task had already broken, cementing the regression
+   *  instead of catching it. Only where the repo ships no tests of its own —
+   *  where it does, those tests say this already and say it better. */
+  private async characterizationFor(session: Session, hint: string): Promise<Repro | null> {
+    if (!this.cfg.verify.genRepro) return null;
+    const repoPath = session.repository.path;
+    if (detectFramework(repoPath) !== 'unknown') return null;
+    const cached = this.characterizations.get(session.id);
+    if (cached !== undefined) return cached;
+    const made = await generateCharacterization(
+      repoPath,
+      session.objective,
+      hint,
+      this.manager,
+      this.cfg,
+      session.id,
+      { timeoutMs: this.cfg.verify.timeoutMs },
+    ).catch(() => null);
+    this.characterizations.set(session.id, made);
+    return made;
   }
 
   async runAll(session: Session): Promise<void> {
@@ -506,6 +527,8 @@ export class SessionManager {
   async complete(session: Session): Promise<void> {
     session.status = 'completing';
     this.persist(session);
+    this.characterizations.get(session.id)?.cleanup();
+    this.characterizations.delete(session.id);
 
     // Promote important decisions to long-term memory (spec §14.1).
     const reasoning = Reasoning.forSession(session.id);
