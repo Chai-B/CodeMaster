@@ -1,5 +1,7 @@
 // SessionManager — session lifecycle orchestration (spec §14.1).
 
+import fs from 'fs';
+import path from 'path';
 import { Sessions, Tasks } from '../storage/sessions.js';
 import { Reasoning } from '../storage/reasoning.js';
 import { Tokens } from '../storage/tokens.js';
@@ -95,6 +97,16 @@ function gitChangedFiles(repoPath: string): string[] {
 
 function emptyBudget(): TokenBudget {
   return { total_input: 0, total_output: 0, total: 0, by_provider: {}, cost_usd: 0 };
+}
+
+/** File source for a prompt, or null when it is too large to be worth sending. */
+function readSource(repoPath: string, rel: string, max: number): string | null {
+  try {
+    const src = fs.readFileSync(path.join(repoPath, rel), 'utf8');
+    return src.length <= max ? src : null;
+  } catch {
+    return null;
+  }
 }
 
 export class SessionManager {
@@ -287,15 +299,28 @@ export class SessionManager {
       // signal where the repo has no test covering the locus already; when tests
       // exist they are the stronger oracle, and the call bought nothing.
       const covered = locus.length > 0 && staticAnalysis(session.repository.path).relevantTests(locus).length > 0;
-      // Signatures of the files the task names, read from the index — free, and
-      // without them the model guesses at import paths and the repro dies at
-      // collection rather than at an assertion.
-      const hint = locus
+      // The source of the files the task names, capped. Signatures alone were not
+      // enough: a test that must FAIL on the current code has to be written
+      // against what that code actually does, and every repro attempt that only
+      // saw signatures asserted behavior the buggy code already satisfied — so it
+      // passed, and was discarded. Reading the file is free; withholding it cost
+      // the run its only oracle.
+      // The locus files plus what they import. A repro has to CONSTRUCT the values
+      // the locus consumes, and the constraints on those values (an id coerced
+      // with `int()`, a required field) live in the dependency, not in the file
+      // being fixed. Without them the generated test dies building its inputs.
+      const analysis = staticAnalysis(session.repository.path);
+      const deps = locus.flatMap((f) => analysis.getDependencies(f)).filter((d) => !locus.includes(d));
+      const hint = [...new Set([...locus, ...deps])]
+        .slice(0, 6)
         .flatMap((f) => {
-          const syms = staticAnalysis(session.repository.path).symbolsInFile(f, 12);
+          const src = readSource(session.repository.path, f, 4000);
+          if (src) return [`# ${f}\n${src}`];
+          const syms = analysis.symbolsInFile(f, 12);
           return syms.length ? [`# ${f}`, ...syms.map((sy) => `  ${sy.signature || sy.name}`)] : [];
         })
-        .join('\n');
+        .join('\n\n')
+        .slice(0, 12_000);
       const repro = this.cfg.verify.genRepro && !covered
         ? await generateRepro(session.repository.path, `${next.title}\n${next.description}`, hint, this.manager, this.cfg, session.id, { timeoutMs: this.cfg.verify.timeoutMs }).catch(() => null)
         : null;
