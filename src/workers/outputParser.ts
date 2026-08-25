@@ -149,6 +149,12 @@ export function parseIR(
     title: b.body.trim(),
     priority: (b.attrs.priority as TaskSpec['priority']) ?? 'medium',
     type: b.attrs.type as TaskSpec['type'],
+    // Never read before, so the planner's fallback ("no declared deps") always
+    // fired and every XML plan became a strictly linear chain.
+    depends_on: (b.attrs.depends_on ?? '')
+      .split(',')
+      .map((d) => d.trim())
+      .filter(Boolean),
   }));
 
   const open_questions = tagBlocks(firstTag(xml, 'open_questions') ?? '', 'question').map((q) => ({

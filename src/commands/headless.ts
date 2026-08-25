@@ -158,6 +158,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
 
     const tasks = Tasks.forSession(session.id);
     const failed = tasks.filter((t) => t.status === 'failed');
+    const blocked = tasks.filter((t) => t.status === 'blocked');
     const tokens = Tokens.sessionTotal(session.id);
     const verifiedCount = tasks.filter((t) => t.evidence?.verified).length;
 
@@ -179,6 +180,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
           verified: verifiedCount,
           unverified: tasks.length - verifiedCount,
           failed: failed.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
+          blocked: blocked.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
           tokens: { input: tokens.input, output: tokens.output, total: tokens.total, cost_usd: tokens.cost, by_model: Tokens.byModel(session.id) },
           files_changed: changedFiles(flags.repo),
           diff: new GitWorker(flags.repo).fullWorkingDiff(),
@@ -187,7 +189,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
     } else {
       const done = tasks.filter((t) => t.status === 'completed').length;
       process.stderr.write(
-        `\n${done}/${tasks.length} tasks completed, ${failed.length} failed · ` +
+        `\n${done}/${tasks.length} tasks completed, ${failed.length} failed, ${blocked.length} blocked · ` +
           `${verifiedCount}/${tasks.length} verified · $${tokens.cost.toFixed(4)} · ` +
           `${tokens.total.toLocaleString()} tokens · session ${session.id}\n`,
       );
@@ -195,12 +197,15 @@ export async function runHeadless(argv: string[]): Promise<number> {
         if (t.status === 'completed' && !t.evidence?.verified) {
           process.stderr.write(`  unverified: ${t.title} — ${t.evidence?.reason ?? 'nothing ran'}\n`);
         }
+        if (t.status === 'blocked') {
+          process.stderr.write(`  blocked: ${t.title} — ${t.failure_reason ?? 'unknown'}\n`);
+        }
       }
     }
 
     // Exit 2 for "it ran, but nothing proved it". A caller in CI must be able to
     // tell that apart from a clean verified run; previously both exited 0.
-    if (failed.length > 0 || tasks.length === 0) return 1;
+    if (failed.length > 0 || blocked.length > 0 || tasks.length === 0) return 1;
     return verifiedCount === 0 ? 2 : 0;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

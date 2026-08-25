@@ -39,3 +39,16 @@ test('defaults unknown status to completed', () => {
   const ir = parseIR('<task_result><status>weird</status><summary>s</summary></task_result>', 's', 't', ref);
   assert.equal(ir.status, 'completed');
 });
+
+// Without this the planner's fallback always fired and every XML plan collapsed
+// into a strictly linear chain, whatever the model actually proposed.
+test('reads declared task dependencies', () => {
+  const raw = `<task_result><status>completed</status><summary>s</summary>
+<next_tasks>
+  <task priority="high" type="implement">Fix eviction</task>
+  <task priority="medium" type="test" depends_on="Fix eviction, Something else">Cover eviction</task>
+</next_tasks></task_result>`;
+  const ir = parseIR(raw, 's', 't', ref);
+  assert.deepEqual(ir.next_tasks[0]?.depends_on, []);
+  assert.deepEqual(ir.next_tasks[1]?.depends_on, ['Fix eviction', 'Something else']);
+});

@@ -45,7 +45,10 @@ CODE OUTPUT RULES (important):
     <question>...</question>
   </open_questions>
   <next_tasks>
-    <task priority="high|medium|low" type="implement|test|review|refactor|debug">...</task>
+    <!-- depends_on: titles of sibling tasks, comma-separated. Omit it when the
+         task is independent — independent tasks are what let the plan branch
+         instead of running as one forced chain. -->
+    <task priority="high|medium|low" type="implement|test|review|refactor|debug" depends_on="">...</task>
   </next_tasks>
 </task_result>`;
 
