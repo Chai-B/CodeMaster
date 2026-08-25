@@ -287,8 +287,17 @@ export class SessionManager {
       // signal where the repo has no test covering the locus already; when tests
       // exist they are the stronger oracle, and the call bought nothing.
       const covered = locus.length > 0 && staticAnalysis(session.repository.path).relevantTests(locus).length > 0;
+      // Signatures of the files the task names, read from the index — free, and
+      // without them the model guesses at import paths and the repro dies at
+      // collection rather than at an assertion.
+      const hint = locus
+        .flatMap((f) => {
+          const syms = staticAnalysis(session.repository.path).symbolsInFile(f, 12);
+          return syms.length ? [`# ${f}`, ...syms.map((sy) => `  ${sy.signature || sy.name}`)] : [];
+        })
+        .join('\n');
       const repro = this.cfg.verify.genRepro && !covered
-        ? await generateRepro(session.repository.path, `${next.title}\n${next.description}`, '', this.manager, this.cfg, session.id, { timeoutMs: this.cfg.verify.timeoutMs }).catch(() => null)
+        ? await generateRepro(session.repository.path, `${next.title}\n${next.description}`, hint, this.manager, this.cfg, session.id, { timeoutMs: this.cfg.verify.timeoutMs }).catch(() => null)
         : null;
       const bv = makeBehavioralVerify(session.repository.path, changedGetter, { timeoutMs: this.cfg.verify.timeoutMs }, repro, locus);
       let result: ExecuteResult;
