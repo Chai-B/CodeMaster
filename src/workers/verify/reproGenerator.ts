@@ -63,7 +63,7 @@ function runReproFile(repoPath: string, file: string, fw: Framework, opts: Repro
     const runner = resolvePytest(opts.pythonBin ?? 'python3');
     if (!runner) return { status: 2, output: 'no pytest runner available' };
     cmd = runner.cmd;
-    args = [...runner.pre, file, '-q', '-p', 'no:cacheprovider', '--no-header'];
+    args = [...runner.pre, file, '-q', '-p', 'no:cacheprovider', '--no-header', '--color=no', '--tb=short'];
   } else if (fw === 'jest') {
     cmd = 'npx';
     args = ['jest', file];
@@ -82,7 +82,10 @@ function runReproFile(repoPath: string, file: string, fw: Framework, opts: Repro
   };
   const r = spawnSync(cmd, args, { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8, env });
   if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 2, output: 'runner not found' };
-  return { status: r.status, output: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-2500) };
+  // Strip ANSI. This output is handed back to the model as the correction it
+  // must act on; colour codes turn the one line that matters into noise.
+  const clean = ((r.stdout ?? '') + (r.stderr ?? '')).replace(/\u001b\[[0-9;]*m/g, '');
+  return { status: r.status, output: clean.slice(-2500) };
 }
 
 /** A test that blew up on a wrong import or a wrong call is a broken test, not a
@@ -253,7 +256,7 @@ export async function generateRepro(
     const first = runReproFile(repoPath, file, fw, opts);
     if (isGenuineFailure(fw, first.status, first.output)) break;
 
-    const tail = first.output.trim().split('\n').slice(-4).join(' ').slice(0, 600);
+    const tail = first.output.trim().split('\n').slice(-8).join('\n').slice(0, 900);
     const why =
       first.status === 0
         ? 'the generated test passed on the unfixed code, so it does not capture the bug'
@@ -269,7 +272,11 @@ export async function generateRepro(
           `Do NOT write that test again. It checked behavior that is already correct. Find the property ` +
           `the problem says is VIOLATED right now, assert that property, and make sure the assertion is ` +
           `false on the code as it stands.\n\n`
-        : `## Your previous attempt did not run\n${tail}\nFix it. Import only names listed above, and use only the public API.\n\n`;
+        : `## Your previous attempt did not run — it errored before reaching its assertion\n` +
+          `\`\`\`\n${tail}\n\`\`\`\n` +
+          `Read that error. If it came from the code under test rejecting your inputs, your inputs are the wrong ` +
+          `type or shape — look at what the source actually does with them and construct valid ones. Import only ` +
+          `names listed above.\n\n`;
     bus.emit({ type: 'log', level: 'info', message: `Reproduction test rejected, retrying once: ${why}` });
   }
 
