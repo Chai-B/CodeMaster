@@ -36,6 +36,10 @@ export function makeBehavioralVerify(
   /** Files the task named. When the patch misses all of them, nothing checked
    *  the thing that was asked for, however green the suite is. */
   locus: string[] = [],
+  /** Admitted only because it PASSED before the change. Its failure afterwards
+   *  is a regression the task caused, which no other check in this chain can
+   *  see when the repo ships no tests of its own. */
+  characterization?: Repro | null,
 ): BehavioralVerify {
   let last: TestResults | null = null;
 
@@ -62,12 +66,26 @@ export function makeBehavioralVerify(
       }
     }
 
-    // 3. The repo's own tests that cover the changed files (regression + behavior).
+    // 3. Characterization: behavior that worked before the change must still work.
+    if (characterization) {
+      const c = characterization.run();
+      if (!c.ok) {
+        last = { ran: true, passed: 0, failed: 1, total: 1, framework: 'characterization', guardOk: true, reproUsed: !!repro, discoveredTests: [characterization.path], output: c.output };
+        return {
+          ok: false,
+          output:
+            `Your change broke behavior that worked before it. This test passed on the original code and fails now:\n${c.output}\n\n` +
+            `Do not weaken or delete this check — fix the change so both it and the reported bug are satisfied.`,
+        };
+      }
+    }
+
+    // 4. The repo's own tests that cover the changed files (regression + behavior).
     // Locus coverage: a change that never touched the files the task named was
     // not verified by any suite, no matter what the suite reports.
     const missedLocus = locus.length > 0 && !locus.some((f) => changed.includes(f));
 
-    // 4. Use-site coverage: a changed signature whose callers were never opened
+    // 5. Use-site coverage: a changed signature whose callers were never opened
     // is broken code that a green suite cannot see. This is a hard gate, not a
     // confidence flag — the callers really are wrong.
     const gaps = await unvisitedUseSites(repoPath, changed);

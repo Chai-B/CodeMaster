@@ -285,3 +285,26 @@ test('a relative python import names the submodule, not the package __init__', a
   // `.` alone would resolve to the package __init__ and lose the real edge.
   assert.ok(!imports.includes('.'), 'bare "." means the submodule was dropped');
 });
+
+test('behavioralVerify: a failing characterization test is a hard gate', async () => {
+  const repo = mkRepo({ 'README.md': 'x' });
+  const passingRepro = { path: '.cm/repro.py', run: () => ({ ok: true, output: '1 passed' }), cleanup() {} };
+  const brokenChar = { path: '.cm/char.py', run: () => ({ ok: false, output: 'AssertionError: union != batch join' }), cleanup() {} };
+  const { verify, lastResults } = makeBehavioralVerify(repo, () => [], {}, passingRepro, [], brokenChar);
+  const r = (await verify()) as { ok: boolean; output: string };
+  // The fix arrived (repro green) and still broke something that worked before.
+  assert.equal(r.ok, false);
+  assert.match(r.output, /broke behavior that worked before/i);
+  assert.match(r.output, /union != batch join/);
+  assert.equal(lastResults()?.framework, 'characterization');
+});
+
+test('behavioralVerify: a passing characterization does not by itself verify', async () => {
+  const repo = mkRepo({ 'README.md': 'x' });
+  const okChar = { path: '.cm/char.py', run: () => ({ ok: true, output: '1 passed' }), cleanup() {} };
+  const { verify } = makeBehavioralVerify(repo, () => [], {}, null, [], okChar);
+  const r = (await verify()) as { ok: boolean; confident?: boolean };
+  assert.equal(r.ok, true);
+  // Preserving old behavior is not evidence the new behavior arrived.
+  assert.equal(r.confident, false);
+});
