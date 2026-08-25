@@ -125,11 +125,16 @@ function runCodemaster(): Run {
   let reasoning = '';
   try {
     const j = JSON.parse(r.stdout ?? '') as {
-      tokens?: { total?: number };
+      tokens?: { total?: number; by_model?: Record<string, number> };
       tasks?: Array<{ title: string; status: string }>;
     };
     tokens = j.tokens?.total ?? 0;
-    reasoning = (j.tasks ?? []).map((t) => `${t.status === 'completed' ? 'ok  ' : 'fail'} ${t.title}`).join('\n');
+    const models = Object.keys(j.tokens?.by_model ?? {});
+    reasoning =
+      (j.tasks ?? []).map((t) => `${t.status === 'completed' ? 'ok  ' : 'fail'} ${t.title}`).join('\n') +
+      // Failover can move a run onto another model; a result naming one model
+      // without checking this is not reproducible.
+      (models.length ? `\n\nmodels used: ${models.join(', ')}` : '');
   } catch {
     reasoning = '(no JSON result — see stderr)';
   }

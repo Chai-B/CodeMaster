@@ -169,7 +169,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
           repo: flags.repo,
           tasks: tasks.map((t) => ({ id: t.id, title: t.title, type: t.type, status: t.status, files: t.output_files.map((f) => f.path) })),
           failed: failed.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
-          tokens: { input: tokens.input, output: tokens.output, total: tokens.total },
+          tokens: { input: tokens.input, output: tokens.output, total: tokens.total, by_model: Tokens.byModel(session.id) },
           files_changed: changedFiles(flags.repo),
           diff: new GitWorker(flags.repo).fullWorkingDiff(),
         }, null, 2) + '\n',
