@@ -34,8 +34,17 @@ interface Run {
   changed: string[];
 }
 
-function sh(cmd: string, args: string[], cwd: string, input = ''): { out: string; err: string; code: number } {
-  const r = spawnSync(cmd, args, { cwd, input, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+/** `live` passes the child's stderr straight through. A benchmark run takes
+ *  minutes; buffering its progress until it exits leaves the operator staring
+ *  at nothing, unable to tell a working run from a hung one. */
+function sh(cmd: string, args: string[], cwd: string, input = '', live = false): { out: string; err: string; code: number } {
+  const r = spawnSync(cmd, args, {
+    cwd,
+    input,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: live ? ['pipe', 'pipe', 'inherit'] : 'pipe',
+  });
   return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status ?? 1 };
 }
 
@@ -92,6 +101,7 @@ function runCodemaster(dir: string): Run {
     ['tsx', path.join(ROOT, 'src/index.tsx'), 'run', '--repo', dir, '--json', '--verbose'],
     ROOT,
     `${OBJECTIVE}\n\nThe operator is in ./streamjoin/. Fix it in place.`,
+    true,
   );
   const seconds = Math.round((Date.now() - started) / 1000);
   let tokens = 0;
@@ -117,6 +127,7 @@ function runBaseline(dir: string): Run {
     ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--add-dir', dir],
     dir,
     `${OBJECTIVE}\n\nThe operator is in ./streamjoin/. Fix it in place.`,
+    true,
   );
   const seconds = Math.round((Date.now() - started) / 1000);
   let tokens = 0;
