@@ -73,13 +73,24 @@ function buildEvidence(solverVerified: boolean, bv: TestResults | undefined, res
  * `ir.status` is the model's self-report and defaults to 'completed', which is
  * why a session could finish green having never executed a line of code.
  */
-function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): TaskStatus {
-  if (result.ir.status === 'blocked') return 'blocked';
-  if (result.ir.status === 'failed') return 'failed';
+/** The status AND why. Four different things end a task badly and the reason
+ *  used to be taken from the model's summary alone — which is often empty, so a
+ *  failed task was reported with no cause at all. */
+function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): { status: TaskStatus; reason?: string } {
+  if (result.ir.status === 'blocked') {
+    return { status: 'blocked', reason: result.ir.blocked_by.join('; ') || result.ir.summary || 'the model reported it was blocked' };
+  }
+  if (result.ir.status === 'failed') {
+    return { status: 'failed', reason: result.ir.summary || 'the model reported failure without saying why' };
+  }
   // Every patch bounced: nothing changed, whatever the summary claims.
-  if (result.applied.length + result.created.length === 0 && result.failed.length > 0) return 'failed';
-  if (evidence.failed > 0) return 'failed';
-  return 'completed';
+  if (result.applied.length + result.created.length === 0 && result.failed.length > 0) {
+    return { status: 'failed', reason: `every patch was rejected — ${result.failed.map((f) => `${f.file}: ${f.reason}`).join('; ').slice(0, 400)}` };
+  }
+  if (evidence.failed > 0) {
+    return { status: 'failed', reason: `${evidence.failed} test(s) failed — ${(evidence.reason ?? '').slice(0, 300)}` };
+  }
+  return { status: 'completed' };
 }
 
 function gitChangedFiles(repoPath: string): string[] {
@@ -342,7 +353,9 @@ export class SessionManager {
       repro?.cleanup();
       const bvResults = bv.lastResults() ?? undefined;
       next.evidence = buildEvidence(solverVerified, bvResults, result);
-      next.status = deriveStatus(result, next.evidence);
+      const derived = deriveStatus(result, next.evidence);
+      next.status = derived.status;
+      if (derived.reason) next.failure_reason = derived.reason;
       next.completed_at = now();
       next.output_files = [...new Set([...result.applied, ...result.created])].map((path) => ({ path }));
       Tasks.update(next);
@@ -382,7 +395,6 @@ export class SessionManager {
         }
       } else if (next.status === 'failed') {
         session.progress.failed += 1;
-        next.failure_reason = result.ir.summary;
       }
       this.persist(session);
       await createCheckpoint(session, 'task-complete');
