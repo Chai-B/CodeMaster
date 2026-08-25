@@ -124,6 +124,17 @@ export const Tokens = {
     return out;
   },
 
+  /** Tokens per model. Failover can move a session onto a different model
+   *  mid-run, so a result that names one model without this is not reproducible. */
+  byModel(sessionId: string): Record<string, number> {
+    const rows = getDb()
+      .prepare('SELECT model_id, SUM(total_tokens) t FROM token_usage WHERE session_id=? GROUP BY model_id')
+      .all(sessionId) as { model_id: string; t: number }[];
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.model_id] = r.t;
+    return out;
+  },
+
   grandTotal(): { total: number; cost: number; sessions: number } {
     const r = getDb()
       .prepare(
