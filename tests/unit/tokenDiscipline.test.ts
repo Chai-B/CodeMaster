@@ -50,6 +50,21 @@ test('waste ratio reports the recorded unreferenced tokens', () => {
 
 // ── W4: never ask the same reasoning twice ──────────────────
 
+test('an identical question hits the cache regardless of compile time', () => {
+  const body = (t: string) =>
+    `# CodeMaster Context\n\n## Task\nfix the eviction bug\n\n<!-- Profile: implementation\n     Compiled: ${t}\n     Tokens (est): 100 / 200 -->`;
+  // The manifest timestamp is unique to the millisecond, so hashing it made
+  // every lookup miss and this cache could never return anything at all.
+  assert.equal(
+    promptHash(body('2026-08-25T10:00:00.000Z'), 'm'),
+    promptHash(body('2026-08-25T10:00:07.412Z'), 'm'),
+  );
+  assert.notEqual(
+    promptHash(body('2026-08-25T10:00:00.000Z'), 'm'),
+    promptHash(body('2026-08-25T10:00:00.000Z').replace('eviction', 'parsing'), 'm'),
+  );
+});
+
 test('the prompt hash changes with the context and with the model', () => {
   const a = promptHash('body one', 'sonnet');
   assert.equal(a, promptHash('body one', 'sonnet'));

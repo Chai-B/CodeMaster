@@ -9,8 +9,18 @@ import { getDb } from './db.js';
 import { now } from '../util/id.js';
 import type { IntermediateRepresentation } from '../types/index.js';
 
+/**
+ * The trailing `<!-- Profile: ... Compiled: <ISO ms> ... -->` manifest is
+ * diagnostics, not content, and its timestamp is unique to the millisecond.
+ * Hashing it gave this cache a 0% hit rate by construction — every lookup
+ * missed, forever, however identical the actual question was.
+ */
+function withoutManifest(body: string): string {
+  return body.replace(/\n*<!-- Profile:[\s\S]*?-->\s*$/, '');
+}
+
 export function promptHash(body: string, model: string): string {
-  return crypto.createHash('sha256').update(`${model}\n${body}`).digest('hex').slice(0, 32);
+  return crypto.createHash('sha256').update(`${model}\n${withoutManifest(body)}`).digest('hex').slice(0, 32);
 }
 
 export const PromptCache = {
