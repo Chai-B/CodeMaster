@@ -159,6 +159,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
     const tasks = Tasks.forSession(session.id);
     const failed = tasks.filter((t) => t.status === 'failed');
     const tokens = Tokens.sessionTotal(session.id);
+    const verifiedCount = tasks.filter((t) => t.evidence?.verified).length;
 
     if (flags.json) {
       process.stdout.write(
@@ -167,19 +168,40 @@ export async function runHeadless(argv: string[]): Promise<number> {
           status: session.status,
           objective,
           repo: flags.repo,
-          tasks: tasks.map((t) => ({ id: t.id, title: t.title, type: t.type, status: t.status, files: t.output_files.map((f) => f.path) })),
+          tasks: tasks.map((t) => ({
+            id: t.id, title: t.title, type: t.type, status: t.status,
+            files: t.output_files.map((f) => f.path),
+            // What actually checked this task. `verified: false` means the
+            // change was applied but nothing proved it correct.
+            verified: t.evidence?.verified ?? false,
+            evidence: t.evidence ?? null,
+          })),
+          verified: verifiedCount,
+          unverified: tasks.length - verifiedCount,
           failed: failed.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
-          tokens: { input: tokens.input, output: tokens.output, total: tokens.total, by_model: Tokens.byModel(session.id) },
+          tokens: { input: tokens.input, output: tokens.output, total: tokens.total, cost_usd: tokens.cost, by_model: Tokens.byModel(session.id) },
           files_changed: changedFiles(flags.repo),
           diff: new GitWorker(flags.repo).fullWorkingDiff(),
         }, null, 2) + '\n',
       );
     } else {
       const done = tasks.filter((t) => t.status === 'completed').length;
-      process.stderr.write(`\n${done}/${tasks.length} tasks completed, ${failed.length} failed · ${tokens.total.toLocaleString()} tokens · session ${session.id}\n`);
+      process.stderr.write(
+        `\n${done}/${tasks.length} tasks completed, ${failed.length} failed · ` +
+          `${verifiedCount}/${tasks.length} verified · $${tokens.cost.toFixed(4)} · ` +
+          `${tokens.total.toLocaleString()} tokens · session ${session.id}\n`,
+      );
+      for (const t of tasks) {
+        if (t.status === 'completed' && !t.evidence?.verified) {
+          process.stderr.write(`  unverified: ${t.title} — ${t.evidence?.reason ?? 'nothing ran'}\n`);
+        }
+      }
     }
 
-    return failed.length > 0 || tasks.length === 0 ? 1 : 0;
+    // Exit 2 for "it ran, but nothing proved it". A caller in CI must be able to
+    // tell that apart from a clean verified run; previously both exited 0.
+    if (failed.length > 0 || tasks.length === 0) return 1;
+    return verifiedCount === 0 ? 2 : 0;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     // --json consumers get a parseable result on every path, not an empty

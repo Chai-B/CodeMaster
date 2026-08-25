@@ -1,7 +1,7 @@
 // Session + Task persistence (spec §19.2).
 
 import { getDb } from './db.js';
-import type { Session, Task, SessionStatus } from '../types/index.js';
+import type { Session, Task, SessionStatus, TaskEvidence } from '../types/index.js';
 
 const J = (v: unknown) => JSON.stringify(v ?? null);
 const P = <T>(v: unknown, fallback: T): T => {
@@ -133,6 +133,7 @@ function rowToTask(r: Record<string, unknown>): Task {
     failure_reason: (r.failure_reason as string) ?? undefined,
     estimated_tokens: (r.estimated_tokens as number) ?? 0,
     actual_tokens: (r.actual_tokens as number) ?? undefined,
+    evidence: P<TaskEvidence | undefined>(r.evidence_json, undefined),
     order: (r.task_order as number) ?? 0,
   };
 }
@@ -146,15 +147,15 @@ export const Tasks = {
          input_files_json, output_files_json, dependencies_json, blocking_json,
          assigned_provider_json, reasoning_refs_json, decision_refs_json,
          started_at, completed_at, failed_at, failure_reason,
-         estimated_tokens, actual_tokens, task_order)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         estimated_tokens, actual_tokens, evidence_json, task_order)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         t.id, t.session_id, t.parent_task_id ?? null, t.title, t.description, t.type, t.status,
         J(t.input_files), J(t.output_files), J(t.dependencies), J(t.blocking),
         J(t.assigned_provider), J(t.reasoning_refs), J(t.decision_refs),
         t.started_at ?? null, t.completed_at ?? null, t.failed_at ?? null, t.failure_reason ?? null,
-        t.estimated_tokens, t.actual_tokens ?? null, t.order,
+        t.estimated_tokens, t.actual_tokens ?? null, J(t.evidence), t.order,
       );
   },
 
@@ -164,13 +165,13 @@ export const Tasks = {
         `UPDATE tasks SET title=?, description=?, type=?, status=?, input_files_json=?,
          output_files_json=?, dependencies_json=?, blocking_json=?, assigned_provider_json=?,
          reasoning_refs_json=?, decision_refs_json=?, started_at=?, completed_at=?, failed_at=?,
-         failure_reason=?, estimated_tokens=?, actual_tokens=?, task_order=? WHERE id=?`,
+         failure_reason=?, estimated_tokens=?, actual_tokens=?, evidence_json=?, task_order=? WHERE id=?`,
       )
       .run(
         t.title, t.description, t.type, t.status, J(t.input_files),
         J(t.output_files), J(t.dependencies), J(t.blocking), J(t.assigned_provider),
         J(t.reasoning_refs), J(t.decision_refs), t.started_at ?? null, t.completed_at ?? null, t.failed_at ?? null,
-        t.failure_reason ?? null, t.estimated_tokens, t.actual_tokens ?? null, t.order, t.id,
+        t.failure_reason ?? null, t.estimated_tokens, t.actual_tokens ?? null, J(t.evidence), t.order, t.id,
       );
   },
 

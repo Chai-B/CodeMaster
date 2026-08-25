@@ -68,6 +68,26 @@ export interface ArchitectureSnapshot {
   updated_at: ISO8601;
 }
 
+/** Where the oracle that judged a task came from. A task can never be marked
+ *  verified by a test it wrote itself — that is self-grading, not evidence. */
+export type OracleProvenance = 'pre-existing' | 'repro-admitted' | 'authored-by-task' | 'none';
+
+/**
+ * What actually ran, and what it proved. Replaces trusting the model's own
+ * `ir.status`, which defaults to 'completed' and so reported success on code
+ * that was never executed.
+ */
+export interface TaskEvidence {
+  verified: boolean;
+  provenance: OracleProvenance;
+  framework: string;
+  ran: boolean;
+  passed: number;
+  failed: number;
+  /** Present when nothing was verified: the reason, in plain words. */
+  reason?: string;
+}
+
 export interface Task {
   id: string;
   session_id: string;
@@ -97,6 +117,10 @@ export interface Task {
 
   estimated_tokens: number;
   actual_tokens?: number;
+
+  /** Deterministic record of what was run to check this task. Absent on tasks
+   *  from before the evidence ledger existed. */
+  evidence?: TaskEvidence;
 
   order: number;
 }
