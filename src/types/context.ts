@@ -33,6 +33,9 @@ export interface CompiledComponent {
 }
 
 export interface CompiledPrompt {
+  /** Cap on the model's own output. A worker asking for a 40-line test does not
+   *  need the 8192-token default, and paying for it buys nothing. */
+  max_output_tokens?: number;
   session_id: string;
   task_id: string;
   task_type: TaskType;

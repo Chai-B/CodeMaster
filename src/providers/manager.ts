@@ -278,7 +278,10 @@ export class ProviderManager {
   ): Promise<ProviderResponse> {
     const pid = sel.adapter.provider_id;
     const full = (): ProviderRequest => sel.adapter.format_prompt(prompt, sel.model);
-    const request = continuationRequest(full(), conv, !!sel.adapter.supports_continuation, pid);
+    const canResume = sel.adapter.continuation_available
+      ? sel.adapter.continuation_available(sel.account)
+      : !!sel.adapter.supports_continuation;
+    const request = continuationRequest(full(), conv, canResume, pid);
 
     if (!request.conversation) return invokeWithBackoff(() => sel.adapter.invoke(request, sel.account));
     try {

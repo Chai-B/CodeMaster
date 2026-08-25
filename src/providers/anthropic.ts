@@ -23,6 +23,16 @@ export class AnthropicAdapter implements ProviderAdapter {
   get supports_continuation(): boolean {
     return claudeCliAvailable();
   }
+
+  /** `invoke` picks the SDK whenever the account carries a key or token, and
+   *  the SDK ignores `conversation` entirely. Reporting CLI availability here
+   *  meant solver iterations 2+ were sent as a bare delta with the repository
+   *  context stripped — silently, and only on accounts that had a key. */
+  continuation_available(account: Account): boolean {
+    if (!claudeCliAvailable()) return false;
+    const auth = resolveAnthropicAuth(account);
+    return !auth.apiKey && !auth.authToken;
+  }
   models: ModelSpec[];
   capabilities = {
     max_context_tokens: 200_000,
@@ -48,7 +58,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       system: compiled.system,
       user: compiled.body,
       model,
-      max_tokens: 8192,
+      max_tokens: compiled.max_output_tokens ?? 8192,
     };
   }
 

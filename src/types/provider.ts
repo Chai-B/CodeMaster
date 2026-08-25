@@ -97,6 +97,11 @@ export interface ProviderAdapter {
   /** True when `ProviderRequest.conversation` is honoured. Stateless SDK
    *  adapters leave this false and always receive the full context. */
   supports_continuation?: boolean;
+  /** Whether continuation works for THIS account. An adapter that can resume
+   *  over one credential and not another must answer here: a wrong `true` sends
+   *  a bare delta to a stateless path, and the turn arrives with no repository
+   *  context at all. */
+  continuation_available?(account: Account): boolean;
   models: ModelSpec[];
   capabilities: ProviderCapabilities;
   characteristics: ProviderCharacteristics;
