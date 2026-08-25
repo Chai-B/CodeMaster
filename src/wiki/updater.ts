@@ -49,6 +49,10 @@ export function defaultFrontMatter(key: string, sessionId?: string): WikiFrontMa
 export interface ApplyResult {
   key: string;
   action: 'created' | 'updated' | 'conflict';
+  /** On a conflict, the two contradictory texts. Whoever reconciles them needs
+   *  to read them; a reconcile request carrying only a key cannot do the job. */
+  previous?: string;
+  incoming?: string;
 }
 
 /**
@@ -86,7 +90,7 @@ export function applyWikiUpdate(
 
   if (materiallyDifferent && conflictStrategy === 'reject') {
     bus.emit({ type: 'wiki.conflict', key: update.key });
-    return { key: update.key, action: 'conflict' };
+    return { key: update.key, action: 'conflict', previous: existing.content_markdown, incoming: update.content };
   }
 
   const newContent =
@@ -113,7 +117,7 @@ export function applyWikiUpdate(
 
   if (materiallyDifferent && conflictStrategy === 'queue') {
     bus.emit({ type: 'wiki.conflict', key: update.key });
-    return { key: update.key, action: 'conflict' };
+    return { key: update.key, action: 'conflict', previous: existing.content_markdown, incoming: update.content };
   }
   bus.emit({ type: 'wiki.updated', key: update.key });
   return { key: update.key, action: 'updated' };
