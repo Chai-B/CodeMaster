@@ -58,7 +58,13 @@ export async function processIR(
   }
 
   // 4. Patch processing
-  const apply = applyPatches(repoPath, ir.patches, ir.files_created);
+  const apply = applyPatches(repoPath, ir.patches, ir.files_created, {
+    locus: task.input_files.map((f) => f.path),
+    isTestTask: task.type === 'test',
+  });
+  for (const f of apply.failed) {
+    bus.emit({ type: 'log', level: 'warn', message: `Not applied — ${f.file}: ${f.reason}` });
+  }
   Undo.record(repoPath, session.id, task.id, ir.summary || task.title, apply.undo);
   for (const f of [...apply.applied, ...apply.created]) {
     await indexFile(repoPath, f);
