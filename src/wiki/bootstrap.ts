@@ -21,6 +21,24 @@ export interface BootstrapResult {
 }
 
 const MIN_FILES_FOR_MODULE = 2;
+/** A module small enough to send whole needs no summary: the compiler will put
+ *  the real source in the context anyway, so the summary is a second copy of a
+ *  fact already paid for — and it costs a full vendor floor to write. Measured
+ *  on a three-file repository: two calls and ~67k tokens before the objective
+ *  was read, describing 84 lines the task then received verbatim. */
+const MIN_SOURCE_FOR_MODULE_SUMMARY = 12_000;
+
+function moduleSourceSize(repoPath: string, files: string[]): number {
+  let total = 0;
+  for (const rel of files) {
+    try {
+      total += fsSync.statSync(path.join(repoPath, rel)).size;
+    } catch {
+      /* unreadable files cannot be summarised either */
+    }
+  }
+  return total;
+}
 /** Below this much sampled source there is nothing a conventions call can learn. */
 const MIN_SOURCE_FOR_CONVENTIONS = 1500;
 const DOC_FILES = ['README.md', 'readme.md', 'CONTRIBUTING.md', 'ARCHITECTURE.md'];
@@ -63,6 +81,10 @@ export async function bootstrapWiki(
   if (llmAvailable) {
     const moduleSummaries: string[] = [];
     for (const mod of map.top_level_modules.filter((m) => m.files >= MIN_FILES_FOR_MODULE).slice(0, 12)) {
+      if (moduleSourceSize(repoPath, mod.key_files) < MIN_SOURCE_FOR_MODULE_SUMMARY) {
+        bus.emit({ type: 'log', level: 'info', message: `Skipping summary of ${mod.name}: small enough to read directly.` });
+        continue;
+      }
       try {
         const summary = await runWorker(
           ModuleSummarizerWorker,
