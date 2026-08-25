@@ -101,7 +101,12 @@ export async function processIR(
           id: id('task'),
           session_id: session.id,
           title: `Resolve knowledge conflict: ${res.key}`,
-          description: `Two contradictory updates to wiki entry "${res.key}". Review both and reconcile.`,
+          description:
+            `Two contradictory updates to wiki entry "${res.key}". The second has been ` +
+            `stored and the entry flagged. Decide which is right, or write a single entry ` +
+            `that is true of both, and emit ONE wiki update for "${res.key}".\n\n` +
+            `## Previously recorded\n${(res.previous ?? '').slice(0, 2000)}\n\n` +
+            `## Newly recorded\n${(res.incoming ?? '').slice(0, 2000)}`,
           type: 'verify',
           status: 'pending',
           input_files: [],
