@@ -17,7 +17,17 @@ import { spawnSync } from 'child_process';
 
 const TASK = path.join(os.homedir(), 'triton-toolkit/tasks/stream-join-lateness');
 const ROOT = path.resolve(import.meta.dirname, '..');
-const WORK = process.env.BENCH_DIR ?? path.join(os.tmpdir(), 'cm-streamjoin');
+// Never under ~/.claude: the vendor CLI's permission system treats that tree as
+// sensitive and silently blocks every write, which reads as "the agent changed
+// nothing" rather than as the harness fault it is.
+const WORK = resolveWork();
+function resolveWork(): string {
+  const want = process.env.BENCH_DIR;
+  const claudeHome = path.join(os.homedir(), '.claude');
+  if (want && !path.resolve(want).startsWith(claudeHome)) return want;
+  if (want) process.stderr.write(`BENCH_DIR is under ${claudeHome}, where edits are blocked — using the system temp dir instead.\n`);
+  return path.join(os.tmpdir(), 'cm-streamjoin');
+}
 
 interface Score {
   passed: number;
@@ -99,6 +109,15 @@ function verify(dir: string): Score {
   return { passed, failed: failed + errors, total: passed + failed + errors, failures };
 }
 
+/** Keep the vendor's own reply. A run that spends six figures of tokens and
+ *  edits nothing has to be diagnosable without paying for it twice. */
+function saveRaw(name: string, r: { out: string; err: string; code: number }): void {
+  const dir = path.join(ROOT, 'bench/results');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${name}.raw.json`), r.out || '', 'utf8');
+  if (r.err) fs.writeFileSync(path.join(dir, `${name}.stderr.log`), r.err, 'utf8');
+}
+
 function changedFiles(dir: string): string[] {
   return sh('git', ['status', '--porcelain'], dir).out
     .split('\n')
@@ -122,6 +141,7 @@ function runCodemaster(dir: string): Run {
     true,
   );
   const seconds = Math.round((Date.now() - started) / 1000);
+  saveRaw('codemaster', r);
   let tokens = 0;
   try {
     const j = JSON.parse(r.out) as { tokens?: { total?: number } };
@@ -148,6 +168,7 @@ function runBaseline(dir: string): Run {
     true,
   );
   const seconds = Math.round((Date.now() - started) / 1000);
+  saveRaw('baseline', r);
   let tokens = 0;
   try {
     const u = (JSON.parse(r.out) as { usage?: Record<string, number> }).usage ?? {};
@@ -204,6 +225,14 @@ if (argv.includes('--verify-only')) {
   if (!argv.includes('--baseline')) runs.push(runCodemaster(path.join(WORK, 'cm')));
   if (!argv.includes('--cm')) runs.push(runBaseline(path.join(WORK, 'baseline')));
   report(runs);
-  fs.mkdirSync(path.join(ROOT, 'bench/results'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, 'bench/results/streamjoin.json'), JSON.stringify(runs, null, 2) + '\n', 'utf8');
+  // Merge rather than overwrite: --cm and --baseline are usually run separately,
+  // and a second run must not erase the side it did not measure.
+  const out = path.join(ROOT, 'bench/results/streamjoin.json');
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  let prior: Run[] = [];
+  try {
+    prior = JSON.parse(fs.readFileSync(out, 'utf8')) as Run[];
+  } catch { /* no prior results */ }
+  const merged = [...prior.filter((p) => !runs.some((r) => r.label === p.label)), ...runs];
+  fs.writeFileSync(out, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 }
