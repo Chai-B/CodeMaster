@@ -261,3 +261,15 @@ test('the import surface names real modules, arities and methods', () => {
   assert.doesNotMatch(s, /_evict/);
   assert.doesNotMatch(s, /test_ignored/);
 });
+
+test('a relative python import names the submodule, not the package __init__', async () => {
+  const { extract } = await import('../../src/analysis/extractors.js');
+  const src = ['from . import pairing', 'from .window import Slice as S', 'import os', 'from typing import List, Dict'].join('\n');
+  const imports = extract(src, 'python').imports;
+  assert.ok(imports.includes('.pairing'), `expected .pairing, got ${JSON.stringify(imports)}`);
+  assert.ok(imports.includes('.window'));
+  assert.ok(imports.includes('os'));
+  assert.ok(imports.includes('typing'));
+  // `.` alone would resolve to the package __init__ and lose the real edge.
+  assert.ok(!imports.includes('.'), 'bare "." means the submodule was dropped');
+});

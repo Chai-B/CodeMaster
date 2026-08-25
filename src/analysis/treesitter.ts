@@ -4,7 +4,7 @@
 
 import { createRequire } from 'module';
 import path from 'path';
-import { extract as regexExtract, type ExtractedSymbol } from './extractors.js';
+import { extract as regexExtract, pythonFromImport, type ExtractedSymbol } from './extractors.js';
 
 const require = createRequire(import.meta.url);
 // web-tree-sitter 0.20.x is a CommonJS default export (Parser class with static init/Language).
@@ -57,7 +57,7 @@ const QUERIES: Record<string, string> = {
     (function_definition name: (identifier) @function) @def
     (class_definition name: (identifier) @class) @def
     (import_statement name: (dotted_name) @import)
-    (import_from_statement module_name: (dotted_name) @import)
+    (import_from_statement) @import_from
     (call function: (identifier) @call)
     (call function: (attribute attribute: (identifier) @call))
   `,
@@ -176,6 +176,13 @@ export async function parseSource(content: string, lang: string): Promise<TsExtr
       // imports
       if (byName.import) {
         imports.push(cleanImport(byName.import.text));
+        continue;
+      }
+      // `module_name` alone cannot see a relative import: `from . import x`
+      // parses as a relative_import node, so the whole statement is captured
+      // and its import list expanded here.
+      if (byName.import_from) {
+        imports.push(...pythonFromImport(byName.import_from.text));
         continue;
       }
       if (byName.import_use) {

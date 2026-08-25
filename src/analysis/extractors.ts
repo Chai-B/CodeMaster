@@ -89,11 +89,30 @@ function extractTsJs(content: string): Extraction {
   return dedup(symbols, imports);
 }
 
+/** `from . import pairing` names its submodule in the import list, not in the
+ *  module path. Unexpanded, the edge points at the package `__init__` and the
+ *  real dependency is lost — which is most intra-package Python importing. */
+export function pythonFromImport(statement: string): string[] {
+  const m = /^\s*from\s+([A-Za-z0-9_.]+)\s+import\s+([^\n#]*)/.exec(statement);
+  if (!m) return [];
+  const module = m[1]!;
+  if (!/^\.+$/.test(module)) return [module];
+  const names = (m[2] ?? '')
+    .replace(/[()]/g, '')
+    .split(',')
+    .map((n) => n.trim().split(/\s+as\s+/)[0]!.trim())
+    .filter((n) => /^[A-Za-z_]\w*$/.test(n));
+  return names.length ? names.map((n) => module + n) : [module];
+}
+
 function extractPython(content: string): Extraction {
   const symbols: ExtractedSymbol[] = [];
   const imports: string[] = [];
-  const impRe = /^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import|import\s+([A-Za-z0-9_.]+))/gm;
-  for (let m; (m = impRe.exec(content)); ) imports.push((m[1] ?? m[2])!);
+  const impRe = /^\s*(?:from\s+[A-Za-z0-9_.]+\s+import[^\n#]*|import\s+([A-Za-z0-9_.]+))/gm;
+  for (let m; (m = impRe.exec(content)); ) {
+    if (m[1]) imports.push(m[1]);
+    else imports.push(...pythonFromImport(m[0]));
+  }
   const fnRe = /^(\s*)(?:async\s+)?def\s+([A-Za-z0-9_]+)\s*(\([^)]*\))/gm;
   for (let m; (m = fnRe.exec(content)); ) {
     symbols.push({
