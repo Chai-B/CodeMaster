@@ -245,7 +245,7 @@ test('a collection error and a pass are both refused', () => {
   assert.equal(isGenuineFailure('pytest', 0, '1 passed in 0.01s'), false);
 });
 
-test('the import surface names real modules, arities and methods', () => {
+test('a small module is sent whole, so constructor constraints are visible', () => {
   const repo = mkRepo({
     'pkg/__init__.py': '',
     'pkg/join.py': 'class StreamJoin:\n    def __init__(self, lower, upper, lateness):\n        self._a = []\n\n    def feed_a(self, event):\n        pass\n\n    def _evict(self):\n        pass\n',
@@ -253,13 +253,25 @@ test('the import surface names real modules, arities and methods', () => {
     'test_ignored.py': 'def test_x():\n    pass\n',
   });
   const s = importSurface(repo, 'pytest');
-  assert.match(s, /# module pkg\.join/);
+  assert.match(s, /pkg\/join\.py/);
   assert.match(s, /def __init__\(self, lower, upper, lateness\)/);
   assert.match(s, /def feed_a\(self, event\)/);
-  assert.match(s, /# module pkg\.pairing/);
+  assert.match(s, /pkg\/pairing\.py/);
   assert.match(s, /def matches\(a, b\)/);
-  assert.doesNotMatch(s, /_evict/);
+  // The body, not just the signature: three benchmark attempts died guessing
+  // attribute names and input types that only the body shows.
+  assert.match(s, /self\._a = \[\]/);
   assert.doesNotMatch(s, /test_ignored/);
+});
+
+test('a module too large to send whole falls back to an outline', () => {
+  const big =
+    'class Big:\n    def __init__(self, a):\n        self._x = a\n\n' +
+    Array.from({ length: 400 }, (_, i) => `    def m${i}(self, v):\n        return v\n`).join('\n');
+  const repo = mkRepo({ 'pkg/__init__.py': '', 'pkg/big.py': big });
+  const s = importSurface(repo, 'pytest');
+  assert.match(s, /# module pkg\.big/);
+  assert.match(s, /def __init__\(self, a\)/);
 });
 
 test('a relative python import names the submodule, not the package __init__', async () => {
