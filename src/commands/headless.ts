@@ -197,6 +197,9 @@ export async function runHeadless(argv: string[]): Promise<number> {
         if (t.status === 'completed' && !t.evidence?.verified) {
           process.stderr.write(`  unverified: ${t.title} — ${t.evidence?.reason ?? 'nothing ran'}\n`);
         }
+        if (t.status === 'failed') {
+          process.stderr.write(`  failed: ${t.title} — ${t.failure_reason ?? 'unknown'}\n`);
+        }
         if (t.status === 'blocked') {
           process.stderr.write(`  blocked: ${t.title} — ${t.failure_reason ?? 'unknown'}\n`);
         }
