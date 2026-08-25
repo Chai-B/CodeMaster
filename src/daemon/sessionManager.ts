@@ -13,7 +13,7 @@ import { generatePlan } from '../workers/planner.js';
 import { executeTask, type ExecuteResult } from '../workers/taskExecutor.js';
 import { solveWithVerification } from '../workers/solver.js';
 import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
-import { generateRepro } from '../workers/verify/reproGenerator.js';
+import { generateRepro, generateCharacterization } from '../workers/verify/reproGenerator.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
 import { registerCoreWorkers, nextReadyTask } from '../workers/scheduler.js';
@@ -332,10 +332,19 @@ export class SessionManager {
         })
         .join('\n\n')
         .slice(0, 12_000);
+      const problem = `${next.title}\n${next.description}`;
+      const genOpts = { timeoutMs: this.cfg.verify.timeoutMs };
       const repro = this.cfg.verify.genRepro && !covered
-        ? await generateRepro(session.repository.path, `${next.title}\n${next.description}`, hint, this.manager, this.cfg, session.id, { timeoutMs: this.cfg.verify.timeoutMs }).catch(() => null)
+        ? await generateRepro(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
         : null;
-      const bv = makeBehavioralVerify(session.repository.path, changedGetter, { timeoutMs: this.cfg.verify.timeoutMs }, repro, locus);
+      // The regression half. Without it a task can satisfy its repro by breaking
+      // everything around it and still be called verified — measured, four times
+      // in one benchmark run. Only worth a call where the repo has no tests of
+      // its own; where it does, those tests already say this and say it better.
+      const characterization = this.cfg.verify.genRepro && !covered
+        ? await generateCharacterization(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
+        : null;
+      const bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, repro, locus, characterization);
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
       // `.last` discarded `verified`, so the only real signal in the pipeline
@@ -351,6 +360,7 @@ export class SessionManager {
         result = await executeTask(session, next, this.manager, this.cfg);
       }
       repro?.cleanup();
+      characterization?.cleanup();
       const bvResults = bv.lastResults() ?? undefined;
       next.evidence = buildEvidence(solverVerified, bvResults, result);
       const derived = deriveStatus(result, next.evidence);

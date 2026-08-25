@@ -19,6 +19,11 @@ export interface Repro {
   cleanup(): void;
 }
 
+/** `repro` is admitted only if it FAILS on the current code; `characterization`
+ *  only if it PASSES. One proves the bug exists, the other proves what already
+ *  works — and nothing in the system was checking the second. */
+type Kind = 'repro' | 'characterization';
+
 export interface ReproOpts {
   pythonBin?: string;
   timeoutMs?: number;
@@ -36,6 +41,15 @@ Rules:
 - No fixtures, no conftest, no network. Keep it short.
 - Respond with ONLY the test source inside a single fenced code block. No prose.`;
 
+const CHARACTERIZATION_SYSTEM = `You write ONE test that pins down behavior the code ALREADY has correctly, so a fix elsewhere cannot silently break it.
+
+Rules:
+- The test MUST PASS on the code exactly as it stands right now. You are not reporting a bug; you are fencing off what already works.
+- Pick behavior the described change could plausibly break as a side effect — the ordinary, correct path through the same code. Do NOT assert the buggy behavior the change is meant to fix, and do NOT assert anything the description says is currently wrong.
+- Assert concrete values, not just "no exception". A test that cannot fail protects nothing.
+- No fixtures, no conftest, no network. Keep it short.
+- Respond with ONLY the test source inside a single fenced code block. No prose.`;
+
 function extractCode(text: string): string | null {
   const fence = /```(?:[a-zA-Z0-9_]*)\n([\s\S]*?)```/.exec(text);
   const code = (fence?.[1] ?? text).trim();
@@ -45,8 +59,8 @@ function extractCode(text: string): string | null {
 /** Outside the repository, always. A generated test is scaffolding, not work
  *  product: it must not appear in the user's `git status`, be picked up by
  *  their own test run, or survive a crash as litter in their tree. */
-function reproDir(repoPath: string): string {
-  return path.join(repoDataDir(repoPath), 'repro');
+function reproDir(repoPath: string, kind: Kind): string {
+  return path.join(repoDataDir(repoPath), kind === 'repro' ? 'repro' : 'characterization');
 }
 
 /** pytest: exit 1 = assertion failures (bug captured); 2 = collection/syntax error
@@ -189,7 +203,8 @@ export function importSurface(repoPath: string, fw: Framework, budget = 8000): s
   return out.join('\n\n').slice(0, budget);
 }
 
-export async function generateRepro(
+async function generateOracle(
+  kind: Kind,
   repoPath: string,
   problem: string,
   contextHint: string,
@@ -198,11 +213,12 @@ export async function generateRepro(
   sessionId: string,
   opts: ReproOpts = {},
 ): Promise<Repro | null> {
-  // Every `return null` below removes the only sound oracle in the system, so
-  // each one says why. Silence here is what let a whole benchmark run report
-  // success with nothing ever executed.
+  // Every `return null` below removes a sound oracle from the system, so each
+  // one says why. Silence here is what let a whole benchmark run report success
+  // with nothing ever executed.
+  const label = kind === 'repro' ? 'reproduction test' : 'characterization test';
   const give = (why: string): null => {
-    bus.emit({ type: 'log', level: 'warn', message: `No reproduction test: ${why}` });
+    bus.emit({ type: 'log', level: 'warn', message: `No ${label}: ${why}` });
     return null;
   };
   const fw = frameworkForNewTest(repoPath);
@@ -210,23 +226,27 @@ export async function generateRepro(
   if (!ext) return give(`no supported test framework for this repository (${fw})`);
 
   const surface = importSurface(repoPath, fw);
-  const dir = reproDir(repoPath);
-  const fileName = fw === 'pytest' ? 'test_cm_repro.py' : 'cm_repro.test.ts';
+  const dir = reproDir(repoPath, kind);
+  const stem = kind === 'repro' ? 'cm_repro' : 'cm_char';
+  const fileName = fw === 'pytest' ? `test_${stem}.py` : `${stem}.test.ts`;
   const file = path.join(dir, fileName);
   const cleanup = (): void => fs.rmSync(dir, { recursive: true, force: true });
 
   const ask = async (correction: string): Promise<string | null> => {
     const { text } = await callLlm(manager, cfg, {
-      system: SYSTEM,
+      system: kind === 'repro' ? SYSTEM : CHARACTERIZATION_SYSTEM,
       user:
-        `## Reported problem\n${problem.slice(0, 4000)}\n\n` +
+        (kind === 'repro'
+          ? `## Reported problem\n${problem.slice(0, 4000)}\n\n`
+          : `## A change is about to be made for this reason\n${problem.slice(0, 4000)}\n\n` +
+            `Your job is the opposite of fixing it: pin down what already works nearby, so the fix cannot break it unnoticed.\n\n`) +
         // Surface is built from the same files the hint quotes, so sending both
         // pays twice for one fact. Prefer the surface; fall back to the hint
         // only where no surface could be built.
         (surface ? '' : `## Relevant code\n${contextHint.slice(0, 6000)}\n\n`) +
         (surface ? `## The real code of this repository — names, arities, attributes and the constraints in each body are EXACT; anything not shown here does not exist. Read the constructors before you build inputs.\n${surface}\n\n` : '') +
         correction +
-        `Write the failing test now.`,
+        (kind === 'repro' ? `Write the failing test now.` : `Write the passing test now.`),
       sessionId,
       maxTokens: 1200,
     });
@@ -264,34 +284,45 @@ export async function generateRepro(
       return give(`could not write the test (${String(e).slice(0, 200)})`);
     }
 
-    // Admission gate: must genuinely FAIL on the current (buggy) code. A repro
-    // that passes on broken code does not capture the bug; one that errors on
-    // collection never ran at all. Neither may be admitted.
+    // Admission gate. A repro must genuinely FAIL on the current code: one that
+    // passes does not capture the bug, one that errors on collection never ran.
+    // A characterization test is the mirror image — it must PASS, because its
+    // whole value is that a later failure means the fix broke something.
     const first = runReproFile(repoPath, file, fw, opts);
-    if (isGenuineFailure(fw, first.status, first.output)) break;
+    const admitted =
+      kind === 'repro' ? isGenuineFailure(fw, first.status, first.output) : first.status === 0;
+    if (admitted) break;
 
     const tail = first.output.trim().split('\n').slice(-8).join('\n').slice(0, 900);
     const why =
-      first.status === 0
-        ? 'the generated test passed on the unfixed code, so it does not capture the bug'
-        : `the generated test did not run (exit ${first.status}): ${tail}`;
+      kind === 'repro'
+        ? first.status === 0
+          ? 'the generated test passed on the unfixed code, so it does not capture the bug'
+          : `the generated test did not run (exit ${first.status}): ${tail}`
+        : `the generated test did not pass on the unchanged code (exit ${first.status}): ${tail}`;
     if (attempt === ATTEMPTS - 1) {
       cleanup();
       return give(why);
     }
     correction =
-      first.status === 0
-        ? `## Your previous attempt PASSED on the buggy code, so it is worthless\n` +
-          `\`\`\`\n${code.slice(0, 1200)}\n\`\`\`\n` +
-          `Do NOT write that test again. It checked behavior that is already correct. Find the property ` +
-          `the problem says is VIOLATED right now, assert that property, and make sure the assertion is ` +
-          `false on the code as it stands.\n\n`
-        : `## Your previous attempt did not run — it errored before reaching its assertion\n` +
+      kind === 'characterization'
+        ? `## Your previous attempt did not pass on the UNCHANGED code\n` +
           `\`\`\`\n${tail}\n\`\`\`\n` +
-          `Read that error. If it came from the code under test rejecting your inputs, your inputs are the wrong ` +
-          `type or shape — look at what the source actually does with them and construct valid ones. Import only ` +
-          `names listed above.\n\n`;
-    bus.emit({ type: 'log', level: 'info', message: `Reproduction test rejected, retrying once: ${why}` });
+          `You either asserted behavior this code does not have, or your inputs were the wrong type or ` +
+          `shape. Read what the source actually does, and assert only what it does today — including where ` +
+          `that is imperfect. Import only names listed above.\n\n`
+        : first.status === 0
+          ? `## Your previous attempt PASSED on the buggy code, so it is worthless\n` +
+            `\`\`\`\n${code.slice(0, 1200)}\n\`\`\`\n` +
+            `Do NOT write that test again. It checked behavior that is already correct. Find the property ` +
+            `the problem says is VIOLATED right now, assert that property, and make sure the assertion is ` +
+            `false on the code as it stands.\n\n`
+          : `## Your previous attempt did not run — it errored before reaching its assertion\n` +
+            `\`\`\`\n${tail}\n\`\`\`\n` +
+            `Read that error. If it came from the code under test rejecting your inputs, your inputs are the wrong ` +
+            `type or shape — look at what the source actually does with them and construct valid ones. Import only ` +
+            `names listed above.\n\n`;
+    bus.emit({ type: 'log', level: 'info', message: `${label} rejected, retrying once: ${why}` });
   }
 
   return {
@@ -302,4 +333,33 @@ export async function generateRepro(
     },
     cleanup,
   };
+}
+
+export function generateRepro(
+  repoPath: string,
+  problem: string,
+  contextHint: string,
+  manager: ProviderManager,
+  cfg: Config,
+  sessionId: string,
+  opts: ReproOpts = {},
+): Promise<Repro | null> {
+  return generateOracle('repro', repoPath, problem, contextHint, manager, cfg, sessionId, opts);
+}
+
+/** The regression half of the oracle. A repro proves the fix arrived; only this
+ *  proves nothing else left. Measured on the benchmark: the fix landed and four
+ *  tests that had passed before started failing, and nothing in the system
+ *  looked. Where the repo ships tests they are the stronger form of this check
+ *  and this is not generated at all. */
+export function generateCharacterization(
+  repoPath: string,
+  problem: string,
+  contextHint: string,
+  manager: ProviderManager,
+  cfg: Config,
+  sessionId: string,
+  opts: ReproOpts = {},
+): Promise<Repro | null> {
+  return generateOracle('characterization', repoPath, problem, contextHint, manager, cfg, sessionId, opts);
 }
