@@ -117,7 +117,14 @@ const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.
  * That errors at collection, so the test never runs and the only sound oracle
  * in the run is discarded. Naming the real surface costs nothing and is right.
  */
-export function importSurface(repoPath: string, fw: Framework, budget = 2500): string {
+/** Small enough to send whole. An outline hides constructor bodies, and that
+ *  is where the constraints live: measured on the benchmark, three separate
+ *  attempts died on `int(key)` coercion in pairing.py and on guessed attribute
+ *  names, because signatures alone cannot show either. Real source costs a few
+ *  hundred tokens; each failed attempt costs a whole vendor floor. */
+const VERBATIM_MAX = 6000;
+
+export function importSurface(repoPath: string, fw: Framework, budget = 8000): string {
   if (fw !== 'pytest') return '';
   const out: string[] = [];
   const outline = (src: string): string[] => {
@@ -161,6 +168,10 @@ export function importSurface(repoPath: string, fw: Framework, budget = 2500): s
       try {
         src = fs.readFileSync(full, 'utf8');
       } catch {
+        continue;
+      }
+      if (src.length <= VERBATIM_MAX) {
+        out.push(`# ${path.relative(repoPath, full)} — full source\n${src.trimEnd()}`);
         continue;
       }
       const body = outline(src);
@@ -209,8 +220,11 @@ export async function generateRepro(
       system: SYSTEM,
       user:
         `## Reported problem\n${problem.slice(0, 4000)}\n\n` +
-        `## Relevant public API (signatures)\n${contextHint.slice(0, 3000)}\n\n` +
-        (surface ? `## The real API of this repository (names, arities and methods are EXACT; anything else does not exist)\n${surface}\n\n` : '') +
+        // Surface is built from the same files the hint quotes, so sending both
+        // pays twice for one fact. Prefer the surface; fall back to the hint
+        // only where no surface could be built.
+        (surface ? '' : `## Relevant code\n${contextHint.slice(0, 6000)}\n\n`) +
+        (surface ? `## The real code of this repository — names, arities, attributes and the constraints in each body are EXACT; anything not shown here does not exist. Read the constructors before you build inputs.\n${surface}\n\n` : '') +
         correction +
         `Write the failing test now.`,
       sessionId,
