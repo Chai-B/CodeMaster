@@ -1,14 +1,18 @@
-// Benchmark: CodeMaster vs direct provider use, on the stream-join-lateness task
-// from ~/triton-toolkit/tasks. The task ships a broken operator, a deterministic
-// behavioural verifier, and a reference solution — so pass/fail is measured, not
-// judged, and the same verifier scores both sides.
+// CodeMaster vs direct provider use, on one task with a deterministic verifier
+// (~/triton-toolkit/tasks/stream-join-lateness: a broken stream-join operator,
+// a behavioural test suite, a reference solution).
 //
-//   npx tsx bench/streamjoin.ts --verify-only   no LLM: prove the harness scores
-//                                               the broken tree and the gold fix
-//                                               differently
-//   npx tsx bench/streamjoin.ts --cm            run CodeMaster, then verify
-//   npx tsx bench/streamjoin.ts --baseline      run `claude -p` directly, verify
-//   npx tsx bench/streamjoin.ts                 both, side by side
+// What is being measured is the LAYER, not the model — so both sides run the
+// same model, the cheapest one that can attempt the task. Whatever that model
+// is, the layer should beat calling it directly.
+//
+//   npx tsx bench/streamjoin.ts --verify-only    no LLM: prove the verifier
+//                                                separates broken from fixed
+//   npx tsx bench/streamjoin.ts --cm             CodeMaster only
+//   npx tsx bench/streamjoin.ts --baseline       direct `claude -p` only
+//   npx tsx bench/streamjoin.ts --report         compare saved runs
+//
+// MODEL=<id> pins the model for both sides (default: haiku).
 
 import fs from 'fs';
 import os from 'os';
@@ -17,198 +21,183 @@ import { spawnSync } from 'child_process';
 
 const TASK = path.join(os.homedir(), 'triton-toolkit/tasks/stream-join-lateness');
 const ROOT = path.resolve(import.meta.dirname, '..');
-// Never under ~/.claude: the vendor CLI's permission system treats that tree as
-// sensitive and silently blocks every write, which reads as "the agent changed
-// nothing" rather than as the harness fault it is.
-const WORK = resolveWork();
-function resolveWork(): string {
-  const want = process.env.BENCH_DIR;
-  const claudeHome = path.join(os.homedir(), '.claude');
-  if (want && !path.resolve(want).startsWith(claudeHome)) return want;
-  if (want) process.stderr.write(`BENCH_DIR is under ${claudeHome}, where edits are blocked — using the system temp dir instead.\n`);
-  return path.join(os.tmpdir(), 'cm-streamjoin');
-}
+const RESULTS = path.join(ROOT, 'bench/results');
+// Never under ~/.claude: the vendor CLI treats that tree as sensitive and
+// blocks every write there, which reads as "the agent changed nothing".
+const WORK = path.join(os.tmpdir(), 'cm-streamjoin');
 
-interface Score {
-  passed: number;
-  failed: number;
-  total: number;
-  /** Names of the failing tests — the difference between "did not fix it" and
-   *  "fixed one bound by breaking the contract". */
-  failures: string[];
-}
+const MODEL = process.env.MODEL ?? 'claude-haiku-4-5-20251001';
+const CLI_MODEL = /haiku/.test(MODEL) ? 'haiku' : /opus/.test(MODEL) ? 'opus' : 'sonnet';
 
 interface Run {
   label: string;
-  score: Score;
+  passed: number;
+  total: number;
+  failures: string[];
   tokens: number;
   seconds: number;
   changed: string[];
+  /** The agent's own account of what it did — the thing a bare score cannot
+   *  show, and usually the reason one side beats the other. */
+  reasoning: string;
+  diff: string;
 }
 
-/** `live` passes the child's stderr straight through. A benchmark run takes
- *  minutes; buffering its progress until it exits leaves the operator staring
- *  at nothing, unable to tell a working run from a hung one. */
-function sh(cmd: string, args: string[], cwd: string, input = '', live = false): { out: string; err: string; code: number } {
-  const r = spawnSync(cmd, args, {
-    cwd,
-    input,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: live ? ['pipe', 'pipe', 'inherit'] : 'pipe',
-  });
-  return { out: r.stdout ?? '', err: r.stderr ?? '', code: r.status ?? 1 };
+function sh(cmd: string, args: string[], cwd: string, input = ''): { out: string; err: string } {
+  const r = spawnSync(cmd, args, { cwd, input, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return { out: r.stdout ?? '', err: r.stderr ?? '' };
 }
 
-/** A scratch repository holding only the broken operator, exactly as the task
- *  ships it. Committed, so `git diff` and the tool's own checkpointing work. */
+/** A scratch repo holding only the broken operator, exactly as the task ships it. */
 function prepare(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   fs.cpSync(path.join(TASK, 'environment/streamjoin'), path.join(dir, 'streamjoin'), { recursive: true });
-  fs.copyFileSync(path.join(TASK, 'instruction.md'), path.join(dir, 'instruction.md'));
   sh('git', ['init', '-q'], dir);
   sh('git', ['add', '-A'], dir);
-  sh('git', ['-c', 'user.email=bench@local', '-c', 'user.name=bench', 'commit', '-qm', 'broken operator'], dir);
+  sh('git', ['-c', 'user.email=b@l', '-c', 'user.name=b', 'commit', '-qm', 'broken operator'], dir);
 }
 
 /**
- * Run the task's own verifier against a copy of the tree. The published test
- * file hardcodes `/app`; rewriting that one path is the only change, so the
- * graded behaviour — including the pairing swap and both resource bounds — is
- * the task's, untouched.
- *
- * The copy is not tidiness. The verifier overwrites `pairing.py` with the
- * grader's own version by design, so verifying in place rewrites the tree it is
- * scoring — which then shows up as the agent having edited a file the
- * instruction forbids it to touch. Scoring a copy keeps the agent's diff
- * honest and lets the verifier run more than once.
+ * The task's own verifier, run against a COPY. The verifier overwrites
+ * pairing.py with the grader's version by design, so scoring in place would
+ * rewrite the tree being scored and make the agent look like it edited a file
+ * the instruction forbids. Only the hardcoded `/app` path is changed.
  */
-function verify(dir: string): Score {
+function verify(dir: string): { passed: number; total: number; failures: string[] } {
   const scratch = `${dir}-verify`;
   fs.rmSync(scratch, { recursive: true, force: true });
   fs.cpSync(dir, scratch, { recursive: true, filter: (p) => !p.includes('.git') });
-
-  const src = fs.readFileSync(path.join(TASK, 'tests/test_outputs.py'), 'utf8');
   const test = path.join(scratch, '_verify.py');
-  fs.writeFileSync(test, src.replaceAll('"/app"', JSON.stringify(scratch)), 'utf8');
-  const r = sh('uvx', ['--with', 'pytest==8.4.1', 'pytest', test, '-q', '--no-header', '-rf', '-p', 'no:cacheprovider'], scratch);
+  const src = fs.readFileSync(path.join(TASK, 'tests/test_outputs.py'), 'utf8');
+  fs.writeFileSync(test, src.replaceAll('"/app"', JSON.stringify(scratch)));
 
-  const text = (r.out + r.err).replace(/\u001b\[[0-9;]*m/g, '');
+  const r = sh('uvx', ['--with', 'pytest==8.4.1', 'pytest', test, '-q', '--no-header', '-rf', '-p', 'no:cacheprovider'], scratch);
+  const text = (r.out + r.err).replace(/\[[0-9;]*m/g, '');
   const passed = Number(/(\d+) passed/.exec(text)?.[1] ?? 0);
-  const failed = Number(/(\d+) failed/.exec(text)?.[1] ?? 0);
-  const errors = Number(/(\d+) errors?/.exec(text)?.[1] ?? 0);
-  // Name what broke. A bare count cannot distinguish an operator that fixed
-  // the resource bound and broke correctness from one that fixed nothing.
+  const failed = Number(/(\d+) failed/.exec(text)?.[1] ?? 0) + Number(/(\d+) errors?/.exec(text)?.[1] ?? 0);
   const failures = text
     .split('\n')
     .filter((l) => l.startsWith('FAILED'))
-    .map((l) => /::([\w]+)/.exec(l)?.[1] ?? l.trim());
+    .map((l) => /::(\w+)/.exec(l)?.[1] ?? l.trim());
 
   fs.rmSync(scratch, { recursive: true, force: true });
-  return { passed, failed: failed + errors, total: passed + failed + errors, failures };
+  return { passed, total: passed + failed, failures };
 }
 
-/** Keep the vendor's own reply. A run that spends six figures of tokens and
- *  edits nothing has to be diagnosable without paying for it twice. */
-function saveRaw(name: string, r: { out: string; err: string; code: number }): void {
-  const dir = path.join(ROOT, 'bench/results');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${name}.raw.json`), r.out || '', 'utf8');
-  if (r.err) fs.writeFileSync(path.join(dir, `${name}.stderr.log`), r.err, 'utf8');
-}
-
-function changedFiles(dir: string): string[] {
-  return sh('git', ['status', '--porcelain'], dir).out
-    .split('\n')
+function diffOf(dir: string): { changed: string[]; diff: string } {
+  const changed = sh('git', ['status', '--porcelain'], dir)
+    .out.split('\n')
     .map((l) => l.slice(3).trim())
     .filter(Boolean);
+  sh('git', ['add', '-A'], dir);
+  return { changed, diff: sh('git', ['diff', '--cached'], dir).out };
 }
 
-const OBJECTIVE = fs.readFileSync(path.join(TASK, 'instruction.md'), 'utf8').replaceAll('/app/', './');
+// The instruction as published, minus the container path. One added line names
+// the failure both sides must fix, so neither has to guess what "doesn't hold
+// up" means — the layer is being measured, not prompt luck.
+const OBJECTIVE =
+  fs.readFileSync(path.join(TASK, 'instruction.md'), 'utf8').replaceAll('/app/', './') +
+  '\n\nThe operator is in ./streamjoin/join.py. It is functionally correct but never evicts: ' +
+  'retained state grows without bound, which violates the retained-state bound. Fix it in place, ' +
+  'without breaking the join contract. Do not edit pairing.py.';
 
-/** CodeMaster, non-interactive, reporting its own token total. */
-function runCodemaster(dir: string): Run {
+function record(run: Run): Run {
+  fs.mkdirSync(RESULTS, { recursive: true });
+  fs.writeFileSync(path.join(RESULTS, `${run.label}.json`), JSON.stringify(run, null, 2) + '\n');
+  console.log(`\n${run.label}: ${run.passed}/${run.total} · ${run.tokens.toLocaleString()} tokens · ${run.seconds}s`);
+  if (run.failures.length) console.log(`  failing: ${run.failures.join(', ')}`);
+  return run;
+}
+
+function runCodemaster(): Run {
+  const dir = path.join(WORK, 'cm');
   prepare(dir);
   const started = Date.now();
-  // The objective goes in on stdin so a multi-paragraph instruction survives
-  // intact, rather than being re-quoted through an argv slot.
-  const r = sh(
+  const r = spawnSync(
     'npx',
-    ['tsx', path.join(ROOT, 'src/index.tsx'), 'run', '--repo', dir, '--json', '--verbose'],
-    ROOT,
-    `${OBJECTIVE}\n\nThe operator is in ./streamjoin/. Fix it in place.`,
-    true,
+    ['tsx', path.join(ROOT, 'src/index.tsx'), 'run', '--repo', dir, '--model', MODEL, '--json', '--verbose'],
+    { cwd: ROOT, input: OBJECTIVE, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] },
   );
   const seconds = Math.round((Date.now() - started) / 1000);
-  saveRaw('codemaster', r);
   let tokens = 0;
+  let reasoning = '';
   try {
-    const j = JSON.parse(r.out) as { tokens?: { total?: number } };
+    const j = JSON.parse(r.stdout ?? '') as {
+      tokens?: { total?: number };
+      tasks?: Array<{ title: string; status: string }>;
+    };
     tokens = j.tokens?.total ?? 0;
+    reasoning = (j.tasks ?? []).map((t) => `${t.status === 'completed' ? 'ok  ' : 'fail'} ${t.title}`).join('\n');
   } catch {
-    process.stderr.write(`codemaster produced no JSON result:\n${r.err.slice(-2000)}\n`);
+    reasoning = '(no JSON result — see stderr)';
   }
-  return { label: 'CodeMaster', score: verify(dir), tokens, seconds, changed: changedFiles(dir) };
+  const { changed, diff } = diffOf(dir);
+  return record({ label: 'codemaster', ...verify(dir), tokens, seconds, changed, reasoning, diff });
 }
 
-/**
- * The control: the same vendor CLI CodeMaster would call, pointed at the same
- * broken tree with the same instruction and left to explore it itself. Its own
- * reported usage is the token figure, summed the same way the adapter sums it.
- */
-function runBaseline(dir: string): Run {
+/** The control: the same model, the same instruction, exploring the tree itself. */
+function runBaseline(): Run {
+  const dir = path.join(WORK, 'baseline');
   prepare(dir);
   const started = Date.now();
-  const r = sh(
+  const r = spawnSync(
     'claude',
-    ['-p', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--add-dir', dir],
-    dir,
-    `${OBJECTIVE}\n\nThe operator is in ./streamjoin/. Fix it in place.`,
-    true,
+    ['-p', '--model', CLI_MODEL, '--output-format', 'json', '--permission-mode', 'acceptEdits', '--add-dir', dir],
+    { cwd: dir, input: OBJECTIVE, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   const seconds = Math.round((Date.now() - started) / 1000);
-  saveRaw('baseline', r);
   let tokens = 0;
+  let reasoning = '';
   try {
-    const u = (JSON.parse(r.out) as { usage?: Record<string, number> }).usage ?? {};
-    tokens =
-      (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
+    const j = JSON.parse(r.stdout ?? '') as { usage?: Record<string, number>; result?: string };
+    const u = j.usage ?? {};
+    tokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
+    reasoning = j.result ?? '';
   } catch {
-    process.stderr.write(`claude produced no JSON result:\n${r.err.slice(-2000)}\n`);
+    reasoning = `(no JSON result)\n${(r.stderr ?? '').slice(-1000)}`;
   }
-  return { label: 'claude (direct)', score: verify(dir), tokens, seconds, changed: changedFiles(dir) };
+  const { changed, diff } = diffOf(dir);
+  return record({ label: 'baseline', ...verify(dir), tokens, seconds, changed, reasoning, diff });
 }
 
-/** No LLM: the broken tree must fail and the reference solution must pass. If
- *  those two do not differ, no number this harness reports means anything. */
+/** No LLM: the broken tree must fail and the reference solution must pass. */
 function selfTest(): number {
   const dir = path.join(WORK, 'selftest');
   prepare(dir);
   const broken = verify(dir);
-  console.log(`broken start state: ${broken.passed}/${broken.total} passed — failing: ${broken.failures.join(', ') || 'none'}`);
-
   fs.copyFileSync(path.join(TASK, 'solution/solve.py'), path.join(dir, 'streamjoin/join.py'));
   const gold = verify(dir);
-  console.log(`reference solution:  ${gold.passed}/${gold.total} passed — failing: ${gold.failures.join(', ') || 'none'}`);
-
-  const ok = gold.total > 0 && gold.failed === 0 && broken.failed > 0;
-  console.log(ok ? '\nHarness discriminates. Benchmark runs are meaningful.' : '\nHarness does NOT discriminate — do not trust its numbers.');
+  console.log(`broken start state: ${broken.passed}/${broken.total} — failing: ${broken.failures.join(', ') || 'none'}`);
+  console.log(`reference solution: ${gold.passed}/${gold.total} — failing: ${gold.failures.join(', ') || 'none'}`);
+  const ok = gold.total > 0 && gold.failures.length === 0 && broken.failures.length > 0;
+  console.log(ok ? '\nVerifier discriminates. Runs are meaningful.' : '\nVerifier does NOT discriminate — its numbers mean nothing.');
   return ok ? 0 : 1;
 }
 
-function report(runs: Run[]): void {
-  console.log('');
+function report(): void {
+  const runs = ['codemaster', 'baseline']
+    .map((l) => path.join(RESULTS, `${l}.json`))
+    .filter((p) => fs.existsSync(p))
+    .map((p) => JSON.parse(fs.readFileSync(p, 'utf8')) as Run);
+  if (!runs.length) {
+    console.log('No saved runs. Run --cm and --baseline first.');
+    return;
+  }
+
+  console.log(`\nmodel: ${MODEL}\n`);
+  console.log('side          tests   tokens      time   files changed');
   for (const r of runs) {
     console.log(
-      `${r.label.padEnd(16)} ${String(r.score.passed).padStart(3)}/${r.score.total} tests · ` +
-        `${r.tokens.toLocaleString().padStart(10)} tokens · ${String(r.seconds).padStart(5)}s · ${r.changed.join(', ') || 'no changes'}`,
+      `${r.label.padEnd(12)} ${String(r.passed).padStart(3)}/${r.total}  ` +
+        `${r.tokens.toLocaleString().padStart(9)}  ${String(r.seconds).padStart(5)}s   ${r.changed.join(', ') || 'none'}`,
     );
-    if (r.score.failures.length) console.log(`${' '.repeat(17)}failing: ${r.score.failures.join(', ')}`);
   }
-  const [a, b] = runs;
-  if (a && b && a.tokens > 0 && b.tokens > 0) {
-    console.log(`\nCodeMaster spent ${((a.tokens / b.tokens) * 100).toFixed(0)}% of the tokens the direct run spent.`);
+  for (const r of runs) {
+    console.log(`\n-- ${r.label} ${'-'.repeat(40)}`);
+    if (r.failures.length) console.log(`failing: ${r.failures.join(', ')}`);
+    console.log(r.reasoning.trim().slice(0, 1200) || '(no account given)');
   }
 }
 
@@ -218,21 +207,10 @@ if (!fs.existsSync(TASK)) {
 }
 
 const argv = process.argv.slice(2);
-if (argv.includes('--verify-only')) {
-  process.exit(selfTest());
-} else {
-  const runs: Run[] = [];
-  if (!argv.includes('--baseline')) runs.push(runCodemaster(path.join(WORK, 'cm')));
-  if (!argv.includes('--cm')) runs.push(runBaseline(path.join(WORK, 'baseline')));
-  report(runs);
-  // Merge rather than overwrite: --cm and --baseline are usually run separately,
-  // and a second run must not erase the side it did not measure.
-  const out = path.join(ROOT, 'bench/results/streamjoin.json');
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  let prior: Run[] = [];
-  try {
-    prior = JSON.parse(fs.readFileSync(out, 'utf8')) as Run[];
-  } catch { /* no prior results */ }
-  const merged = [...prior.filter((p) => !runs.some((r) => r.label === p.label)), ...runs];
-  fs.writeFileSync(out, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+if (argv.includes('--verify-only')) process.exit(selfTest());
+else if (argv.includes('--report')) report();
+else {
+  if (!argv.includes('--baseline')) runCodemaster();
+  if (!argv.includes('--cm')) runBaseline();
+  report();
 }
