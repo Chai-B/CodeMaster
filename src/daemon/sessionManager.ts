@@ -390,28 +390,47 @@ export class SessionManager {
     let ran = 0;
     while (ran < limit) {
       if (isCancelled()) return;
-      const t = await this.runNextTask(session);
+      let t: Task | null;
+      try {
+        t = await this.runNextTask(session);
+      } catch (e) {
+        // A cancel is the user's decision and ends the run. Anything else is one
+        // task's problem: it is already recorded as failed, so let the rest of
+        // the plan proceed instead of abandoning the session mid-flight — that
+        // abandonment is what left sessions `active` forever, with their
+        // reasoning never reaching long-term memory.
+        if (e instanceof Cancelled) throw e;
+        ran += 1;
+        continue;
+      }
       if (!t) break;
       ran += 1;
     }
 
     const tasks = Tasks.forSession(session.id);
     const unrun = tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress');
-    if (unrun.length > 0) {
-      bus.emit({
-        type: 'log',
-        level: 'warn',
-        message:
-          ran >= limit
-            ? `Stopped after ${ran} task runs (iteration limit); ${unrun.length} task(s) unrun.`
-            : `${unrun.length} task(s) unrun — blocked by unmet dependencies.`,
-      });
+    // Record WHY each one never ran, rather than leaving it `pending` forever
+    // and the session `active` forever. A stranded task is a result too.
+    // A paused session is resumable: its remaining tasks stay `pending` so
+    // /resume can pick them up. Anything else is over, so say why.
+    if (session.status === 'paused') {
+      if (unrun.length > 0) bus.emit({ type: 'log', level: 'warn', message: `${unrun.length} task(s) still pending — session paused.` });
       return;
     }
+    const reason = ran >= limit ? `stopped after ${ran} task runs (iteration limit)` : 'dependencies never completed';
+    for (const t of unrun) {
+      t.status = 'blocked';
+      t.failure_reason = reason;
+      Tasks.update(t);
+    }
+    if (unrun.length > 0) {
+      bus.emit({ type: 'log', level: 'warn', message: `${unrun.length} task(s) blocked — ${reason}.` });
+    }
 
-    // The plan is exhausted, so close the session. Without this, `complete()`
-    // was reachable only from `/complete`: no session ever left `active` and
-    // the long-term memory tier never received a single row.
+    // Always close the session, whatever the plan did. `complete()` used to be
+    // reachable only when every task succeeded, so any real run — the ones with
+    // something worth remembering — left the session `active` and its reasoning
+    // never reached the long-term memory tier.
     await this.complete(session);
   }
 
