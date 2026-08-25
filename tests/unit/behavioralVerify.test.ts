@@ -8,7 +8,7 @@ import path from 'path';
 
 process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bv-'));
 
-const { detectFramework, typeOrImportCheck } = await import('../../src/analysis/testRunner.js');
+const { detectFramework, typeOrImportCheck, runTests } = await import('../../src/analysis/testRunner.js');
 const { makeBehavioralVerify } = await import('../../src/workers/verify/behavioralVerify.js');
 const { rkgQuery } = await import('../../src/rkg/query.js');
 const { getRepoDb } = await import('../../src/storage/db.js');
@@ -31,6 +31,23 @@ test('detectFramework identifies frameworks from marker files', () => {
   assert.equal(detectFramework(mkRepo({ 'package.json': JSON.stringify({ devDependencies: { vitest: '^1' } }) })), 'vitest');
   assert.equal(detectFramework(mkRepo({ 'package.json': JSON.stringify({ devDependencies: { jest: '^29' } }) })), 'jest');
   assert.equal(detectFramework(mkRepo({ 'README.md': 'x' })), 'unknown');
+});
+
+test('detectFramework finds tests with no marker file present', () => {
+  // The benchmark repo: loose .py modules, no pyproject.toml. This returned
+  // 'unknown', which silently disabled every deterministic check in the tool.
+  assert.equal(detectFramework(mkRepo({ 'pkg/join.py': 'x = 1', 'pkg/test_join.py': 'def test_a(): pass' })), 'pytest');
+  assert.equal(detectFramework(mkRepo({ 'src/thing.py': 'x = 1', 'src/thing_test.py': 'def test_a(): pass' })), 'pytest');
+  assert.equal(detectFramework(mkRepo({ 'main.go': 'package main', 'main_test.go': 'package main' })), 'gotest');
+  // A directory with source but genuinely no tests is still unknown.
+  assert.equal(detectFramework(mkRepo({ 'pkg/join.py': 'x = 1' })), 'unknown');
+});
+
+test('a missing runner is reported as unverified, never as a pass', () => {
+  const r = runTests(mkRepo({ 'README.md': 'x' }));
+  assert.equal(r.ran, false);
+  assert.equal(r.ok, false, 'no framework must not read as a passing suite');
+  assert.match(r.skipReason ?? '', /no test framework/);
 });
 
 test('typeOrImportCheck skips when no ts/py files changed', () => {

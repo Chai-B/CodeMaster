@@ -35,6 +35,9 @@ interface Run {
   total: number;
   failures: string[];
   tokens: number;
+  /** The only fair cross-side metric. Token counts are not comparable: one side
+   *  folds cache reads into `input`, the other reports them separately. */
+  costUsd: number;
   seconds: number;
   changed: string[];
   /** The agent's own account of what it did — the thing a bare score cannot
@@ -106,7 +109,9 @@ const OBJECTIVE =
 function record(run: Run): Run {
   fs.mkdirSync(RESULTS, { recursive: true });
   fs.writeFileSync(path.join(RESULTS, `${run.label}.json`), JSON.stringify(run, null, 2) + '\n');
-  console.log(`\n${run.label}: ${run.passed}/${run.total} · ${run.tokens.toLocaleString()} tokens · ${run.seconds}s`);
+  console.log(
+    `\n${run.label}: ${run.passed}/${run.total} · $${run.costUsd.toFixed(4)} · ${run.tokens.toLocaleString()} tokens · ${run.seconds}s`,
+  );
   if (run.failures.length) console.log(`  failing: ${run.failures.join(', ')}`);
   return run;
 }
@@ -122,13 +127,15 @@ function runCodemaster(): Run {
   );
   const seconds = Math.round((Date.now() - started) / 1000);
   let tokens = 0;
+  let costUsd = 0;
   let reasoning = '';
   try {
     const j = JSON.parse(r.stdout ?? '') as {
-      tokens?: { total?: number; by_model?: Record<string, number> };
+      tokens?: { total?: number; cost_usd?: number; by_model?: Record<string, number> };
       tasks?: Array<{ title: string; status: string }>;
     };
     tokens = j.tokens?.total ?? 0;
+    costUsd = j.tokens?.cost_usd ?? 0;
     const models = Object.keys(j.tokens?.by_model ?? {});
     reasoning =
       (j.tasks ?? []).map((t) => `${t.status === 'completed' ? 'ok  ' : 'fail'} ${t.title}`).join('\n') +
@@ -139,7 +146,7 @@ function runCodemaster(): Run {
     reasoning = '(no JSON result — see stderr)';
   }
   const { changed, diff } = diffOf(dir);
-  return record({ label: 'codemaster', ...verify(dir), tokens, seconds, changed, reasoning, diff });
+  return record({ label: 'codemaster', ...verify(dir), tokens, costUsd, seconds, changed, reasoning, diff });
 }
 
 /** The control: the same model, the same instruction, exploring the tree itself. */
@@ -154,17 +161,21 @@ function runBaseline(): Run {
   );
   const seconds = Math.round((Date.now() - started) / 1000);
   let tokens = 0;
+  let costUsd = 0;
   let reasoning = '';
   try {
-    const j = JSON.parse(r.stdout ?? '') as { usage?: Record<string, number>; result?: string };
+    const j = JSON.parse(r.stdout ?? '') as { usage?: Record<string, number>; result?: string; total_cost_usd?: number };
     const u = j.usage ?? {};
     tokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
+    // The first run of this benchmark never recorded this, so the two sides
+    // could not be compared on the only metric that is actually comparable.
+    costUsd = j.total_cost_usd ?? 0;
     reasoning = j.result ?? '';
   } catch {
     reasoning = `(no JSON result)\n${(r.stderr ?? '').slice(-1000)}`;
   }
   const { changed, diff } = diffOf(dir);
-  return record({ label: 'baseline', ...verify(dir), tokens, seconds, changed, reasoning, diff });
+  return record({ label: 'baseline', ...verify(dir), tokens, costUsd, seconds, changed, reasoning, diff });
 }
 
 /** No LLM: the broken tree must fail and the reference solution must pass. */
@@ -192,12 +203,16 @@ function report(): void {
   }
 
   console.log(`\nmodel: ${MODEL}\n`);
-  console.log('side          tests   tokens      time   files changed');
+  console.log('side          tests        cost   tokens      time   files changed');
   for (const r of runs) {
     console.log(
       `${r.label.padEnd(12)} ${String(r.passed).padStart(3)}/${r.total}  ` +
+        `${(r.costUsd ? `$${r.costUsd.toFixed(4)}` : 'n/a').padStart(10)}  ` +
         `${r.tokens.toLocaleString().padStart(9)}  ${String(r.seconds).padStart(5)}s   ${r.changed.join(', ') || 'none'}`,
     );
+  }
+  if (runs.some((r) => !r.costUsd)) {
+    console.log('\nNOTE: a side reports no cost — that run predates cost capture and cannot be compared on price.');
   }
   for (const r of runs) {
     console.log(`\n-- ${r.label} ${'-'.repeat(40)}`);

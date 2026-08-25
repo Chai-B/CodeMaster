@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   failure_reason TEXT,
   estimated_tokens INTEGER NOT NULL DEFAULT 0,
   actual_tokens INTEGER,
+  evidence_json TEXT,
   task_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -391,6 +392,7 @@ const PRIMARY_MIGRATIONS = [
   'ALTER TABLE checkpoints ADD COLUMN size_bytes INTEGER',
   'ALTER TABLE checkpoints ADD COLUMN tasks_completed INTEGER',
   'ALTER TABLE checkpoints ADD COLUMN tasks_remaining INTEGER',
+  'ALTER TABLE tasks ADD COLUMN evidence_json TEXT',
 ];
 
 export function applyPrimarySchema(db: DatabaseSync): void {

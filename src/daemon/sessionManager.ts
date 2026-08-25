@@ -10,7 +10,7 @@ import { parseObjective } from '../workers/intentParser.js';
 import { generatePlan } from '../workers/planner.js';
 import { executeTask, type ExecuteResult } from '../workers/taskExecutor.js';
 import { solveWithVerification } from '../workers/solver.js';
-import { makeBehavioralVerify } from '../workers/verify/behavioralVerify.js';
+import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
 import { generateRepro } from '../workers/verify/reproGenerator.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
@@ -26,12 +26,71 @@ import { id, now } from '../util/id.js';
 import { spawnSync } from 'child_process';
 import { loadConfig, setActiveRepo, type Config } from '../config.js';
 import { Cancelled, isCancelled } from '../util/cancel.js';
-import type { Session, Task, TokenBudget } from '../types/index.js';
+import type { Session, Task, TokenBudget, TaskEvidence, TaskStatus, OracleProvenance } from '../types/index.js';
 
 /** Files changed in the working tree (staged + unstaged), for verify test discovery. */
+/**
+ * What actually checked this task, and whether that constitutes proof.
+ *
+ * The rule that matters: a test file this task WROTE cannot verify this task.
+ * Before the ledger, a test the model had authored seconds earlier was admitted
+ * as a pre-existing oracle and granted full confidence.
+ */
+function buildEvidence(solverVerified: boolean, bv: TestResults | undefined, result: ExecuteResult): TaskEvidence {
+  const touched = new Set([...result.applied, ...result.created]);
+  const discovered = bv?.discoveredTests ?? [];
+  const selfAuthored = discovered.length > 0 && discovered.every((t) => touched.has(t));
+
+  let provenance: OracleProvenance = 'none';
+  if (bv?.reproUsed && bv.ran) provenance = 'repro-admitted';
+  else if (selfAuthored) provenance = 'authored-by-task';
+  else if (discovered.length > 0 && bv?.ran) provenance = 'pre-existing';
+
+  const verified = solverVerified && (provenance === 'pre-existing' || provenance === 'repro-admitted');
+
+  let reason: string | undefined;
+  if (!verified) {
+    if (provenance === 'authored-by-task') reason = 'the only tests covering this change were written by this task';
+    else if (provenance === 'none') reason = bv?.output || 'no oracle covered this change';
+    else reason = bv?.output || 'verification did not confirm the change';
+  }
+
+  return {
+    verified,
+    provenance,
+    framework: bv?.framework ?? 'none',
+    ran: bv?.ran ?? false,
+    passed: bv?.passed ?? 0,
+    failed: bv?.failed ?? 0,
+    reason,
+  };
+}
+
+/**
+ * Task status from what happened, not from what the model said happened.
+ * `ir.status` is the model's self-report and defaults to 'completed', which is
+ * why a session could finish green having never executed a line of code.
+ */
+function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): TaskStatus {
+  if (result.ir.status === 'blocked') return 'blocked';
+  if (result.ir.status === 'failed') return 'failed';
+  // Every patch bounced: nothing changed, whatever the summary claims.
+  if (result.applied.length + result.created.length === 0 && result.failed.length > 0) return 'failed';
+  if (evidence.failed > 0) return 'failed';
+  return 'completed';
+}
+
 function gitChangedFiles(repoPath: string): string[] {
-  const r = spawnSync('git', ['diff', '--name-only', 'HEAD'], { cwd: repoPath, encoding: 'utf8' });
-  return (r.stdout ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  // `git diff` cannot see a file that is not tracked yet, so every file the
+  // model CREATED was invisible to the crash guard, the use-site gate and the
+  // locus check — precisely the files most likely to be wrong.
+  const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoPath, encoding: 'utf8' });
+  return (r.stdout ?? '')
+    .split('\n')
+    .map((l) => l.slice(3).trim())
+    // Renames arrive as `old -> new`; only the destination exists on disk.
+    .map((l) => (l.includes(' -> ') ? l.split(' -> ')[1]!.trim() : l))
+    .filter(Boolean);
 }
 
 function emptyBudget(): TokenBudget {
@@ -233,8 +292,14 @@ export class SessionManager {
         : null;
       const bv = makeBehavioralVerify(session.repository.path, changedGetter, { timeoutMs: this.cfg.verify.timeoutMs }, repro, locus);
       let result: ExecuteResult;
+      // The solver's own verdict, which used to be dropped on the floor here —
+      // `.last` discarded `verified`, so the only real signal in the pipeline
+      // never reached the task record.
+      let solverVerified = false;
       try {
-        result = (await solveWithVerification(session, next, this.manager, this.cfg, bv.verify, this.cfg.verify.maxIters)).last;
+        const solved = await solveWithVerification(session, next, this.manager, this.cfg, bv.verify, this.cfg.verify.maxIters);
+        result = solved.last;
+        solverVerified = solved.verified;
       } catch (e) {
         if (e instanceof Cancelled) throw e;
         bus.emit({ type: 'log', level: 'warn', message: `Behavioral verify infra error (non-blocking): ${String(e).slice(0, 120)}` });
@@ -242,7 +307,8 @@ export class SessionManager {
       }
       repro?.cleanup();
       const bvResults = bv.lastResults() ?? undefined;
-      next.status = result.ir.status === 'completed' ? 'completed' : result.ir.status === 'blocked' ? 'blocked' : 'failed';
+      next.evidence = buildEvidence(solverVerified, bvResults, result);
+      next.status = deriveStatus(result, next.evidence);
       next.completed_at = now();
       next.output_files = [...new Set([...result.applied, ...result.created])].map((path) => ({ path }));
       Tasks.update(next);
@@ -250,7 +316,7 @@ export class SessionManager {
       if (next.status === 'completed') {
         session.progress.completed += 1;
         // Verifier pass (spec §12.2) — only when patches were produced.
-        if (result.applied.length || result.created.length) {
+        if ((result.applied.length || result.created.length) && !next.evidence.verified) {
           try {
             const verdict = await runWorker(
               VerifierWorker,
@@ -271,7 +337,10 @@ export class SessionManager {
                 Tasks.update(next);
               }
             } else {
-              bus.emit({ type: 'log', level: 'success', message: `Verifier: ${verdict.verdict}` });
+              // Advisory only. A model opinion is not evidence, and on the
+              // benchmark this path returned "pass" for mathematically wrong
+              // code that had never been executed.
+              bus.emit({ type: 'log', level: 'info', message: `Verifier (advisory): ${verdict.verdict}` });
             }
           } catch {
             /* verification is best-effort */

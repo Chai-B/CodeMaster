@@ -16,6 +16,9 @@ export interface TestRunResult {
   total: number;
   framework: Framework;
   output: string; // trimmed tail for feedback
+  /** Set only when `ran` is false: why no run happened. Present so a caller can
+   *  report "unverified, because X" instead of silently reporting success. */
+  skipReason?: string;
 }
 
 export interface GuardResult {
@@ -31,6 +34,9 @@ export interface RunOpts {
 }
 
 const DEFAULT_TIMEOUT = 120_000;
+// Verification must not leave artefacts in the user's repository. The first
+// benchmark run wrote `__pycache__/` into the tree it was checking.
+const NO_BYTECODE = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
 const tail = (s: string, n = 4000): string => (s.length > n ? s.slice(-n) : s);
 
 export function detectFramework(repoPath: string): Framework {
@@ -49,7 +55,97 @@ export function detectFramework(repoPath: string): Framework {
       /* unparseable package.json */
     }
   }
-  return 'unknown';
+  // No marker file. That is not the same as "no tests" — a directory of loose
+  // `*.py` next to a `test_*.py` is a pytest repo, and treating it as unknown
+  // is what silently disabled every deterministic check in this tool.
+  return scanForTestFiles(repoPath);
+}
+
+const SKIP_DIRS = new Set([
+  '.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env', 'dist', 'build',
+  'target', '.tox', '.mypy_cache', '.pytest_cache', 'vendor', '.next', 'coverage',
+]);
+
+/**
+ * Walk the tree looking for files that ARE tests, rather than for configuration
+ * that declares them. Bounded in both breadth and depth so this stays cheap
+ * enough to run on every verification pass.
+ */
+function scanForTestFiles(repoPath: string, maxEntries = 4000): Framework {
+  let seen = 0;
+  const walk = (dir: string, depth: number): Framework | null => {
+    if (depth > 6 || seen > maxEntries) return null;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    const dirs: string[] = [];
+    for (const e of entries) {
+      if (seen++ > maxEntries) return null;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) dirs.push(path.join(dir, e.name));
+        continue;
+      }
+      const n = e.name;
+      if (/^test_.*\.py$/.test(n) || /_test\.py$/.test(n)) return 'pytest';
+      if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(n)) return 'jest';
+      if (/_test\.go$/.test(n)) return 'gotest';
+    }
+    for (const d of dirs) {
+      const found = walk(d, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const found = walk(repoPath, 0);
+  if (!found) return 'unknown';
+  // A JS test file only tells us there are tests; which runner is in the
+  // manifest, and the marker-file pass above already answered that if it could.
+  if (found === 'jest') return jsRunnerFrom(repoPath) ?? 'jest';
+  return found;
+}
+
+function jsRunnerFrom(repoPath: string): Framework | null {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoPath, 'package.json'), 'utf8'));
+    const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+    if (deps.vitest || /vitest/.test(pkg.scripts?.test ?? '')) return 'vitest';
+    if (deps.jest || /jest/.test(pkg.scripts?.test ?? '')) return 'jest';
+  } catch {
+    /* no or unparseable package.json */
+  }
+  return null;
+}
+
+/**
+ * How to actually invoke pytest here. `python3 -m pytest` fails outright on a
+ * machine where pytest is not installed, and that failure previously scored as
+ * a test failure rather than as a missing runner. `uv` ships a pytest without
+ * touching the user's environment or their repository.
+ */
+let pytestRunner: { cmd: string; pre: string[] } | null | undefined;
+function resolvePytest(pythonBin: string): { cmd: string; pre: string[] } | null {
+  if (pytestRunner !== undefined) return pytestRunner;
+  const importable = spawnSync(pythonBin, ['-c', 'import pytest'], { encoding: 'utf8', timeout: 20_000 });
+  if (!importable.error && importable.status === 0) {
+    pytestRunner = { cmd: pythonBin, pre: ['-m', 'pytest'] };
+    return pytestRunner;
+  }
+  const uvx = spawnSync('uvx', ['--version'], { encoding: 'utf8', timeout: 20_000 });
+  if (!uvx.error && uvx.status === 0) {
+    pytestRunner = { cmd: 'uvx', pre: ['--with', 'pytest', 'pytest'] };
+    return pytestRunner;
+  }
+  pytestRunner = null;
+  return null;
+}
+
+/** Test seam: the resolution is cached for the process lifetime. */
+export function _resetRunnerCache(): void {
+  pytestRunner = undefined;
 }
 
 const num = (re: RegExp, s: string): number => Number(re.exec(s)?.[1] ?? 0);
@@ -59,16 +155,24 @@ export function runTests(repoPath: string, testFiles?: string[], opts: RunOpts =
   const framework = detectFramework(repoPath);
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT;
   const files = (testFiles ?? []).slice(0, opts.maxTestFiles ?? 30);
-  const skipped = (): TestRunResult => ({ ok: true, ran: false, passed: 0, failed: 0, total: 0, framework, output: '' });
-  if (framework === 'unknown') return skipped();
+  // Fail closed. "We could not check" is not "it passed", and callers must be
+  // able to tell the two apart — the old `ok: true` here meant a missing runner
+  // was indistinguishable from a green suite.
+  const skipped = (why: string): TestRunResult => ({
+    ok: false, ran: false, passed: 0, failed: 0, total: 0, framework, output: '', skipReason: why,
+  });
+  if (framework === 'unknown') return skipped('no test framework detected');
 
   let cmd: string;
   let args: string[];
   switch (framework) {
-    case 'pytest':
-      cmd = opts.pythonBin ?? 'python3';
-      args = ['-m', 'pytest', ...files, '-q', '-p', 'no:cacheprovider', '--no-header'];
+    case 'pytest': {
+      const py = resolvePytest(opts.pythonBin ?? 'python3');
+      if (!py) return skipped('pytest is not installed and uvx is unavailable');
+      cmd = py.cmd;
+      args = [...py.pre, ...files, '-q', '-p', 'no:cacheprovider', '--no-header'];
       break;
+    }
     case 'jest':
       cmd = 'npx';
       args = ['jest', '--silent', ...files];
@@ -86,12 +190,12 @@ export function runTests(repoPath: string, testFiles?: string[], opts: RunOpts =
       args = ['test'];
       break;
     default:
-      return skipped();
+      return skipped('no runner for the detected framework');
   }
 
-  const r = spawnSync(cmd, args, { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8 });
+  const r = spawnSync(cmd, args, { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8, env: NO_BYTECODE });
   const out = (r.stdout ?? '') + (r.stderr ?? '');
-  if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') return skipped();
+  if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') return skipped(`${cmd} is not installed`);
   if (r.status === null) return { ok: false, ran: true, passed: 0, failed: 0, total: 0, framework, output: 'test run timed out' };
 
   let passed = 0;
@@ -149,7 +253,7 @@ export function typeOrImportCheck(repoPath: string, changedFiles: string[], opts
   if (pyChanged.length) {
     for (const f of pyChanged) {
       // (a) syntax gate.
-      const c = spawnSync(py, ['-m', 'py_compile', f], { cwd: repoPath, encoding: 'utf8', timeout });
+      const c = spawnSync(py, ['-m', 'py_compile', f], { cwd: repoPath, encoding: 'utf8', timeout, env: NO_BYTECODE });
       if (c.error && (c.error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, ran: false, output: '' };
       if (c.status !== 0) return { ok: false, ran: true, output: tail((c.stderr ?? '') || `py_compile failed: ${f}`, 1500) };
 
@@ -158,7 +262,7 @@ export function typeOrImportCheck(repoPath: string, changedFiles: string[], opts
       // env can't load at all (top package not installed) is a skip, not a fail.
       const mod = toModule(f);
       if (!mod) continue;
-      const im = spawnSync(py, ['-c', `import ${mod}`], { cwd: repoPath, encoding: 'utf8', timeout });
+      const im = spawnSync(py, ['-c', `import ${mod}`], { cwd: repoPath, encoding: 'utf8', timeout, env: NO_BYTECODE });
       if (im.error && (im.error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, ran: false, output: '' };
       if (im.status !== 0) {
         const err = (im.stderr ?? '') + (im.stdout ?? '');
@@ -169,7 +273,7 @@ export function typeOrImportCheck(repoPath: string, changedFiles: string[], opts
   }
 
   if (tsChanged.length && fs.existsSync(path.join(repoPath, 'tsconfig.json'))) {
-    const r = spawnSync('npx', ['tsc', '--noEmit'], { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8 });
+    const r = spawnSync('npx', ['tsc', '--noEmit'], { cwd: repoPath, encoding: 'utf8', timeout, maxBuffer: 1e8, env: NO_BYTECODE });
     if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, ran: false, output: '' };
     // Only fail on diagnostics pointing at a changed file (ignore pre-existing repo errors).
     const out = (r.stdout ?? '') + (r.stderr ?? '');
