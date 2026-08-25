@@ -41,3 +41,15 @@ test('an empty delta never resumes into silence', () => {
   assert.equal(r.conversation!.resume, false);
   assert.equal(r.user, 'FULL CONTEXT');
 });
+
+// The SDK path ignores `conversation` entirely, so claiming continuation on an
+// account that will take it strips the repository context off every solver
+// iteration after the first.
+test('an account with an api key does not claim continuation', async () => {
+  const { AnthropicAdapter } = await import('../../src/providers/anthropic.js');
+  const a = new AnthropicAdapter([]);
+  const acct = (ref: string) =>
+    ({ id: 'a', provider_id: 'anthropic', auth_type: 'api_key', credential_ref: ref }) as never;
+  assert.equal(a.continuation_available(acct('env:__CM_NO_SUCH_KEY__')), a.supports_continuation);
+  assert.equal(a.continuation_available(acct('oauth:tok-123')), false);
+});
