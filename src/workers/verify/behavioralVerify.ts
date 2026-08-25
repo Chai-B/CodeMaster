@@ -8,6 +8,7 @@ import { staticAnalysis } from '../../analysis/api.js';
 import { unvisitedUseSites, describeUseSiteGaps } from '../../analysis/useSites.js';
 import { runTests, typeOrImportCheck, type RunOpts } from '../../analysis/testRunner.js';
 import type { VerifyFn } from '../solver.js';
+import { isTestFile } from '../../util/testFiles.js';
 import type { Repro } from './reproGenerator.js';
 
 export interface TestResults {
@@ -76,7 +77,14 @@ export function makeBehavioralVerify(
       return { ok: false, output: detail };
     }
 
-    const tests = staticAnalysis(repoPath).relevantTests(changed).slice(0, opts.maxTestFiles ?? 30);
+    // A test file this run just wrote is not in the index yet, so `relevantTests`
+    // cannot see it and the suite the model produced was never executed at all.
+    // Run it: its failure is real evidence of failure. Its success is not
+    // evidence of success — `buildEvidence` refuses to call a self-authored
+    // oracle verification, and that check is what keeps this honest.
+    const authored = changed.filter((f) => isTestFile(f));
+    const indexed = staticAnalysis(repoPath).relevantTests(changed);
+    const tests = [...new Set([...indexed, ...authored])].slice(0, opts.maxTestFiles ?? 30);
     if (tests.length === 0) {
       const conf = repro ? 'repro passed' : 'crash-guard only';
       last = { ran: !!repro, passed: repro ? 1 : 0, failed: 0, total: repro ? 1 : 0, framework: 'none', guardOk: true, reproUsed: !!repro, discoveredTests: [], output: `No relevant existing tests; ${conf}.` };

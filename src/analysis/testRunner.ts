@@ -302,8 +302,14 @@ export function typeOrImportCheck(repoPath: string, changedFiles: string[], opts
 
   if (pyChanged.length) {
     for (const f of pyChanged) {
-      // (a) syntax gate.
-      const c = spawnSync(py, ['-m', 'py_compile', f], { cwd: repoPath, encoding: 'utf8', timeout, env: NO_BYTECODE });
+      // (a) syntax gate. Not `-m py_compile`: that writes a .pyc into the
+      // user's tree by design, ignoring PYTHONDONTWRITEBYTECODE, and every
+      // check left `__pycache__/` behind in their `git status`.
+      const c = spawnSync(
+        py,
+        ['-c', 'import sys; p=sys.argv[1]; compile(open(p, "rb").read(), p, "exec")', f],
+        { cwd: repoPath, encoding: 'utf8', timeout, env: NO_BYTECODE },
+      );
       if (c.error && (c.error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, ran: false, output: '' };
       if (c.status !== 0) return { ok: false, ran: true, output: tail((c.stderr ?? '') || `py_compile failed: ${f}`, 1500) };
 
