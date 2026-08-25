@@ -26,7 +26,56 @@ function resolveInRepo(repoPath: string, rel: string): string | null {
   return full === root || full.startsWith(root + path.sep) ? full : null;
 }
 
-export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFile[]): ApplyResult {
+/** What a task is allowed to write. Without this, a run could silently rewrite
+ *  the very tests that were supposed to judge it. */
+export interface WritePolicy {
+  /** Files the task named. A config file inside the locus was asked for; the
+   *  same file outside it is the model redecorating the build. */
+  locus?: string[];
+  /** Only a test task may overwrite an existing test file. */
+  isTestTask?: boolean;
+}
+
+// Files that decide how the repository is built or judged. Rewriting one of
+// these mid-run changes the rules of the game rather than fixing the bug.
+const GUARDED = new Set([
+  'conftest.py', 'pytest.ini', 'tox.ini', 'setup.cfg', 'pyproject.toml',
+  'tsconfig.json', 'package.json', 'jest.config.js', 'jest.config.ts',
+  'vitest.config.ts', 'vitest.config.js', 'Cargo.toml', 'go.mod', 'Makefile',
+]);
+
+const isTestPath = (rel: string): boolean => {
+  const base = rel.split('/').pop() ?? rel;
+  return (
+    /^test_.*\.py$/.test(base) ||
+    /_test\.py$/.test(base) ||
+    /_test\.go$/.test(base) ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) ||
+    /(^|\/)tests?\//.test(rel)
+  );
+};
+
+/**
+ * Why a write must not happen, or null to allow it. Path containment is checked
+ * separately; this is about what the file MEANS, not where it sits.
+ */
+function refuseWrite(repoPath: string, rel: string, policy: WritePolicy): string | null {
+  const norm = rel.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (norm === '.git' || norm.startsWith('.git/')) return 'refusing to write inside .git';
+
+  const inLocus = (policy.locus ?? []).some((f) => f.replace(/^\.\//, '') === norm);
+  const base = norm.split('/').pop() ?? norm;
+
+  if (GUARDED.has(base) && !inLocus && fs.existsSync(path.join(repoPath, norm))) {
+    return `${base} decides how this repository is built or tested; it was not part of this task`;
+  }
+  if (isTestPath(norm) && !policy.isTestTask && fs.existsSync(path.join(repoPath, norm))) {
+    return 'refusing to overwrite an existing test — a task may not rewrite the oracle that judges it';
+  }
+  return null;
+}
+
+export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFile[], policy: WritePolicy = {}): ApplyResult {
   const result: ApplyResult = { applied: [], created: [], failed: [], undo: [] };
   const capture = (rel: string, full: string): void => {
     if (result.undo.some((u) => u.path === rel)) return;
@@ -45,6 +94,11 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
       result.failed.push({ file: nf.path, reason: 'path resolves outside the repository' });
       continue;
     }
+    const refusal = refuseWrite(repoPath, nf.path, policy);
+    if (refusal) {
+      result.failed.push({ file: nf.path, reason: refusal });
+      continue;
+    }
     try {
       capture(nf.path, full);
       fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -61,7 +115,16 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
   for (const p of patches) {
     if (!p.diff.trim()) continue;
     const target = resolveInRepo(repoPath, p.file);
-    if (target) capture(p.file, target);
+    if (!target) {
+      result.failed.push({ file: p.file, reason: 'path resolves outside the repository' });
+      continue;
+    }
+    const refusal = refuseWrite(repoPath, p.file, policy);
+    if (refusal) {
+      result.failed.push({ file: p.file, reason: refusal });
+      continue;
+    }
+    capture(p.file, target);
     const ok = applyOne(repoPath, p);
     if (ok.success) result.applied.push(p.file);
     else result.failed.push({ file: p.file, reason: ok.reason });
