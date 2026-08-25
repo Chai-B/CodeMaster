@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { callLlm } from '../llm.js';
+import { bus } from '../../events/bus.js';
 import { frameworkForNewTest, resolvePytest, type Framework } from '../../analysis/testRunner.js';
 import type { ProviderManager } from '../../providers/manager.js';
 import { repoDataDir, type Config } from '../../config.js';
@@ -95,9 +96,16 @@ export async function generateRepro(
   sessionId: string,
   opts: ReproOpts = {},
 ): Promise<Repro | null> {
+  // Every `return null` below removes the only sound oracle in the system, so
+  // each one says why. Silence here is what let a whole benchmark run report
+  // success with nothing ever executed.
+  const give = (why: string): null => {
+    bus.emit({ type: 'log', level: 'warn', message: `No reproduction test: ${why}` });
+    return null;
+  };
   const fw = frameworkForNewTest(repoPath);
   const ext = fw === 'pytest' ? 'py' : fw === 'jest' || fw === 'vitest' ? 'test.ts' : null;
-  if (!ext) return null; // only python/js supported for now
+  if (!ext) return give(`no supported test framework for this repository (${fw})`);
 
   let code: string | null = null;
   try {
@@ -108,10 +116,10 @@ export async function generateRepro(
       maxTokens: 1200,
     });
     code = extractCode(text);
-  } catch {
-    return null;
+  } catch (e) {
+    return give(`the model call failed (${String(e).slice(0, 200)})`);
   }
-  if (!code) return null;
+  if (!code) return give('the model returned no usable test source');
 
   const dir = reproDir(repoPath);
   const fileName = fw === 'pytest' ? 'test_cm_repro.py' : 'cm_repro.test.ts';
@@ -120,16 +128,22 @@ export async function generateRepro(
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, code);
-  } catch {
+  } catch (e) {
     cleanup();
-    return null;
+    return give(`could not write the test (${String(e).slice(0, 200)})`);
   }
 
-  // Admission gate: must genuinely FAIL on the current (buggy) code.
+  // Admission gate: must genuinely FAIL on the current (buggy) code. A repro
+  // that passes on broken code does not capture the bug; one that errors on
+  // collection never ran at all. Neither may be admitted.
   const first = runReproFile(repoPath, file, fw, opts);
   if (!isGenuineFailure(fw, first.status, first.output)) {
     cleanup();
-    return null;
+    return give(
+      first.status === 0
+        ? 'the generated test passed on the unfixed code, so it does not capture the bug'
+        : `the generated test did not run (exit ${first.status}): ${first.output.trim().split('\n').slice(-2).join(' ')}`,
+    );
   }
 
   return {
