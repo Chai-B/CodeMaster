@@ -219,3 +219,45 @@ test('a repo of nothing recognisable names no framework', () => {
   const dir = mkRepo({ 'README.md': '# hi\n', 'data.csv': 'a,b\n1,2\n' });
   assert.equal(frameworkForNewTest(dir), 'unknown');
 });
+
+// The repro admission gate. Rejecting a valid repro is not a safe default: it
+// removes the only sound oracle in the system and the run reports `unverified`.
+const { isGenuineFailure, importSurface } = await import('../../src/workers/verify/reproGenerator.js');
+
+test('an assertion failure is admitted even though "AssertionError" contains "error"', () => {
+  const out = [
+    'E       AssertionError: State not bounded (old events not evicted)',
+    'streamjoin/join.py:31: AssertionError',
+    '=========================== short test summary info ============================',
+    'FAILED repro/test_cm_repro.py::test_bounded - AssertionError: State not bounded',
+    '1 failed in 0.04s',
+  ].join('\n');
+  assert.equal(isGenuineFailure('pytest', 1, out), true);
+});
+
+test('a test that blew up on its own bad import is not a captured bug', () => {
+  const out = 'ImportError: cannot import name \'Event\' from \'streamjoin.join\'\n1 failed in 0.02s';
+  assert.equal(isGenuineFailure('pytest', 1, out), false);
+});
+
+test('a collection error and a pass are both refused', () => {
+  assert.equal(isGenuineFailure('pytest', 2, 'ERROR collecting repro/test_cm_repro.py'), false);
+  assert.equal(isGenuineFailure('pytest', 0, '1 passed in 0.01s'), false);
+});
+
+test('the import surface names real modules, arities and methods', () => {
+  const repo = mkRepo({
+    'pkg/__init__.py': '',
+    'pkg/join.py': 'class StreamJoin:\n    def __init__(self, lower, upper, lateness):\n        self._a = []\n\n    def feed_a(self, event):\n        pass\n\n    def _evict(self):\n        pass\n',
+    'pkg/pairing.py': 'class Event:\n    def __init__(self, key, timestamp):\n        pass\n\n\ndef matches(a, b):\n    return True\n',
+    'test_ignored.py': 'def test_x():\n    pass\n',
+  });
+  const s = importSurface(repo, 'pytest');
+  assert.match(s, /# module pkg\.join/);
+  assert.match(s, /def __init__\(self, lower, upper, lateness\)/);
+  assert.match(s, /def feed_a\(self, event\)/);
+  assert.match(s, /# module pkg\.pairing/);
+  assert.match(s, /def matches\(a, b\)/);
+  assert.doesNotMatch(s, /_evict/);
+  assert.doesNotMatch(s, /test_ignored/);
+});
