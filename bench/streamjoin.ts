@@ -23,7 +23,9 @@ interface Score {
   passed: number;
   failed: number;
   total: number;
-  detail: string;
+  /** Names of the failing tests — the difference between "did not fix it" and
+   *  "fixed one bound by breaking the contract". */
+  failures: string[];
 }
 
 interface Run {
@@ -61,31 +63,47 @@ function prepare(dir: string): void {
 }
 
 /**
- * Run the task's own verifier against a scratch tree. The published test file
- * hardcodes `/app`; rewriting that one path is the only change, so the graded
- * behaviour — including the pairing swap and both resource bounds — is the
- * task's, untouched.
+ * Run the task's own verifier against a copy of the tree. The published test
+ * file hardcodes `/app`; rewriting that one path is the only change, so the
+ * graded behaviour — including the pairing swap and both resource bounds — is
+ * the task's, untouched.
+ *
+ * The copy is not tidiness. The verifier overwrites `pairing.py` with the
+ * grader's own version by design, so verifying in place rewrites the tree it is
+ * scoring — which then shows up as the agent having edited a file the
+ * instruction forbids it to touch. Scoring a copy keeps the agent's diff
+ * honest and lets the verifier run more than once.
  */
 function verify(dir: string): Score {
+  const scratch = `${dir}-verify`;
+  fs.rmSync(scratch, { recursive: true, force: true });
+  fs.cpSync(dir, scratch, { recursive: true, filter: (p) => !p.includes('.git') });
+
   const src = fs.readFileSync(path.join(TASK, 'tests/test_outputs.py'), 'utf8');
-  const test = path.join(dir, '_verify.py');
-  fs.writeFileSync(test, src.replaceAll('"/app"', JSON.stringify(dir)), 'utf8');
-  const r = sh('uvx', ['--with', 'pytest==8.4.1', 'pytest', test, '-q', '--no-header', '-p', 'no:cacheprovider'], dir);
-  const text = r.out + r.err;
+  const test = path.join(scratch, '_verify.py');
+  fs.writeFileSync(test, src.replaceAll('"/app"', JSON.stringify(scratch)), 'utf8');
+  const r = sh('uvx', ['--with', 'pytest==8.4.1', 'pytest', test, '-q', '--no-header', '-rf', '-p', 'no:cacheprovider'], scratch);
+
+  const text = (r.out + r.err).replace(/\u001b\[[0-9;]*m/g, '');
   const passed = Number(/(\d+) passed/.exec(text)?.[1] ?? 0);
   const failed = Number(/(\d+) failed/.exec(text)?.[1] ?? 0);
   const errors = Number(/(\d+) errors?/.exec(text)?.[1] ?? 0);
-  // uv prints its own install line last, so take the summary line pytest wrote.
-  const last = text.split('\n').filter((l) => /\d+ (passed|failed|error)/.test(l)).pop() ?? 'no output';
-  fs.rmSync(test, { force: true });
-  return { passed, failed: failed + errors, total: passed + failed + errors, detail: last.trim() };
+  // Name what broke. A bare count cannot distinguish an operator that fixed
+  // the resource bound and broke correctness from one that fixed nothing.
+  const failures = text
+    .split('\n')
+    .filter((l) => l.startsWith('FAILED'))
+    .map((l) => /::([\w]+)/.exec(l)?.[1] ?? l.trim());
+
+  fs.rmSync(scratch, { recursive: true, force: true });
+  return { passed, failed: failed + errors, total: passed + failed + errors, failures };
 }
 
 function changedFiles(dir: string): string[] {
   return sh('git', ['status', '--porcelain'], dir).out
     .split('\n')
     .map((l) => l.slice(3).trim())
-    .filter((l) => l && !l.startsWith('_verify'));
+    .filter(Boolean);
 }
 
 const OBJECTIVE = fs.readFileSync(path.join(TASK, 'instruction.md'), 'utf8').replaceAll('/app/', './');
@@ -147,11 +165,11 @@ function selfTest(): number {
   const dir = path.join(WORK, 'selftest');
   prepare(dir);
   const broken = verify(dir);
-  console.log(`broken start state: ${broken.passed}/${broken.total} passed — ${broken.detail}`);
+  console.log(`broken start state: ${broken.passed}/${broken.total} passed — failing: ${broken.failures.join(', ') || 'none'}`);
 
   fs.copyFileSync(path.join(TASK, 'solution/solve.py'), path.join(dir, 'streamjoin/join.py'));
   const gold = verify(dir);
-  console.log(`reference solution:  ${gold.passed}/${gold.total} passed — ${gold.detail}`);
+  console.log(`reference solution:  ${gold.passed}/${gold.total} passed — failing: ${gold.failures.join(', ') || 'none'}`);
 
   const ok = gold.total > 0 && gold.failed === 0 && broken.failed > 0;
   console.log(ok ? '\nHarness discriminates. Benchmark runs are meaningful.' : '\nHarness does NOT discriminate — do not trust its numbers.');
@@ -165,6 +183,7 @@ function report(runs: Run[]): void {
       `${r.label.padEnd(16)} ${String(r.score.passed).padStart(3)}/${r.score.total} tests · ` +
         `${r.tokens.toLocaleString().padStart(10)} tokens · ${String(r.seconds).padStart(5)}s · ${r.changed.join(', ') || 'no changes'}`,
     );
+    if (r.score.failures.length) console.log(`${' '.repeat(17)}failing: ${r.score.failures.join(', ')}`);
   }
   const [a, b] = runs;
   if (a && b && a.tokens > 0 && b.tokens > 0) {

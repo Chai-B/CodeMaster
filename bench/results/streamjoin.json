@@ -1,0 +1,19 @@
+[
+  {
+    "label": "CodeMaster",
+    "score": {
+      "passed": 6,
+      "failed": 4,
+      "total": 10,
+      "detail": "\u001b[31m\u001b[31m\u001b[1m4 failed\u001b[0m, \u001b[32m6 passed\u001b[0m\u001b[31m in 0.21s\u001b[0m\u001b[0m"
+    },
+    "tokens": 662686,
+    "seconds": 898,
+    "changed": [
+      "streamjoin/join.py",
+      "streamjoin/pairing.py",
+      "__pycache__/",
+      "tests/"
+    ]
+  }
+]
