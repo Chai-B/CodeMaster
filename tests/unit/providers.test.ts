@@ -99,3 +99,45 @@ test('a pinned model never fails over to another model', async () => {
   const wide = (open as unknown as { failoverModelOrder(): string[] }).failoverModelOrder();
   assert.ok(wide.length >= order.length);
 });
+
+test('a pin collapses every role to one model; unpinned, mechanical roles go cheaper', async () => {
+  const { ProviderManager } = await import('../../src/providers/manager.js');
+  const { LLM_ROLES } = await import('../../src/types/index.js');
+  const cfg = {
+    providers: {
+      default: 'claude-sonnet-4-6',
+      pinned: true,
+      anthropic: {
+        models: [
+          { id: 'claude-sonnet-4-6', context_size: 200_000, cost_per_1m_input: 3, cost_per_1m_output: 15 },
+          { id: 'claude-haiku-4-5-20251001', context_size: 200_000, cost_per_1m_input: 1, cost_per_1m_output: 5 },
+        ],
+      },
+      openai: { models: [] },
+      google: { models: [] },
+      openai_codex: { models: [] },
+    },
+  } as unknown as ConstructorParameters<typeof ProviderManager>[0];
+
+  // `--model` is a promise that every call in the run used that exact model. A
+  // role table that routed underneath it would silently break the promise and
+  // make any A/B measured against the run meaningless.
+  const pinned = new ProviderManager(cfg);
+  for (const role of LLM_ROLES) assert.equal(pinned.modelFor(role), 'claude-sonnet-4-6');
+  assert.equal(pinned.modelFor('summarize', 'claude-haiku-4-5-20251001'), 'claude-sonnet-4-6');
+
+  // Unpinned and with no `roles` table written anywhere, the mechanical roles
+  // still land on the cheaper model — the defaults are derived, not configured.
+  cfg.providers.pinned = false;
+  const open = new ProviderManager(cfg);
+  assert.equal(open.modelFor('solve'), 'claude-sonnet-4-6');
+  assert.equal(open.modelFor('plan'), 'claude-sonnet-4-6');
+  assert.equal(open.modelFor('oracle'), 'claude-sonnet-4-6');
+  for (const role of ['review', 'summarize', 'merge'] as const) {
+    assert.equal(open.modelFor(role), 'claude-haiku-4-5-20251001');
+  }
+
+  // A requested model that does not exist is not a choice; falling back beats
+  // failing, since the caller may be a proxy client naming a foreign model.
+  assert.equal(open.modelFor('solve', 'gpt-4-imaginary'), 'claude-sonnet-4-6');
+});

@@ -13,6 +13,7 @@ import { Checkpoints } from '../storage/checkpoints.js';
 import { Undo, revert } from '../storage/undo.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { GitWorker } from '../analysis/git.js';
+import { LLM_ROLES } from '../types/index.js';
 import { claudeCliAvailable } from '../providers/anthropic.js';
 import { anyProviderAvailable } from '../providers/manager.js';
 import { codexCliAvailable } from '../providers/codex.js';
@@ -373,6 +374,17 @@ export class CommandRouter {
 
   /** What each subscription window has actually spent, and what is blocked. */
   private cost(): void {
+    // What the money bought, not just which vendor took it. Grouped by role AND
+    // model because failover can rescue a call onto another vendor, and folding
+    // that spend into the routed model misattributes it.
+    const s = this.sm.getCurrent();
+    const roles = Tokens.byRole(s?.id);
+    if (roles.length) {
+      this.out('heading', s ? 'Spend by role (this session)' : 'Spend by role (all sessions)');
+      for (const r of roles) {
+        this.out('info', `${r.role.padEnd(10)} ${r.model_id.padEnd(28)} ${String(r.calls).padStart(4)} call(s)  ${fmtTokens(r.tokens).padStart(8)}  $${r.cost.toFixed(4)}`);
+      }
+    }
     const waste = Tokens.wasteRatio();
     if (waste) {
       this.out(
@@ -737,7 +749,17 @@ export class CommandRouter {
         const mark = m.id === active ? '→' : ' ';
         this.out(m.id === active ? 'success' : 'info', `${mark} ${m.id.padEnd(28)} ctx ${fmtTokens(m.context_size)}`);
       }
-      this.out('dim', 'Switch with /model <model_id>.');
+      // Routing is otherwise invisible: nothing in the config says a summarize
+       // call buys a cheaper model than a solve call, because the table is
+       // derived from `default` rather than written down. Under a pin every row
+       // shows the pinned model — the guarantee, made visible.
+      this.out('heading', 'By role');
+      for (const role of LLM_ROLES) {
+        const m = this.sm.manager.modelFor(role);
+        this.out(m === active ? 'info' : 'dim', `  ${role.padEnd(10)} ${m}`);
+      }
+      if (this.sm.cfg.providers.pinned) this.out('dim', '  (pinned — every call uses this model)');
+      this.out('dim', 'Switch with /model <model_id>. Override one role with providers.roles.<role> in config.');
       return;
     }
     if (!this.sm.manager.modelSpec(arg)) return this.out('warn', `Unknown model: ${arg}. Run /model to see what is available.`);

@@ -123,7 +123,8 @@ export interface ProviderAdapter {
 /** What one LLM call is FOR. Not the task's type: a single `implement` task
  *  makes a solve call, an oracle call and a review call, and they do not need
  *  the same model. This is the routing key. */
-export type LlmRole = 'solve' | 'plan' | 'oracle' | 'review' | 'summarize' | 'merge';
+export const LLM_ROLES = ['solve', 'plan', 'oracle', 'review', 'summarize', 'merge'] as const;
+export type LlmRole = (typeof LLM_ROLES)[number];
 
 /** How hard the model should think before answering. Orthogonal to which model
  *  answers: opus at 'low' and opus at 'high' are the same weights and very

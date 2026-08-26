@@ -186,7 +186,13 @@ export async function runHeadless(argv: string[]): Promise<number> {
           unverified: tasks.length - verifiedCount,
           failed: failed.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
           blocked: blocked.map((t) => ({ title: t.title, reason: t.failure_reason ?? null })),
-          tokens: { input: tokens.input, output: tokens.output, total: tokens.total, cost_usd: tokens.cost, by_model: Tokens.byModel(session.id) },
+          // `by_role` is grouped by role AND model, not role alone: failover can
+          // rescue a call onto another vendor, and folding that spend into the
+          // routed model makes a routing change look better or worse than it was.
+          tokens: {
+            input: tokens.input, output: tokens.output, total: tokens.total, cost_usd: tokens.cost,
+            by_model: Tokens.byModel(session.id), by_role: Tokens.byRole(session.id),
+          },
           files_changed: changedFiles(flags.repo),
           diff: new GitWorker(flags.repo).fullWorkingDiff(),
         }, null, 2) + '\n',
