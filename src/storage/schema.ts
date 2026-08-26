@@ -224,6 +224,24 @@ CREATE TABLE IF NOT EXISTS prompt_cache (
   created_at TEXT NOT NULL,
   hits INTEGER NOT NULL DEFAULT 0
 );
+
+-- Worker answers, which are raw text rather than an IR: module summaries,
+-- convention extraction, diff reviews. Same contract as prompt_cache.
+CREATE TABLE IF NOT EXISTS text_cache (
+  hash TEXT PRIMARY KEY,
+  model_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  tokens INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 0
+);
+
+-- Counters that have no row to live on. A cache miss leaves nothing behind by
+-- definition, so summing the hits column alone can never yield a hit RATE.
+CREATE TABLE IF NOT EXISTS cache_stat (
+  k TEXT PRIMARY KEY,
+  n INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 // Per-repository index database schema (spec §19.2).

@@ -82,8 +82,13 @@ test('a cached answer is returned without a provider call and counted as saved',
   assert.equal(hit?.tokens, 4200);
   assert.equal(hit?.ir.summary, 'fix the parser');
 
-  // One hit recorded → 4200 tokens that were not bought a second time.
-  assert.deepEqual(PromptCache.saved(), { hits: 1, tokens: 4200 });
+  // One hit recorded → 4200 tokens that were not bought a second time. Misses are
+  // counted too: a hit count with no denominator is not a hit rate.
+  const before = PromptCache.saved();
+  assert.equal(before.hits, 1);
+  assert.equal(before.tokens, 4200);
+  assert.equal(PromptCache.get(promptHash('never asked', 'sonnet')), null);
+  assert.equal(PromptCache.saved().misses, before.misses + 1);
 });
 
 test('a plan that verifies its own work is trimmed before it costs anything', async () => {

@@ -2,6 +2,7 @@
 // invokes, records tokens. Returns raw text. (Used by Verifier, summarizer, etc.)
 
 import { Tokens } from '../storage/tokens.js';
+import { PromptCache, promptHash } from '../storage/promptCache.js';
 import { bus } from '../events/bus.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
@@ -61,6 +62,23 @@ export async function callLlm(
     omitted: [],
     max_output_tokens: opts.maxTokens,
   };
+  // A call that carries no conversation is a pure function of its prompt: the
+  // same module, the same diff, the same conflict gives the same answer, and
+  // buying it twice is W4 by definition. Module summaries were the worst case —
+  // up to twelve serial calls re-paid on every cold start. Calls that DO carry a
+  // conversation are stateful (the oracle's retries send only a correction), so
+  // they are deliberately not cached.
+  const cacheable = !opts.conversation;
+  const model = manager.modelFor(opts.role, opts.model);
+  const key = promptHash(`${opts.system}\n${opts.user}`, model);
+  if (cacheable) {
+    const hit = PromptCache.getText(key);
+    if (hit) {
+      bus.emit({ type: 'log', level: 'success', message: `Reused a stored ${opts.role} answer — ${hit.tokens} tokens not spent.` });
+      return { text: hit.text, tokens: 0 };
+    }
+  }
+
   // Through failover, not straight at one account. Called directly, a single
   // rate-limited account made every worker call throw — and the repro
   // generator swallows that as `null`, so a spent quota silently removed the
@@ -85,6 +103,10 @@ export async function callLlm(
     components: ['worker'],
   });
   bus.emit({ type: 'provider.response', provider_id: sel.adapter.provider_id, tokens: response.usage.total_tokens });
+  // Keyed on the model that ACTUALLY answered, not the one routing asked for.
+  // Failover can move a call to a rescue vendor, and storing that answer under
+  // the routed model's key serves one model's reasoning as another's.
+  if (cacheable) PromptCache.putText(promptHash(`${opts.system}\n${opts.user}`, sel.model), sel.model, response.text, response.usage.total_tokens);
   return { text: response.text, tokens: response.usage.total_tokens };
 }
 

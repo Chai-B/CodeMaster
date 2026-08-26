@@ -28,7 +28,10 @@ export const PromptCache = {
     const r = getDb().prepare('SELECT ir_json, tokens FROM prompt_cache WHERE hash=?').get(hash) as
       | { ir_json: string; tokens: number }
       | undefined;
-    if (!r) return null;
+    if (!r) {
+      miss();
+      return null;
+    }
     getDb().prepare('UPDATE prompt_cache SET hits=hits+1 WHERE hash=?').run(hash);
     try {
       return { ir: JSON.parse(r.ir_json) as IntermediateRepresentation, tokens: r.tokens };
@@ -46,10 +49,41 @@ export const PromptCache = {
   },
 
   /** Tokens never spent because a cached answer was reused. */
-  saved(): { hits: number; tokens: number } {
+  /** A worker answer, which is text rather than an IR. Same key, same contract. */
+  getText(hash: string): { text: string; tokens: number } | null {
+    const r = getDb().prepare('SELECT text, tokens FROM text_cache WHERE hash=?').get(hash) as
+      | { text: string; tokens: number }
+      | undefined;
+    if (!r) {
+      miss();
+      return null;
+    }
+    getDb().prepare('UPDATE text_cache SET hits=hits+1 WHERE hash=?').run(hash);
+    return r;
+  },
+
+  putText(hash: string, model: string, text: string, tokens: number): void {
+    getDb()
+      .prepare('INSERT OR REPLACE INTO text_cache (hash, model_id, text, tokens, created_at, hits) VALUES (?,?,?,?,?,0)')
+      .run(hash, model, text, tokens, now());
+  },
+
+  /** Hits, the tokens they avoided, and the misses — without which `hits` is a
+   *  count with no denominator and the hit rate cannot be computed at all. */
+  saved(): { hits: number; tokens: number; misses: number } {
     const r = getDb()
-      .prepare('SELECT COALESCE(SUM(hits),0) h, COALESCE(SUM(hits*tokens),0) t FROM prompt_cache')
+      .prepare(
+        `SELECT COALESCE(SUM(hits),0) h, COALESCE(SUM(hits*tokens),0) t FROM (
+           SELECT hits, tokens FROM prompt_cache UNION ALL SELECT hits, tokens FROM text_cache)`,
+      )
       .get() as { h: number; t: number };
-    return { hits: r.h, tokens: r.t };
+    const m = getDb().prepare("SELECT COALESCE(n,0) n FROM cache_stat WHERE k='miss'").get() as { n: number } | undefined;
+    return { hits: r.h, tokens: r.t, misses: m?.n ?? 0 };
   },
 };
+
+function miss(): void {
+  getDb()
+    .prepare("INSERT INTO cache_stat (k, n) VALUES ('miss', 1) ON CONFLICT(k) DO UPDATE SET n = n + 1")
+    .run();
+}
