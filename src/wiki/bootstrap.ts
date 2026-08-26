@@ -7,7 +7,7 @@ import { applyWikiUpdate } from './updater.js';
 import { runWorker } from '../workers/base.js';
 import { ModuleSummarizerWorker } from '../workers/moduleSummarizer.js';
 import { callLlm } from '../workers/llm.js';
-import { claudeCliAvailable } from '../providers/anthropic.js';
+import { anyProviderAvailable } from '../providers/manager.js';
 import { Wiki } from '../storage/wiki.js';
 import { bus } from '../events/bus.js';
 import fsSync from 'fs';
@@ -49,15 +49,6 @@ const BOOTSTRAP_STATE_KEY = 'meta/bootstrap';
  *  after it is what stops the next session repeating all of this. */
 class SkipConventions extends Error {}
 
-/** Whether a model can be reached at all — a raw key for any vendor, or the
- *  authenticated Claude CLI. `bootstrapWiki` and `wikiBootstrapped` must agree
- *  on this, or a run that fell back to the deterministic path gets treated as a
- *  finished bootstrap and the real one never happens. */
-export function bootstrapLlmAvailable(): boolean {
-  return Boolean(
-    process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || claudeCliAvailable(),
-  );
-}
 
 function writeDeterministicOverview(
   map: ReturnType<ReturnType<typeof staticAnalysis>['getRepositoryMap']>,
@@ -110,7 +101,7 @@ export async function bootstrapWiki(
   // 2. Per-module wiki entries (LLM, one call each — spec §9.6). Works with a
   // raw API key OR the authenticated Claude CLI (Pro/Max account creds).
   let architectureWritten = false;
-  const llmAvailable = llm && bootstrapLlmAvailable();
+  const llmAvailable = llm && anyProviderAvailable();
   if (llmAvailable) {
     const moduleSummaries: string[] = [];
     for (const mod of map.top_level_modules.filter((m) => m.files >= MIN_FILES_FOR_MODULE).slice(0, 12)) {
@@ -221,6 +212,6 @@ export function wikiBootstrapped(): boolean {
   // A deterministic bootstrap is complete only while there is still no model to
   // do better. Once credentials appear, the repo is worth bootstrapping properly.
   const state = Wiki.get(BOOTSTRAP_STATE_KEY);
-  if (state?.content_markdown.includes('deterministic')) return !bootstrapLlmAvailable();
+  if (state?.content_markdown.includes('deterministic')) return !anyProviderAvailable();
   return true;
 }

@@ -86,18 +86,4 @@ export const Wiki = {
     return rows.map(row);
   },
 
-  saveVersion(key: string, content: string, sessionId?: string, summary?: string): void {
-    getDb()
-      .prepare(
-        `INSERT INTO wiki_versions (id, wiki_key, version_at, content_markdown, changed_by_session, change_summary)
-         VALUES (?,?,?,?,?,?)`,
-      )
-      .run(id('wv'), key, new Date().toISOString(), content, sessionId ?? null, summary ?? null);
-  },
-
-  versions(key: string): Array<{ version_at: string; change_summary: string | null }> {
-    return getDb()
-      .prepare('SELECT version_at, change_summary FROM wiki_versions WHERE wiki_key=? ORDER BY version_at DESC')
-      .all(key) as Array<{ version_at: string; change_summary: string | null }>;
-  },
 };

@@ -6,12 +6,8 @@ import yaml from 'js-yaml';
 import { sessionsDir, loadConfig } from '../config.js';
 import { Sessions, Tasks } from '../storage/sessions.js';
 import { Reasoning } from '../storage/reasoning.js';
-import { LongTerm } from '../storage/memory.js';
-import { Tokens } from '../storage/tokens.js';
 import { Checkpoints } from '../storage/checkpoints.js';
-import { Wiki } from '../storage/wiki.js';
 import { GitWorker } from '../analysis/git.js';
-import { listWorkers } from './base.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import type { Session, Task, CheckpointTrigger, CheckpointManifest } from '../types/index.js';
@@ -26,7 +22,6 @@ export async function createCheckpoint(
 
   const tasks = Tasks.forSession(session.id);
   const reasoning = Reasoning.forSession(session.id);
-  const tokenTotal = Tokens.sessionTotal(session.id);
 
   const git = new GitWorker(session.repository.path);
   const repoPatch = await git.createCheckpointPatch(session.repository.commit).catch(() => '');
@@ -46,24 +41,17 @@ export async function createCheckpoint(
     reasoning_count: reasoning.length,
   };
 
-  // Self-sufficient snapshot — full artifact set per spec §14.2.
+  // Exactly what restore reads, plus two artifacts for a human: the plan and a
+  // patch to recover the tree by hand. The rest of the spec's artifact set —
+  // reasoning, memory and wiki snapshots, worker states, the token ledger, the
+  // last context — was written on every checkpoint and read by nothing. The wiki
+  // snapshot was the expensive one: the whole wiki copied per checkpoint, kept
+  // until pruning, for a store that lives in the database anyway.
   write(dir, 'manifest.json', JSON.stringify(manifest, null, 2));
   write(dir, 'session.json', JSON.stringify(session, null, 2));
   write(dir, 'tasks.json', JSON.stringify(tasks, null, 2));
   write(dir, 'plan.yaml', yaml.dump(session.plan ?? { tasks: tasks.map((t) => ({ title: t.title, type: t.type, status: t.status })) }));
-  write(dir, 'reasoning_snapshot.json', JSON.stringify(reasoning, null, 2));
-  write(dir, 'memory_snapshot.json', JSON.stringify({ long_term: LongTerm.byNamespace('architecture'), reasoning_count: reasoning.length }, null, 2));
-  write(dir, 'worker_states.json', JSON.stringify(listWorkers(), null, 2));
-  write(dir, 'token_ledger.json', JSON.stringify(tokenTotal, null, 2));
-  write(dir, 'context_last.md', String((session.metadata as Record<string, unknown> | undefined)?.last_context ?? '(no context compiled yet)'));
   write(dir, 'repo.patch', repoPatch);
-
-  // wiki snapshot
-  const wikiDir = path.join(dir, 'wiki_snapshot');
-  fs.mkdirSync(wikiDir, { recursive: true });
-  for (const e of Wiki.list()) {
-    write(wikiDir, `${e.wiki_key.replace(/\//g, '__')}.md`, e.content_markdown);
-  }
 
   const sizeBytes = dirSize(dir);
   Checkpoints.insert(manifest, dir, sizeBytes);

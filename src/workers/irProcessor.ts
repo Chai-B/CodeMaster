@@ -6,7 +6,6 @@ import { Tasks } from '../storage/sessions.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { applyPatches, type ApplyResult } from './patchApplier.js';
 import { Undo } from '../storage/undo.js';
-import { archiveRawOutput } from '../memory/coldStorage.js';
 import { createCheckpoint } from './checkpointer.js';
 import { indexFile } from '../analysis/indexer.js';
 import { bus } from '../events/bus.js';
@@ -128,11 +127,10 @@ export async function processIR(
     session.open_questions.push({ id: id('q'), text: q.text, status: 'open' });
   }
 
-  // Archive raw output to encrypted cold storage, drop from active IR (spec §16.10, §22.3).
-  if (ir.raw_output) {
-    archiveRawOutput(session.id, task.id, ir.raw_output);
-    ir.raw_output = undefined;
-  }
+  // The raw text is superseded by the parsed IR the moment we get here. It used
+  // to be AES-encrypted to disk by a reader that no longer existed, so every
+  // response paid a key derivation and a file write to be stored and never read.
+  ir.raw_output = undefined;
 
   return { apply, reasoningStored: stored, wikiUpdated, nextTasks: ir.next_tasks.length };
 }

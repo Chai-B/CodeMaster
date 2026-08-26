@@ -108,15 +108,6 @@ CREATE TABLE IF NOT EXISTS long_term_memory (
   UNIQUE(namespace, key)
 );
 
-CREATE TABLE IF NOT EXISTS session_memory (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  key TEXT NOT NULL,
-  value_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_session_memory ON session_memory(session_id);
-
 CREATE TABLE IF NOT EXISTS token_usage (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
@@ -180,16 +171,6 @@ CREATE TABLE IF NOT EXISTS wiki_entries (
   related_decisions_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wiki_namespace ON wiki_entries(namespace);
-
-CREATE TABLE IF NOT EXISTS wiki_versions (
-  id TEXT PRIMARY KEY,
-  wiki_key TEXT NOT NULL,
-  version_at TEXT NOT NULL,
-  content_markdown TEXT NOT NULL,
-  changed_by_session TEXT,
-  change_summary TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_wiki_versions_key ON wiki_versions(wiki_key);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id TEXT PRIMARY KEY,
