@@ -214,6 +214,28 @@ export class ProviderManager {
     }
   }
 
+  /**
+   * The next model up from this one, or null if it is already the strongest
+   * available. Output price is the ranking: within and across vendors, the
+   * model that costs more per generated token is the more capable one, and it
+   * is the only capability signal the config actually carries.
+   *
+   * Used when a cheap model has failed the same way twice — measured on the
+   * benchmark, two iterations of haiku produced byte-identical failures, and a
+   * third would have produced a third. Escalating one stuck task is what makes
+   * the layer worth more than the model it started on.
+   */
+  strongerThan(modelId: string): string | null {
+    const here = this.listModels().find((m) => m.id === modelId);
+    if (!here) return null;
+    const better = this.listModels()
+      .filter((m) => m.cost_per_1m_output > here.cost_per_1m_output && this.providerHasCredentials(this.providerOf(m.id)))
+      .sort((a, b) => a.cost_per_1m_output - b.cost_per_1m_output);
+    // The cheapest model that is still stronger — one rung, not the top of the
+    // list. A stuck task should cost the smallest increment that might solve it.
+    return better[0]?.id ?? null;
+  }
+
   /** Provider preference order for failover: configured default first (spec §26.7),
    *  restricted to providers that actually have credentials. */
   private failoverModelOrder(): string[] {

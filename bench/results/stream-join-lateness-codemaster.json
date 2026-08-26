@@ -1,25 +1,19 @@
 {
   "label": "codemaster",
-  "passed": 6,
+  "passed": 9,
   "total": 10,
   "failures": [
-    "test_union_equals_batch_join",
-    "test_out_of_order_within_lateness",
-    "test_flush_timing_does_not_change_union",
-    "test_correctness_adversarial"
+    "test_retained_state_within_3x_joinable"
   ],
-  "tokens": 481024,
-  "costUsd": 0.716172,
-  "claimedVerified": 1,
-  "claimedTasks": 6,
+  "tokens": 252591,
+  "costUsd": 0.449279,
+  "claimedVerified": 0,
+  "claimedTasks": 1,
   "provenance": [
-    "repro-admitted",
-    "none"
+    "repro-admitted"
   ],
-  "seconds": 592,
-  "changed": [
-    "streamjoin/join.py"
-  ],
-  "reasoning": "ok   [verified] Fix import statement: change `from .pairing import matches` to `from . import pairing` and update all matches() calls to\nok   [unverified] Implement _evict() method that removes events outside their retention windows: A events when high > a.timestamp + upper_\nfail [unverified] a.timestamp + upper_ab + lateness; B when high > b.timestamp + upper_bc + lateness OR high > b.timestamp - lower_ab + la\nfail [unverified] Verify join correctness is preserved: run the operator on test cases covering out-of-order arrivals, multiple keys, mult\nfail [unverified] Verify memory scaling bound: feed N events, count retained events vs. in-play events (within lateness of high); then fee\nfail [unverified] Verify matches() call scaling: instrument matches() call count via test harness (already patched via module import); fee\n\nmodels used: claude-haiku-4-5-20251001",
-  "diff": "diff --git a/streamjoin/join.py b/streamjoin/join.py\nindex 0dc2823..0b59b85 100644\n--- a/streamjoin/join.py\n+++ b/streamjoin/join.py\n@@ -12,7 +12,7 @@ Events may arrive out of order, bounded by ``lateness`` behind the highest\n timestamp seen so far across all three streams.\n \"\"\"\n \n-from .pairing import matches\n+from . import pairing\n \n \n class StreamJoin:\n@@ -47,8 +47,9 @@ class StreamJoin:\n             if self.lower_ab <= b.timestamp - event.timestamp <= self.upper_ab:\n                 for c in cs:\n                     if self.lower_bc <= c.timestamp - b.timestamp <= self.upper_bc \\\n-                            and matches(event, b, c):\n+                            and pairing.matches(event, b, c):\n                         self._pending.append((event, b, c))\n+        self._evict()\n \n     def feed_b(self, event):\n         self._observe(event)\n@@ -59,8 +60,9 @@ class StreamJoin:\n             if self.lower_ab <= event.timestamp - a.timestamp <= self.upper_ab:\n                 for c in cs:\n                     if self.lower_bc <= c.timestamp - event.timestamp <= self.upper_bc \\\n-                            and matches(a, event, c):\n+                            and pairing.matches(a, event, c):\n                         self._pending.append((a, event, c))\n+        self._evict()\n \n     def feed_c(self, event):\n         self._observe(event)\n@@ -71,8 +73,9 @@ class StreamJoin:\n             if self.lower_bc <= event.timestamp - b.timestamp <= self.upper_bc:\n                 for a in as_:\n                     if self.lower_ab <= b.timestamp - a.timestamp <= self.upper_ab \\\n-                            and matches(a, b, event):\n+                            and pairing.matches(a, b, event):\n                         self._pending.append((a, b, event))\n+        self._evict()\n \n     def flush(self):\n         settled = self._pending\n@@ -82,3 +85,29 @@ class StreamJoin:\n     def _observe(self, event):\n         if self._high is None or event.timestamp > self._high:\n             self._high = event.timestamp\n+\n+    def _evict(self):\n+        \"\"\"Remove events outside their retention windows based on high watermark.\"\"\"\n+        if self._high is None:\n+            return\n+\n+        self._a = {\n+            key: [a for a in events if self._high <= a.timestamp + self.upper_ab + self.lateness]\n+            for key, events in self._a.items()\n+            if any(self._high <= a.timestamp + self.upper_ab + self.lateness for a in events)\n+        }\n+\n+        self._b = {\n+            key: [b for b in events\n+                  if self._high <= b.timestamp + self.upper_bc + self.lateness\n+                  and self._high <= b.timestamp - self.lower_ab + self.lateness]\n+            for key, events in self._b.items()\n+            if any(self._high <= b.timestamp + self.upper_bc + self.lateness\n+                   and self._high <= b.timestamp - self.lower_ab + self.lateness for b in events)\n+        }\n+\n+        self._c = {\n+            key: [c for c in events if self._high <= c.timestamp - self.lower_bc + self.lateness]\n+            for key, events in self._c.items()\n+            if any(self._high <= c.timestamp - self.lower_bc + self.lateness for c in events)\n+        }\n"
+  "seconds": 466,
+  "changed": [],
+  "reasoning": "fail [unverified] Implement event eviction in StreamJoin\n\nmodels used: claude-haiku-4-5-20251001",
+  "diff": ""
 }

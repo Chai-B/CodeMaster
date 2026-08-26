@@ -61,12 +61,20 @@ export async function solveWithVerification(
   const conversation: Conversation = { id: uuid(), turn: 0, delta: '' };
   let lastFailure = '';
   let firstFailure = '';
+  let escalated = false;
+  let originalModel = '';
+  /** Not the loop index. Escalation opens a NEW conversation, and turn 0 is what
+   *  makes the next call send full context — resuming the old id would keep the
+   *  old model, since the CLI's --resume path carries no --model flag. */
+  let convTurn = 0;
+  let freshConversation = false;
 
+  try {
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     throwIfCancelled();
     iterations = i + 1;
     bus.emit({ type: 'log', level: 'info', message: `Solver iteration ${iterations}/${maxIters}…` });
-    conversation.turn = i;
+    conversation.turn = convTurn;
     // The context budget climbs only after a pass has actually failed at the
     // current size — the first attempt never pays for a window it did not need.
     last = await exec(session, task, manager, cfg, start + i, conversation);
@@ -107,11 +115,25 @@ export async function solveWithVerification(
     }
 
     // Iterating on an unchanged failure is paying to be told the same thing.
-    // The model has not moved, so a third identical round will not move it
-    // either — stop and report honestly instead of burning the budget.
+    // The model has not moved, so a third identical round on the SAME model will
+    // not move it either — measured on the benchmark, two haiku iterations gave
+    // byte-identical failures. One rung up is the only thing left that can
+    // change the answer, and routing across models is the layer's reason to
+    // exist. Once per task, and never when the caller pinned the model.
     if (v.output === lastFailure) {
-      bus.emit({ type: 'log', level: 'warn', message: 'Same failure as the previous iteration; stopping instead of repeating it.' });
-      break;
+      const stronger = !cfg.providers?.default || cfg.providers.pinned ? null : manager.strongerThan(cfg.providers.default);
+      if (stronger && !escalated && i < maxIters - 1) {
+        escalated = true;
+        originalModel = cfg.providers.default;
+        cfg.providers.default = stronger;
+        conversation.id = uuid();
+        conversation.provider_id = undefined;
+        freshConversation = true;
+        bus.emit({ type: 'log', level: 'warn', message: `Stuck on ${originalModel}; escalating this task to ${stronger}.` });
+      } else {
+        bus.emit({ type: 'log', level: 'warn', message: 'Same failure as the previous iteration; stopping instead of repeating it.' });
+        break;
+      }
     }
     if (!firstFailure) firstFailure = v.output;
     lastFailure = v.output;
@@ -134,8 +156,18 @@ export async function solveWithVerification(
         `Diagnose the root cause, then produce a MINIMAL unified-diff patch that changes only what is ` +
         `necessary to fix it. Do not reorganize imports, rename symbols, or rewrite unrelated code. ` +
         `Use only modules and names that already exist in this repository. Respond in the same format as before.`;
+      if (freshConversation) {
+        convTurn = 0;
+        freshConversation = false;
+      } else convTurn += 1;
       bus.emit({ type: 'log', level: 'warn', message: `Verification failed; retrying with feedback.` });
     }
+  }
+
+  } finally {
+    // Escalation is per task. Leaving the session on the stronger model would
+    // silently re-price every task after this one.
+    if (originalModel) cfg.providers.default = originalModel;
   }
 
   task.description = origDesc;
