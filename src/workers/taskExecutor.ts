@@ -184,6 +184,7 @@ export async function executeTask(
 
   // Parse IR natively per provider; on failure, retry once with a format reminder (spec §15.3).
   let ir: IntermediateRepresentation;
+  let retryTokens = 0;
   try {
     ir = sel.adapter.parse_response(response, session.id, task.id);
   } catch (e) {
@@ -197,8 +198,13 @@ export async function executeTask(
       manager.recordUsage(sel.account, retry.usage.total_tokens, retry.latency_ms);
       Tokens.record({
         session_id: session.id, task_id: task.id, provider_id: sel.adapter.provider_id,
-        account_id: sel.account.id, model_id: sel.model, usage: retry.usage, cost_usd: 0, components: compiled.included,
+        account_id: sel.account.id, model_id: sel.model, usage: retry.usage,
+        // A retry costs real money. Recording it as free understated the run's
+        // own cost by a full call — measured, one such retry was 74,602 tokens.
+        cost_usd: manager.costOf(sel.spec, retry.usage.input_tokens, retry.usage.output_tokens),
+        components: compiled.included,
       });
+      retryTokens = retry.usage.total_tokens;
       ir = sel.adapter.parse_response(retry, session.id, task.id);
     } else {
       throw e;
@@ -220,7 +226,7 @@ export async function executeTask(
   }
 
   const ms = Date.now() - started;
-  const tokens = response.usage.total_tokens;
+  const tokens = response.usage.total_tokens + retryTokens;
   task.actual_tokens = (task.actual_tokens ?? 0) + tokens;
   bus.emit({ type: 'task.completed', task_id: task.id, tokens, ms });
 
