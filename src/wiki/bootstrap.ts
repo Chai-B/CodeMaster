@@ -43,6 +43,41 @@ function moduleSourceSize(repoPath: string, files: string[]): number {
 const MIN_SOURCE_FOR_CONVENTIONS = 1500;
 const DOC_FILES = ['README.md', 'readme.md', 'CONTRIBUTING.md', 'ARCHITECTURE.md'];
 
+const BOOTSTRAP_STATE_KEY = 'meta/bootstrap';
+
+/** Leaves the conventions step without leaving the function — the state write
+ *  after it is what stops the next session repeating all of this. */
+class SkipConventions extends Error {}
+
+/** Whether a model can be reached at all — a raw key for any vendor, or the
+ *  authenticated Claude CLI. `bootstrapWiki` and `wikiBootstrapped` must agree
+ *  on this, or a run that fell back to the deterministic path gets treated as a
+ *  finished bootstrap and the real one never happens. */
+export function bootstrapLlmAvailable(): boolean {
+  return Boolean(
+    process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || claudeCliAvailable(),
+  );
+}
+
+function writeDeterministicOverview(
+  map: ReturnType<ReturnType<typeof staticAnalysis>['getRepositoryMap']>,
+  sessionId: string,
+  cfg: Config,
+): void {
+  applyWikiUpdate(
+    {
+      key: 'architecture/overview',
+      content: `## Summary\nRepository with ${map.total_files} files.\n\n## Modules\n${map.top_level_modules
+        .slice(0, 12)
+        .map((m) => `- **${m.name}** (${m.files} files): ${m.key_files.join(', ')}`)
+        .join('\n')}`,
+      is_diff: false,
+    },
+    sessionId,
+    cfg.wiki.conflict_strategy,
+  );
+}
+
 export async function bootstrapWiki(
   repoPath: string,
   manager: ProviderManager,
@@ -75,9 +110,7 @@ export async function bootstrapWiki(
   // 2. Per-module wiki entries (LLM, one call each — spec §9.6). Works with a
   // raw API key OR the authenticated Claude CLI (Pro/Max account creds).
   let architectureWritten = false;
-  const llmAvailable =
-    llm &&
-    (process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY || claudeCliAvailable());
+  const llmAvailable = llm && bootstrapLlmAvailable();
   if (llmAvailable) {
     const moduleSummaries: string[] = [];
     for (const mod of map.top_level_modules.filter((m) => m.files >= MIN_FILES_FOR_MODULE).slice(0, 12)) {
@@ -107,8 +140,14 @@ export async function bootstrapWiki(
       }
     }
 
-    // 3. Architecture overview.
-    if (moduleSummaries.length) {
+    // 3. Architecture overview. Every module can be skipped as too small to be
+    // worth summarising, and when that happened nothing was written here at all
+    // — so the next session saw an unbootstrapped repo and re-paid for the
+    // conventions call, every time.
+    if (!moduleSummaries.length) {
+      writeDeterministicOverview(map, sessionId, cfg);
+      architectureWritten = true;
+    } else {
       applyWikiUpdate(
         {
           key: 'architecture/overview',
@@ -123,6 +162,8 @@ export async function bootstrapWiki(
 
     // 4. Conventions entry (spec §9) — how to write code that fits this repo.
     // The compiler already injects `conventions`; it was simply empty before.
+    // Anything that skips this must still fall through to the state write below,
+    // or the repo stays unbootstrapped forever and every session tries again.
     try {
       const sampleFiles = map.top_level_modules
         .flatMap((m) => m.key_files)
@@ -141,7 +182,7 @@ export async function bootstrapWiki(
       // Measured on a two-line repository: 26,084 tokens for "0 modules, 0 docs".
       if (sampleFiles.length < MIN_SOURCE_FOR_CONVENTIONS) {
         bus.emit({ type: 'log', level: 'info', message: 'Skipping conventions: too little source to learn from.' });
-        return { modules, docsImported, architectureWritten };
+        throw new SkipConventions();
       }
       const { text } = await callLlm(manager, cfg, {
         role: 'summarize',
@@ -158,23 +199,28 @@ export async function bootstrapWiki(
       /* conventions are best-effort */
     }
   } else {
-    // Deterministic fallback overview (no LLM).
-    applyWikiUpdate(
-      {
-        key: 'architecture/overview',
-        content: `## Summary\nRepository with ${map.total_files} files.\n\n## Modules\n${map.top_level_modules.slice(0, 12).map((m) => `- **${m.name}** (${m.files} files): ${m.key_files.join(', ')}`).join('\n')}`,
-        is_diff: false,
-      },
-      sessionId,
-      cfg.wiki.conflict_strategy,
-    );
+    writeDeterministicOverview(map, sessionId, cfg);
     architectureWritten = true;
   }
+
+  // What kind of bootstrap this was. Without it, a first run with no credentials
+  // wrote architecture/overview, wikiBootstrapped() went permanently true, and
+  // the real bootstrap never ran even after keys were added.
+  applyWikiUpdate(
+    { key: BOOTSTRAP_STATE_KEY, content: llmAvailable ? 'llm' : 'deterministic', is_diff: false },
+    sessionId,
+    cfg.wiki.conflict_strategy,
+  );
 
   bus.emit({ type: 'worker.finished', worker: 'WikiBootstrap', detail: `${modules} modules, ${docsImported} docs` });
   return { modules, docsImported, architectureWritten };
 }
 
 export function wikiBootstrapped(): boolean {
-  return Wiki.get('architecture/overview') !== null;
+  if (Wiki.get('architecture/overview') === null) return false;
+  // A deterministic bootstrap is complete only while there is still no model to
+  // do better. Once credentials appear, the repo is worth bootstrapping properly.
+  const state = Wiki.get(BOOTSTRAP_STATE_KEY);
+  if (state?.content_markdown.includes('deterministic')) return !bootstrapLlmAvailable();
+  return true;
 }

@@ -858,11 +858,12 @@ export class CommandRouter {
       this.out('info', `Vendor prefix cache: ${fmtTokens(cache.cached)} of ${fmtTokens(cache.input)} input tokens were replayed rather than resent (${(cache.ratio * 100).toFixed(0)}%).`);
     }
     const reuse = PromptCache.saved();
+    const looked = reuse.hits + reuse.misses;
     this.out(
       reuse.hits > 0 ? 'success' : 'dim',
       reuse.hits > 0
-        ? `Repeated questions: ${reuse.hits} identical request(s) answered from store, ${fmtTokens(reuse.tokens)} tokens never spent.`
-        : 'Repeated questions: none yet — every request so far asked something new.',
+        ? `Repeated questions: ${reuse.hits} of ${looked} lookups answered from store (${Math.round((reuse.hits / looked) * 100)}%), ${fmtTokens(reuse.tokens)} tokens never spent.`
+        : `Repeated questions: none yet — all ${looked} lookup(s) asked something new.`,
     );
     const learned = Learning.report(activeRepoPath()).files.filter((f) => f.rate < 0.25);
     if (learned.length) {
