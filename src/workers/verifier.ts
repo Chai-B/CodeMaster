@@ -45,6 +45,7 @@ export const VerifierWorker: Worker<VerifyInput, VerificationResult> = {
       `## Task\n${input.task.title}\n${input.task.description}\n\n## Resulting diff\n\`\`\`diff\n${diff.slice(0, 12000)}\n\`\`\`` +
       (input.testResults ? renderTestResults(input.testResults) : '');
     const { text } = await callLlm(input.manager, input.cfg, {
+      role: 'review',
       system: SYSTEM,
       user,
       sessionId: input.session.id,

@@ -75,7 +75,7 @@ test('a fix that passed first time teaches nothing and writes no playbook entry'
   assert.equal(Wiki.get('playbook/debug-x'), null);
 });
 
-test('a task stuck on one model escalates one rung, then restores it', async () => {
+test('a task stuck on one model escalates one rung without touching shared config', async () => {
   const { solveWithVerification } = await import('../../src/workers/solver.js');
   const cfg = {
     providers: {
@@ -101,8 +101,10 @@ test('a task stuck on one model escalates one rung, then restores it', async () 
   } as unknown as Parameters<typeof solveWithVerification>[2];
 
   const seen: string[] = [];
-  const exec = async (): Promise<unknown> => {
-    seen.push(cfg.providers.default);
+  // The escalation target now arrives as exec's 7th argument. Absent means the
+  // call takes whatever routing resolves, which is the default.
+  const exec = async (...args: unknown[]): Promise<unknown> => {
+    seen.push((args[6] as string | undefined) ?? cfg.providers.default);
     return { ir: { status: 'completed', summary: '' }, tokens: 1, ms: 1, applied: [], created: [], failed: [], reasoningStored: 0, wikiUpdated: 0 };
   };
   // Byte-identical failure every time: the same model would only repeat itself.
@@ -114,6 +116,7 @@ test('a task stuck on one model escalates one rung, then restores it', async () 
   await solveWithVerification(session, task, manager, cfg, verify, 3, exec as never);
 
   assert.deepEqual(seen, ['cheap', 'cheap', 'mid']);
-  // One rung only, and the session is left where it started.
+  // One rung only, and the shared config was never written — escalation is a
+  // stack local, so a concurrent task cannot be re-priced by this one.
   assert.equal(cfg.providers.default, 'cheap');
 });

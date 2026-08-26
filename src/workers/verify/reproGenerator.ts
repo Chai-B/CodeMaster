@@ -295,10 +295,21 @@ async function generateOracle(
   // config-precedence, three attempts cost 108,096 tokens and admitted nothing.
   const conversation = { id: uuid(), turn: 0, provider_id: undefined as string | undefined, delta: '' };
 
+  // The oracle is the only thing that can mark a task genuinely verified, so a
+  // failed admission is not just wasted tokens — it downgrades a correct fix to
+  // unverified. Attempt 1 runs on the role's configured model; if that model
+  // could not write a test that fails on the bug, attempts 2 and 3 go one rung
+  // up. Measured on config-precedence: haiku burned all three attempts, 108,096
+  // tokens, and admitted nothing. Costs nothing extra when attempt 1 succeeds,
+  // and is suppressed under a pin like every other escalation.
+  let model: string | undefined;
+
   const ask = async (correction: string): Promise<string | null> => {
     const closing = kind === 'repro' ? `Write the failing test now.` : `Write the passing test now.`;
     conversation.delta = correction + closing;
     const { text } = await callLlm(manager, cfg, {
+      role: 'oracle',
+      model,
       system: kind === 'repro' ? SYSTEM : CHARACTERIZATION_SYSTEM,
       conversation,
       onConversation: (_id, providerId) => {
@@ -396,6 +407,17 @@ async function generateOracle(
     if (attempt === ATTEMPTS - 1) {
       cleanup();
       return give(why);
+    }
+    // This model just failed to produce an admissible test. Move up one rung for
+    // the retry, and open a fresh conversation — the CLI's resume path carries
+    // no model, so a continued conversation would silently stay where it was.
+    const stronger = cfg.providers.pinned ? null : manager.strongerThan(model ?? manager.modelFor('oracle'));
+    if (stronger && stronger !== model) {
+      model = stronger;
+      conversation.id = uuid();
+      conversation.provider_id = undefined;
+      conversation.turn = 0;
+      bus.emit({ type: 'log', level: 'warn', message: `Oracle attempt ${attempt + 1} was not admissible; retrying on ${stronger}.` });
     }
     correction =
       kind === 'characterization'

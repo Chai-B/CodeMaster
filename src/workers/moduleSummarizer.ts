@@ -52,6 +52,7 @@ export const ModuleSummarizerWorker: Worker<SummarizeInput, ModuleSummary> = {
       .join('\n\n');
     const user = `Module: ${input.moduleName}\n\n${snippets}`;
     const { text } = await callLlm(input.manager, input.cfg, {
+      role: 'summarize',
       system: SYSTEM,
       user,
       sessionId: input.sessionId,

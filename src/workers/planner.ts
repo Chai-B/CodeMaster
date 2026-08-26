@@ -5,6 +5,7 @@ import { Tokens } from '../storage/tokens.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import { staticAnalysis } from '../analysis/api.js';
+import { namedFiles } from '../context/fileSelector.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, ExecutionPlan, TaskType, TaskSpec } from '../types/index.js';
@@ -46,7 +47,7 @@ export async function generatePlan(
     description: session.objective,
     type: 'plan',
     status: 'in_progress',
-    input_files: [],
+    input_files: namedFiles(session.repository.path, session.objective).map((path) => ({ path })),
     output_files: [],
     dependencies: [],
     blocking: [],
@@ -58,7 +59,7 @@ export async function generatePlan(
 
   bus.emit({ type: 'worker.started', worker: 'Planner', detail: 'compiling planning context' });
 
-  const primary = manager.select(cfg.providers.default, cfg.context.max_context_tokens);
+  const primary = manager.select(manager.modelFor('plan'), cfg.context.max_context_tokens);
   const compiled = await compileContext(session, planningTask, {
     maxContextTokens: primary.spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
@@ -74,6 +75,7 @@ export async function generatePlan(
   Tokens.record({
     session_id: session.id,
     task_id: planningTask.id,
+    role: 'plan',
     provider_id: sel.adapter.provider_id,
     account_id: sel.account.id,
     model_id: sel.model,
@@ -119,7 +121,10 @@ export async function generatePlan(
       description: s.description ?? s.title,
       type: (s.type as TaskType) ?? session.objective_parsed?.task_type ?? 'implement',
       status: 'pending',
-      input_files: [],
+      // The files this task names, if they exist. Left empty, `locus` is empty,
+      // so the repro generator runs even when the repo already has tests over
+      // the change and the verifier's confidence gate can never fire.
+      input_files: namedFiles(session.repository.path, `${s.title}\n${s.description ?? ''}`).map((path) => ({ path })),
       output_files: [],
       dependencies,
       blocking: [],

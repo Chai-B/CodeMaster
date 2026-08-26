@@ -144,6 +144,7 @@ export async function bootstrapWiki(
         return { modules, docsImported, architectureWritten };
       }
       const { text } = await callLlm(manager, cfg, {
+        role: 'summarize',
         system:
           'Extract the coding conventions of this repository for future code generation. Output concise markdown bullets covering: language/framework, file & naming conventions, component/module patterns, styling approach, and error-handling style. No preamble.',
         user: `Repository: ${map.total_files} files.\nLanguages: ${JSON.stringify(map.languages)}\n\nRepresentative source:\n${sampleFiles}`,

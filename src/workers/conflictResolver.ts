@@ -35,6 +35,7 @@ export const ConflictResolverWorker: Worker<ConflictInput, ConflictResolution> =
   async execute(input) {
     const user = `Context: ${input.context}\n\n## Entry A\n${input.a}\n\n## Entry B\n${input.b}`;
     const { text } = await callLlm(input.manager, input.cfg, {
+      role: 'merge',
       system: SYSTEM,
       user,
       sessionId: input.sessionId,

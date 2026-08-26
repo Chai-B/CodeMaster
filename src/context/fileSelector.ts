@@ -196,6 +196,14 @@ export async function selectFiles(
   return out;
 }
 
+/** File paths a piece of prose names that actually exist in the repo. The
+ *  planner writes these onto `task.input_files` — the locus that the verifier's
+ *  confidence gate and the repro-coverage check read, both of which were dead
+ *  while every task shipped with an empty list. */
+export function namedFiles(repo: string, text: string): string[] {
+  return [...new Set(extractFilePaths(text))].filter((p) => fileExists(repo, p));
+}
+
 const FILE_PATH_RE = /\b([\w./-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|c|cpp|h|hpp|swift|sql|json|yaml|yml|md))\b/g;
 function extractFilePaths(text: string): string[] {
   const out: string[] = [];

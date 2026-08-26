@@ -5,9 +5,30 @@ import { Tokens } from '../storage/tokens.js';
 import { bus } from '../events/bus.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
-import type { CompiledPrompt } from '../types/index.js';
+import type { CompiledPrompt, LlmRole, LlmEffort, TaskType } from '../types/index.js';
+
+/** The role is what this call is for; task_type is the nearest thing the context
+ *  schema can say about it. Only plan and oracle map cleanly — the mechanical
+ *  roles are all recorded as review. Better than the flat 'plan' every worker
+ *  call used to claim, which made tokensByTaskType unreadable. */
+const ROLE_TASK_TYPE: Record<LlmRole, TaskType> = {
+  solve: 'implement',
+  plan: 'plan',
+  oracle: 'test',
+  review: 'review',
+  summarize: 'review',
+  merge: 'review',
+};
 
 export interface LlmCallOptions {
+  /** Required. Every worker declares what its call is for, and routing follows
+   *  from that — optional would let a site silently keep the global model. */
+  role: LlmRole;
+  /** Override the role's configured reasoning depth for this call. */
+  effort?: LlmEffort;
+  /** Override the role's configured model for this call — the oracle's
+   *  escalation after a failed admission. */
+  model?: string;
   system: string;
   user: string;
   sessionId: string;
@@ -29,7 +50,7 @@ export async function callLlm(
   const compiled: CompiledPrompt = {
     session_id: opts.sessionId,
     task_id: opts.taskId ?? 'worker',
-    task_type: 'plan',
+    task_type: ROLE_TASK_TYPE[opts.role],
     compiled_at: '',
     system: opts.system,
     components: [],
@@ -44,15 +65,18 @@ export async function callLlm(
   // rate-limited account made every worker call throw — and the repro
   // generator swallows that as `null`, so a spent quota silently removed the
   // only sound oracle in the system rather than moving to another provider.
-  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, undefined, {
+  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, opts.role, {
     conversation: opts.conversation,
     onConversation: opts.onConversation,
+    model: opts.model,
+    effort: opts.effort,
   });
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
   Tokens.record({
     session_id: opts.sessionId,
     task_id: opts.taskId,
+    role: opts.role,
     provider_id: sel.adapter.provider_id,
     account_id: sel.account.id,
     model_id: sel.model,

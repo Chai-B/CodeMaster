@@ -13,6 +13,7 @@ import { compileContext } from './context/compiler.js';
 import { ProviderManager } from './providers/manager.js';
 import { Tokens } from './storage/tokens.js';
 import { now } from './util/id.js';
+import { namedFiles } from './context/fileSelector.js';
 import type { CompiledPrompt, Session, Task } from './types/index.js';
 
 interface ChatMessage {
@@ -62,7 +63,9 @@ async function contextFor(repo: string, objective: string, taskType: string, tie
   } as unknown as Session;
   const task = {
     id: 'proxy-task', session_id: 'proxy', title: objective.slice(0, 80), description: objective,
-    type: taskType, status: 'in_progress', input_files: [], output_files: [],
+    type: taskType, status: 'in_progress',
+    input_files: namedFiles(repo, objective).map((path) => ({ path })),
+    output_files: [],
     dependencies: [], blocking: [], reasoning_refs: [], decision_refs: [],
     estimated_tokens: 0, order: 0,
   } as unknown as Task;
@@ -135,10 +138,17 @@ export async function runProxy(repoPath: string, port: number): Promise<http.Ser
           omitted: compiled?.omitted ?? [],
         };
 
-        const { sel, response } = await manager.invokeWithFailover(prompt, cfg.context.max_context_tokens);
+        // The caller asked for a model; honour it when it is one we can actually
+        // reach. Ignoring it meant an OpenAI-shaped client got whatever the
+        // config's default was, silently, with the requested name echoed back.
+        const wanted = body.model && manager.modelSpec(body.model) ? body.model : undefined;
+        const { sel, response } = await manager.invokeWithFailover(prompt, cfg.context.max_context_tokens, 'solve', {
+          model: wanted,
+        });
         Tokens.record({
           session_id: 'proxy',
           task_id: 'proxy-task',
+          role: 'solve',
           provider_id: sel.adapter.provider_id,
           account_id: sel.account.id,
           model_id: sel.model,

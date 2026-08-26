@@ -74,6 +74,9 @@ export interface ProviderRequest {
    * new turn.
    */
   conversation?: { id: string; resume: boolean };
+  /** Extended-thinking budget in tokens. Set from the role's effort level;
+   *  adapters that cannot vary reasoning depth ignore it. */
+  thinking_tokens?: number;
 }
 
 export interface ProviderResponse {
@@ -116,3 +119,18 @@ export interface ProviderAdapter {
   ping(account: Account): Promise<AccountHealth['status']>;
   extract_token_usage(response: ProviderResponse): TokenUsage;
 }
+
+/** What one LLM call is FOR. Not the task's type: a single `implement` task
+ *  makes a solve call, an oracle call and a review call, and they do not need
+ *  the same model. This is the routing key. */
+export type LlmRole = 'solve' | 'plan' | 'oracle' | 'review' | 'summarize' | 'merge';
+
+/** How hard the model should think before answering. Orthogonal to which model
+ *  answers: opus at 'low' and opus at 'high' are the same weights and very
+ *  different prices, so a role can buy reasoning depth without buying a bigger
+ *  model. Providers that cannot vary effort ignore it. */
+export type LlmEffort = 'low' | 'medium' | 'high';
+
+/** A role's routing entry. A bare string is the model id at default effort —
+ *  the common case, and what configs written before effort existed contain. */
+export type RoleRouting = string | { model?: string; effort?: LlmEffort };

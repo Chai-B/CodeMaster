@@ -72,11 +72,17 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
     const client = new Anthropic(auth.authToken ? { authToken: auth.authToken } : { apiKey: auth.apiKey });
     const started = Date.now();
+    // Extended thinking, when the call's role asked for depth. The budget must
+    // leave room for the answer itself, so max_tokens grows to cover it rather
+    // than the thinking eating the reply. Temperature is not set alongside
+    // thinking — the API rejects the combination.
+    const think = request.thinking_tokens;
     const resp = await client.messages.create({
       model: request.model,
-      max_tokens: request.max_tokens,
+      max_tokens: think ? request.max_tokens + think : request.max_tokens,
       system: request.system,
       messages: [{ role: 'user', content: request.user }],
+      ...(think ? { thinking: { type: 'enabled' as const, budget_tokens: think } } : {}),
     });
     const latency = Date.now() - started;
     const text = resp.content

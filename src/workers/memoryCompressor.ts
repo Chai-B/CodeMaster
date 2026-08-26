@@ -30,6 +30,7 @@ export const MemoryCompressorWorker: Worker<CompressInput, CompressResult> = {
     const db = getDb();
     for (const c of input.candidates) {
       const { text } = await callLlm(input.manager, input.cfg, {
+        role: 'summarize',
         system: SYSTEM,
         user: `${c.summary}\n\n${c.detail}`,
         sessionId: input.sessionId,
