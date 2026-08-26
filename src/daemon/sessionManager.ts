@@ -11,7 +11,7 @@ import { startWatching, stopWatching } from '../analysis/watcher.js';
 import { parseObjective } from '../workers/intentParser.js';
 import { generatePlan } from '../workers/planner.js';
 import { executeTask, type ExecuteResult } from '../workers/taskExecutor.js';
-import { solveWithVerification } from '../workers/solver.js';
+import { solveWithVerification, type VerifyResult } from '../workers/solver.js';
 import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
 import { generateRepro, generateCharacterization, type Repro } from '../workers/verify/reproGenerator.js';
 import { detectFramework } from '../analysis/testRunner.js';
@@ -351,20 +351,35 @@ export class SessionManager {
       // after the other. Each also shells out to pytest up to three times to
       // admit its result, so the pair was the longest non-solving stretch of
       // the run. They share nothing: separate directories, read-only on the repo.
-      const [repro, characterization] = await Promise.all([
+      const oracles = Promise.all([
         this.cfg.verify.genRepro && !covered
           ? generateRepro(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
           : Promise.resolve(null),
         this.characterizationFor(session, hint),
       ]);
-      const bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, repro, locus, characterization);
+
+      // Not awaited here. Generating an oracle costs LLM calls plus up to three
+      // pytest runs to admit the result — measured on config-precedence, 138s of
+      // a 409s run, and for one task 113s that admitted nothing. None of it is
+      // needed until the solver has produced something to check, and since the
+      // admission gates now run against a snapshot rather than the live tree,
+      // generating while the solver patches is safe.
+      type BV = ReturnType<typeof makeBehavioralVerify>;
+      let bv: BV | null = null;
+      const verify = async (): Promise<VerifyResult> => {
+        if (!bv) {
+          const [r, c] = await oracles;
+          bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, r, locus, c);
+        }
+        return (bv as BV).verify();
+      };
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
       // `.last` discarded `verified`, so the only real signal in the pipeline
       // never reached the task record.
       let solverVerified = false;
       try {
-        const solved = await solveWithVerification(session, next, this.manager, this.cfg, bv.verify, this.cfg.verify.maxIters);
+        const solved = await solveWithVerification(session, next, this.manager, this.cfg, verify, this.cfg.verify.maxIters);
         result = solved.last;
         solverVerified = solved.verified;
       } catch (e) {
@@ -372,8 +387,11 @@ export class SessionManager {
         bus.emit({ type: 'log', level: 'warn', message: `Behavioral verify infra error (non-blocking): ${String(e).slice(0, 120)}` });
         result = await executeTask(session, next, this.manager, this.cfg);
       }
-      repro?.cleanup();
-      const bvResults = bv.lastResults() ?? undefined;
+      // Resolved by now in every path that verified; awaited anyway so a run that
+      // fell through to executeTask still cleans up the generated test.
+      const [generatedRepro] = await oracles;
+      generatedRepro?.cleanup();
+      const bvResults = (bv as BV | null)?.lastResults() ?? undefined;
       next.evidence = buildEvidence(solverVerified, bvResults, result);
       const derived = deriveStatus(result, next.evidence);
       next.status = derived.status;
