@@ -41,13 +41,14 @@ Rules:
 - No fixtures, no conftest, no network. Keep it short.
 - Respond with ONLY the test source inside a single fenced code block. No prose.`;
 
-const CHARACTERIZATION_SYSTEM = `You write ONE test that pins down behavior the code ALREADY has correctly, so a fix elsewhere cannot silently break it.
+const CHARACTERIZATION_SYSTEM = `You write 3 to 5 SHORT tests that pin down behavior the code ALREADY has correctly, so a fix elsewhere cannot silently break it.
 
 Rules:
-- The test MUST PASS on the code exactly as it stands right now. You are not reporting a bug; you are fencing off what already works.
+- Every test MUST PASS on the code exactly as it stands right now. You are not reporting a bug; you are fencing off what already works.
+- Make each test INDEPENDENT and cover a DIFFERENT property: the main result, an edge case (empty input, one element, a boundary value), and any invariant the code maintains. One test protects one thing; a fix that breaks something else slips past it.
 - Pick behavior the described change could plausibly break as a side effect — the ordinary, correct path through the same code. Do NOT assert the buggy behavior the change is meant to fix, and do NOT assert anything the description says is currently wrong.
 - Assert concrete values, not just "no exception". A test that cannot fail protects nothing.
-- No fixtures, no conftest, no network. Keep it short.
+- No fixtures, no conftest, no network. Keep each test to a few lines.
 - Respond with ONLY the test source inside a single fenced code block. No prose.`;
 
 function extractCode(text: string): string | null {
@@ -66,7 +67,7 @@ function reproDir(repoPath: string, kind: Kind): string {
 /** pytest: exit 1 = assertion failures (bug captured); 2 = collection/syntax error
  *  (broken test); 0 = passed. js runners: exit 1 = failures. We admit ONLY on a
  *  genuine assertion failure, so a broken generated test is never admitted. */
-function runReproFile(repoPath: string, file: string, fw: Framework, opts: ReproOpts): { status: number | null; output: string } {
+function runReproFile(repoPath: string, file: string, fw: Framework, opts: ReproOpts, deselect: string[] = []): { status: number | null; output: string } {
   const timeout = opts.timeoutMs ?? 90_000;
   let cmd: string;
   let args: string[];
@@ -77,7 +78,10 @@ function runReproFile(repoPath: string, file: string, fw: Framework, opts: Repro
     const runner = resolvePytest(opts.pythonBin ?? 'python3');
     if (!runner) return { status: 2, output: 'no pytest runner available' };
     cmd = runner.cmd;
-    args = [...runner.pre, file, '-q', '-p', 'no:cacheprovider', '--no-header', '--color=no', '--tb=short'];
+    args = [
+      ...runner.pre, file, '-q', '-p', 'no:cacheprovider', '--no-header', '--color=no', '--tb=short',
+      ...deselect.flatMap((id) => ['--deselect', id]),
+    ];
   } else if (fw === 'jest') {
     cmd = 'npx';
     args = ['jest', file];
@@ -120,6 +124,13 @@ export function isGenuineFailure(fw: Framework, status: number | null, output: s
     return !TEST_IS_BROKEN.test(output);
   }
   return status === 1 && /(fail|✕|✗)/i.test(output);
+}
+
+/** pytest's own short-summary lines name every test that failed, which is what
+ *  `--deselect` takes. Parsing them is how a partly-correct characterization
+ *  file is salvaged instead of thrown away whole. */
+export function failedNodeIds(output: string): string[] {
+  return [...output.matchAll(/^FAILED (\S+?)(?: - |$)/gm)].map((m) => m[1]!);
 }
 
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.venv', 'venv', 'target', '.codemaster']);
@@ -262,6 +273,9 @@ async function generateOracle(
   const ATTEMPTS = 3;
   let correction = '';
   let previous = '';
+  /** Tests admitted out of the generated file — the ones that did not pass on
+   *  the unchanged code, so their later failure would prove nothing. */
+  let deselect: string[] = [];
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     let code: string | null;
     try {
@@ -289,8 +303,28 @@ async function generateOracle(
     // A characterization test is the mirror image — it must PASS, because its
     // whole value is that a later failure means the fix broke something.
     const first = runReproFile(repoPath, file, fw, opts);
-    const admitted =
+    let admitted =
       kind === 'repro' ? isGenuineFailure(fw, first.status, first.output) : first.status === 0;
+
+    // A characterization file holds several independent tests. One wrong
+    // assertion used to throw away the three correct ones with it, and with
+    // them the only regression check the run had. Drop the failures, keep the
+    // rest: a smaller true oracle beats no oracle.
+    if (!admitted && kind === 'characterization' && fw === 'pytest') {
+      const failing = failedNodeIds(first.output);
+      if (failing.length > 0 && /\d+ passed/.test(first.output)) {
+        const pruned = runReproFile(repoPath, file, fw, opts, failing);
+        if (pruned.status === 0) {
+          deselect = failing;
+          admitted = true;
+          bus.emit({
+            type: 'log',
+            level: 'info',
+            message: `Characterization: kept the tests that pass, dropped ${failing.length} that did not.`,
+          });
+        }
+      }
+    }
     if (admitted) break;
 
     const tail = first.output.trim().split('\n').slice(-8).join('\n').slice(0, 900);
@@ -328,7 +362,7 @@ async function generateOracle(
   return {
     path: file,
     run: () => {
-      const r = runReproFile(repoPath, file, fw, opts);
+      const r = runReproFile(repoPath, file, fw, opts, deselect);
       return { ok: r.status === 0, output: r.output };
     },
     cleanup,
