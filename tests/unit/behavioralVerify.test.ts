@@ -308,3 +308,22 @@ test('behavioralVerify: a passing characterization does not by itself verify', a
   // Preserving old behavior is not evidence the new behavior arrived.
   assert.equal(r.confident, false);
 });
+
+test('a gate that rejects without a test count still fails the task', async () => {
+  const { deriveStatus } = await import('../../src/daemon/sessionManager.js');
+  const base = { verified: false, provenance: 'none' as const, ran: false, passed: 0, failed: 0 };
+  const result = { ir: { status: 'completed' }, applied: ['join.py'], created: [], failed: [], tokens: 0, ms: 0, reasoningStored: 0, wikiUpdated: 0 } as unknown as Parameters<typeof deriveStatus>[0];
+
+  // The crash guard and the use-site check report failed:0 because no suite
+  // ran. Reading only that number let a non-importing change report completed.
+  assert.equal(
+    deriveStatus(result, { ...base, framework: 'guard', reason: 'ImportError' }).status,
+    'failed',
+  );
+  assert.equal(
+    deriveStatus(result, { ...base, framework: 'use-sites', reason: 'never touched join.py' }).status,
+    'failed',
+  );
+  assert.equal(deriveStatus(result, { ...base, framework: 'none' }).status, 'completed');
+  assert.equal(deriveStatus(result, { ...base, framework: 'pytest', ran: true, passed: 3 }).status, 'completed');
+});

@@ -78,7 +78,7 @@ function buildEvidence(solverVerified: boolean, bv: TestResults | undefined, res
 /** The status AND why. Four different things end a task badly and the reason
  *  used to be taken from the model's summary alone — which is often empty, so a
  *  failed task was reported with no cause at all. */
-function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): { status: TaskStatus; reason?: string } {
+export function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): { status: TaskStatus; reason?: string } {
   if (result.ir.status === 'blocked') {
     return { status: 'blocked', reason: result.ir.blocked_by.join('; ') || result.ir.summary || 'the model reported it was blocked' };
   }
@@ -91,6 +91,14 @@ function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): { status: 
   }
   if (evidence.failed > 0) {
     return { status: 'failed', reason: `${evidence.failed} test(s) failed — ${(evidence.reason ?? '').slice(0, 300)}` };
+  }
+  // Two hard gates say no without any test count: the crash guard and the
+  // use-site check. Reading only `failed` let a change that does not even
+  // import, or that never touched the file it was asked to fix, report
+  // completed and stay in the tree. They record their own name here and
+  // record it only when they reject.
+  if (evidence.framework === 'guard' || evidence.framework === 'use-sites') {
+    return { status: 'failed', reason: (evidence.reason ?? 'a verification gate rejected the change').slice(0, 400) };
   }
   return { status: 'completed' };
 }
