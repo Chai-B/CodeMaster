@@ -221,7 +221,13 @@ export class SessionManager {
       provider_history: [],
       checkpoints: [],
       token_usage: emptyBudget(),
-      current_provider: { provider_id: 'anthropic', model_id: this.cfg.providers.default },
+      // Ask which vendor actually owns the default model. Hardcoding 'anthropic'
+      // labelled every OpenAI or Gemini session as Anthropic in the handoff
+      // package, in /session, and in provider_history.
+      current_provider: {
+        provider_id: this.manager.providerOf(this.cfg.providers.default),
+        model_id: this.cfg.providers.default,
+      },
       metadata: {},
     };
     Sessions.insert(session);
