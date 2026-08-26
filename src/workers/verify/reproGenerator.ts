@@ -5,6 +5,7 @@
 // generated test without ever consulting the hidden oracle, so it stays fair.
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { callLlm } from '../llm.js';
@@ -61,6 +62,41 @@ function extractCode(text: string): string | null {
 /** Outside the repository, always. A generated test is scaffolding, not work
  *  product: it must not appear in the user's `git status`, be picked up by
  *  their own test run, or survive a crash as litter in their tree. */
+/**
+ * A throwaway checkout of the repository exactly as it stands right now.
+ *
+ * The admission gates are the only sound oracle in the system and both are
+ * statements about the code BEFORE this task touches it: a repro must fail on
+ * it, a characterization must pass on it. `runReproFile` executes with
+ * `cwd`/`PYTHONPATH` pointed at the live tree, so running admission there is
+ * only correct while nothing else is writing to it — which is also why oracle
+ * generation had to block the solver, measured at 138s of a 409s run.
+ *
+ * `git stash create` builds a commit object for the dirty tree without touching
+ * the index, the working tree, or the stash list; empty output means clean, and
+ * HEAD is then the same thing. Not a git repository, or git refuses: fall back
+ * to the repo itself, where admission is still correct, just not isolated.
+ */
+export function snapshotTree(repoPath: string): { dir: string; release: () => void } {
+  const noop = { dir: repoPath, release: (): void => {} };
+  const run = (args: string[]): { ok: boolean; out: string } => {
+    const r = spawnSync('git', args, { cwd: repoPath, encoding: 'utf8', maxBuffer: 1e8 });
+    return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
+  };
+  if (!run(['rev-parse', '--git-dir']).ok) return noop;
+  const ref = run(['stash', 'create']).out || run(['rev-parse', 'HEAD']).out;
+  if (!ref) return noop;
+  const dir = path.join(os.tmpdir(), `cm-oracle-${uuid().slice(0, 8)}`);
+  if (!run(['worktree', 'add', '--detach', dir, ref]).ok) return noop;
+  return {
+    dir,
+    release: (): void => {
+      run(['worktree', 'remove', '--force', dir]);
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
 function reproDir(repoPath: string, kind: Kind): string {
   return path.join(repoDataDir(repoPath), kind === 'repro' ? 'repro' : 'characterization');
 }
@@ -229,13 +265,22 @@ async function generateOracle(
   // one says why. Silence here is what let a whole benchmark run report success
   // with nothing ever executed.
   const label = kind === 'repro' ? 'reproduction test' : 'characterization test';
+  // Held across every exit path: an abandoned worktree would keep the repo's
+  // `git worktree list` growing for the life of the machine.
+  let snap: { dir: string; release: () => void } | null = null;
   const give = (why: string): null => {
+    snap?.release();
     bus.emit({ type: 'log', level: 'warn', message: `No ${label}: ${why}` });
     return null;
   };
   const fw = frameworkForNewTest(repoPath);
   const ext = fw === 'pytest' ? 'py' : fw === 'jest' || fw === 'vitest' ? 'test.ts' : null;
   if (!ext) return give(`no supported test framework for this repository (${fw})`);
+
+  // Admission asks a question about the code as it stands before this task.
+  // Ask it of a snapshot, never of the tree the solver is about to rewrite.
+  snap = snapshotTree(repoPath);
+  const tree = snap.dir;
 
   const surface = importSurface(repoPath, fw);
   const dir = reproDir(repoPath, kind);
@@ -316,7 +361,7 @@ async function generateOracle(
     // passes does not capture the bug, one that errors on collection never ran.
     // A characterization test is the mirror image — it must PASS, because its
     // whole value is that a later failure means the fix broke something.
-    const first = runReproFile(repoPath, file, fw, opts);
+    const first = runReproFile(tree, file, fw, opts);
     let admitted =
       kind === 'repro' ? isGenuineFailure(fw, first.status, first.output) : first.status === 0;
 
@@ -327,7 +372,7 @@ async function generateOracle(
     if (!admitted && kind === 'characterization' && fw === 'pytest') {
       const failing = failedNodeIds(first.output);
       if (failing.length > 0 && /\d+ passed/.test(first.output)) {
-        const pruned = runReproFile(repoPath, file, fw, opts, failing);
+        const pruned = runReproFile(tree, file, fw, opts, failing);
         if (pruned.status === 0) {
           deselect = failing;
           admitted = true;
@@ -373,8 +418,11 @@ async function generateOracle(
     bus.emit({ type: 'log', level: 'info', message: `${label} rejected, retrying once: ${why}` });
   }
 
+  snap.release();
   return {
     path: file,
+    // The live repository, deliberately: admission asked about the code before
+    // the change, this asks about the code after it.
     run: () => {
       const r = runReproFile(repoPath, file, fw, opts, deselect);
       return { ok: r.status === 0, output: r.output };

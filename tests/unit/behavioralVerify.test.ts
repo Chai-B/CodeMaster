@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 
 process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bv-'));
 
@@ -342,4 +343,52 @@ test('a partly-correct characterization file is salvaged, not discarded', async 
     '.cm/characterization/test_cm_char.py::test_bound',
   ]);
   assert.deepEqual(failedNodeIds('5 passed in 0.10s'), []);
+});
+
+test('the oracle snapshot captures the working tree, not HEAD, and leaves no worktree behind', async () => {
+  const { snapshotTree } = await import('../../src/workers/verify/reproGenerator.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-snap-'));
+  const git = (...args: string[]): string =>
+    execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 't@example.com');
+    git('config', 'user.name', 'T');
+    fs.writeFileSync(path.join(repo, 'a.py'), 'committed\n');
+    git('add', '-A');
+    git('commit', '-qm', 'first');
+    // Uncommitted: this is the state admission must ask its question of.
+    fs.writeFileSync(path.join(repo, 'a.py'), 'dirty\n');
+
+    const snap = snapshotTree(repo);
+    assert.notEqual(snap.dir, repo);
+    assert.equal(fs.readFileSync(path.join(snap.dir, 'a.py'), 'utf8'), 'dirty\n');
+
+    // A patch landing in the real tree must not be visible to a gate already
+    // running against the snapshot — that is the whole point of taking one.
+    fs.writeFileSync(path.join(repo, 'a.py'), 'patched by the solver\n');
+    assert.equal(fs.readFileSync(path.join(snap.dir, 'a.py'), 'utf8'), 'dirty\n');
+
+    snap.release();
+    assert.equal(fs.existsSync(snap.dir), false);
+    assert.equal(git('worktree', 'list').trim().split('\n').length, 1);
+    // stash create must not have pushed anything onto the user's stash list.
+    assert.equal(git('stash', 'list').trim(), '');
+    assert.equal(fs.readFileSync(path.join(repo, 'a.py'), 'utf8'), 'patched by the solver\n');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('the oracle snapshot falls back to the repo itself outside a git repository', async () => {
+  const { snapshotTree } = await import('../../src/workers/verify/reproGenerator.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-nogit-'));
+  try {
+    const snap = snapshotTree(dir);
+    assert.equal(snap.dir, dir);
+    snap.release();
+    assert.equal(fs.existsSync(dir), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
