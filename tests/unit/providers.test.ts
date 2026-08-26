@@ -71,3 +71,31 @@ test('all adapters agree on patch target for equivalent output', () => {
   assert.equal(a.patches[0]!.file, o.patches[0]!.file);
   assert.equal(o.patches[0]!.file, c.patches[0]!.file);
 });
+
+test('a pinned model never fails over to another model', async () => {
+  const { ProviderManager } = await import('../../src/providers/manager.js');
+  const models = (id: string): { id: string; context_size: number; cost_per_1m_input: number; cost_per_1m_output: number }[] => [
+    { id, context_size: 200_000, cost_per_1m_input: 1, cost_per_1m_output: 5 },
+  ];
+  const cfg = {
+    providers: {
+      default: 'claude-haiku-4-5-20251001',
+      pinned: true,
+      anthropic: { models: models('claude-haiku-4-5-20251001') },
+      openai: { models: models('gpt-5-codex') },
+      google: { models: models('gemini-3-pro') },
+      openai_codex: { models: models('gpt-5-codex-cli') },
+    },
+  } as unknown as ConstructorParameters<typeof ProviderManager>[0];
+
+  const m = new ProviderManager(cfg);
+  // Private, but this ordering IS the guarantee: a benchmark pinned to haiku
+  // failed over to gpt-5-codex mid-run and reported numbers for neither.
+  const order = (m as unknown as { failoverModelOrder(): string[] }).failoverModelOrder();
+  assert.deepEqual(order, ['claude-haiku-4-5-20251001']);
+
+  cfg.providers.pinned = false;
+  const open = new ProviderManager(cfg);
+  const wide = (open as unknown as { failoverModelOrder(): string[] }).failoverModelOrder();
+  assert.ok(wide.length >= order.length);
+});

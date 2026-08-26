@@ -240,6 +240,12 @@ export class ProviderManager {
    *  restricted to providers that actually have credentials. */
   private failoverModelOrder(): string[] {
     const def = this.cfg.providers.default;
+    // A pinned model is a promise that every call used it. Walking to another
+    // vendor keeps the run alive but silently answers a different question —
+    // measured, a benchmark pinned to haiku failed over to gpt-5-codex mid-run
+    // and its numbers meant nothing. Accounts of this same model are still
+    // tried; `select` and `available` handle that below.
+    if (this.cfg.providers.pinned) return [def];
     const seenProvider = new Set<string>();
     const order: string[] = [];
     if (this.providerHasCredentials(this.providerOf(def))) {
