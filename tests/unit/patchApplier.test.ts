@@ -66,3 +66,38 @@ test('a test task may write tests, and a named config file is still allowed', ()
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+test('a failed task can be rolled back to the bytes it started from', async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-undo-'));
+  process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-undodata-'));
+  const { Undo, revert } = await import('../../src/storage/undo.js');
+  try {
+    const target = path.join(repo, 'join.py');
+    fs.writeFileSync(target, 'original\n');
+    const created = path.join(repo, 'evict.py');
+
+    // Two iterations of one task, plus an unrelated task that must survive.
+    Undo.record(repo, 's1', 'task-a', 'iteration 1', [{ path: 'join.py', before: 'original\n' }]);
+    fs.writeFileSync(target, 'attempt 1\n');
+    Undo.record(repo, 's1', 'task-a', 'iteration 2', [
+      { path: 'join.py', before: 'attempt 1\n' },
+      { path: 'evict.py', before: null },
+    ]);
+    fs.writeFileSync(target, 'attempt 2\n');
+    fs.writeFileSync(created, 'x = 1\n');
+    Undo.record(repo, 's1', 'task-b', 'other work', [{ path: 'other.py', before: null }]);
+
+    const records = Undo.forTask(repo, 'task-a');
+    assert.equal(records.length, 2);
+    // Newest first: reverting in order must end at the pre-task bytes, not the
+    // intermediate ones.
+    for (const rec of records) revert(repo, rec);
+
+    assert.equal(fs.readFileSync(target, 'utf8'), 'original\n');
+    assert.equal(fs.existsSync(created), false);
+    assert.equal(Undo.forTask(repo, 'task-b').length, 1);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(process.env.CODEMASTER_DATA_DIR!, { recursive: true, force: true });
+  }
+});

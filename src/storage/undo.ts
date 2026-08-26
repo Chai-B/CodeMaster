@@ -55,6 +55,16 @@ export const Undo = {
     ).map(hydrate);
   },
 
+  /** Newest first, so a caller reverting them in order ends at the state the
+   *  task started from — the oldest record holds the true pre-task bytes. */
+  forTask(repoPath: string, taskId: string): UndoRecord[] {
+    return (
+      getDb()
+        .prepare('SELECT * FROM undo_journal WHERE repo_path=? AND task_id=? ORDER BY id DESC')
+        .all(repoPath, taskId) as unknown as Row[]
+    ).map(hydrate);
+  },
+
   drop(id: number): void {
     getDb().prepare('DELETE FROM undo_journal WHERE id=?').run(id);
   },
