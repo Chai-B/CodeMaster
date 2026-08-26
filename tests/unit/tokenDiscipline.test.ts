@@ -98,3 +98,50 @@ test('a plan that verifies its own work is trimmed before it costs anything', as
   assert.equal(isSelfVerificationTask('Write a test suite for the join contract'), false);
   assert.equal(isSelfVerificationTask('Checkout the release branch'), false);
 });
+
+test('under budget pressure, re-derivable context sheds before purchased reasoning', async () => {
+  const { enforceBudget } = await import('../../src/context/compiler.js');
+  const { ContextComponent: C } = await import('../../src/types/index.js');
+
+  const big = (component: (typeof C)[keyof typeof C], n: number) => ({
+    component,
+    heading: String(component),
+    content: 'x'.repeat(n * 4),
+    estimated_tokens: n,
+  });
+  const components = [
+    big(C.OBJECTIVE, 100),
+    big(C.REPOSITORY_MAP, 4000),
+    big(C.RECENT_CHANGES, 4000),
+    big(C.KNOWN_FAILURES, 500),
+    big(C.PRIOR_REASONING, 500),
+  ];
+
+  const { dropped } = enforceBudget(components, 1200);
+  const left = components.map((c) => c.component);
+
+  // A known failure cost a full solver iteration to learn; the repository map is
+  // regenerated from disk for nothing.
+  assert.ok(left.includes(C.KNOWN_FAILURES), 'known failures must survive');
+  assert.ok(left.includes(C.PRIOR_REASONING), 'prior reasoning must survive');
+  assert.ok(dropped.includes(C.REPOSITORY_MAP), 'repository map should have been dropped');
+});
+
+test('file content is shed as whole files, never a truncated tail of every file', async () => {
+  const { enforceBudget } = await import('../../src/context/compiler.js');
+  const { ContextComponent: C } = await import('../../src/types/index.js');
+
+  const files = ['a.ts', 'b.ts', 'c.ts'].map((f) => `### ${f}\n\`\`\`\n${'y'.repeat(4000)}\n\`\`\``).join('\n\n');
+  const components = [
+    { component: C.RELEVANT_FILES, heading: 'Files', content: files, estimated_tokens: 3000 },
+    { component: C.KNOWN_FAILURES, heading: 'Failures', content: '- Tried: x\n  Failed because: y', estimated_tokens: 20 },
+  ];
+
+  enforceBudget(components, 2100);
+  const kept = components.find((c) => c.component === C.RELEVANT_FILES)!;
+  assert.ok(kept.content.includes('### a.ts'));
+  assert.ok(kept.content.includes('### b.ts'));
+  assert.ok(!kept.content.includes('### c.ts'));
+  // and it is never dropped outright
+  assert.ok(components.some((c) => c.component === C.RELEVANT_FILES));
+});
