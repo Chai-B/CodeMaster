@@ -327,3 +327,19 @@ test('a gate that rejects without a test count still fails the task', async () =
   assert.equal(deriveStatus(result, { ...base, framework: 'none' }).status, 'completed');
   assert.equal(deriveStatus(result, { ...base, framework: 'pytest', ran: true, passed: 3 }).status, 'completed');
 });
+
+test('a partly-correct characterization file is salvaged, not discarded', async () => {
+  const { failedNodeIds } = await import('../../src/workers/verify/reproGenerator.js');
+  const output = [
+    '..F.F                                                              [100%]',
+    '=================================== FAILURES ===================================',
+    'FAILED .cm/characterization/test_cm_char.py::test_empty_window - AssertionError',
+    'FAILED .cm/characterization/test_cm_char.py::test_bound',
+    '3 passed, 2 failed in 0.21s',
+  ].join('\n');
+  assert.deepEqual(failedNodeIds(output), [
+    '.cm/characterization/test_cm_char.py::test_empty_window',
+    '.cm/characterization/test_cm_char.py::test_bound',
+  ]);
+  assert.deepEqual(failedNodeIds('5 passed in 0.10s'), []);
+});
