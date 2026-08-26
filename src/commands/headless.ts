@@ -74,7 +74,9 @@ function git(repo: string, args: string[]): string {
 /** Paths touched in the working tree, including files the run created — which
  *  `git diff HEAD` alone omits, making a pure file-creation run look empty. */
 function changedFiles(repo: string): string[] {
-  return git(repo, ['status', '--porcelain'])
+  // Without `--untracked-files=all`, git collapses a new directory to `tests/`
+  // and the reported change list names a directory instead of the files in it.
+  return git(repo, ['status', '--porcelain', '--untracked-files=all'])
     .split('\n')
     .filter(Boolean)
     .map((l) => l.slice(3).trim())
