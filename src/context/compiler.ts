@@ -8,6 +8,7 @@ import { resolveBudget } from './budget.js';
 import { Learning } from '../learning/reflector.js';
 import { readRelevantSections, readConventions, readArchitecture } from '../wiki/reader.js';
 import { Reasoning, Failures } from '../storage/reasoning.js';
+import { LongTerm } from '../storage/memory.js';
 import { OUTPUT_FORMAT, SYSTEM_PROMPT } from './outputFormat.js';
 import { estimateTokens } from '../util/tokens.js';
 import { now } from '../util/id.js';
@@ -107,8 +108,22 @@ export async function compileContext(
     );
   }
 
-  // ARCHITECTURE
-  add(C.ARCHITECTURE, 'Architecture Context', session.architecture?.summary || readArchitecture());
+  // ARCHITECTURE — the wiki's overview plus the decisions past sessions promoted
+  // to long-term memory. Those are the rows the system itself rates highest:
+  // importance >= 0.7 and permanent, one session's reasoning each. Nothing read
+  // them into a prompt before this, so every session re-derived what an earlier
+  // one had already decided and paid for.
+  const promoted = LongTerm.byNamespace('architecture')
+    .slice(0, 6)
+    .map((m) => `- ${m.key}: ${(m.value_markdown ?? '').split('\n')[0]}`)
+    .join('\n');
+  add(
+    C.ARCHITECTURE,
+    'Architecture Context',
+    [session.architecture?.summary || readArchitecture(), promoted && `Decisions carried forward:\n${promoted}`]
+      .filter(Boolean)
+      .join('\n\n'),
+  );
 
   // REPOSITORY MAP
   add(C.REPOSITORY_MAP, 'Repository Map', api.renderRepositoryMap(12));
@@ -116,10 +131,16 @@ export async function compileContext(
   // PRIOR REASONING (replay) — keyword-relevant merged with file-locus-relevant.
   const reasoning = mergeById(Reasoning.relevant(allKws, 12), Reasoning.byAffectedFiles(selectedPaths, 8));
   if (reasoning.length) {
+    // The top three carry their detail. The summary alone is a label — the
+    // substance is in `detail`, which MemoryCompressorWorker pays an LLM call to
+    // compress and which, until now, no prompt read. Either include it or stop
+    // buying it; including it is the cheaper of the two.
     const txt = reasoning
-      .map((r) => {
+      .map((r, i) => {
         Reasoning.incrementReference(r.id);
-        return `- [${r.type}] ${r.summary} (confidence ${r.confidence.toFixed(2)})`;
+        const head = `- [${r.type}] ${r.summary} (confidence ${r.confidence.toFixed(2)})`;
+        const detail = i < 3 && r.detail && r.detail !== r.summary ? `\n  ${r.detail.slice(0, 400)}` : '';
+        return head + detail;
       })
       .join('\n');
     add(C.PRIOR_REASONING, 'Prior Reasoning (relevant to this task)', txt);
@@ -290,18 +311,33 @@ function truncateToTokens(text: string, budgetTokens: number): string {
   return text.slice(0, maxChars) + '\n… (truncated to fit budget)';
 }
 
-// Least-important-first reduction order for the budget cascade (spec §11.4).
+// Shed order for the budget cascade (spec §11.4): what costs nothing to get
+// back, first. The repository map, the recent changes and the file contents are
+// re-derived from disk and git on the next compile for zero LLM tokens. A known
+// failure cost a whole solver iteration to learn and prior reasoning cost the
+// call that produced it — drop those and the next call re-buys them at full
+// price, the one thing this system exists not to do. This order used to be
+// exactly inverted: failures went second, files were never touched at all.
 const REDUCE_ORDER: ContextComponent[] = [
-  C.OPEN_QUESTIONS, C.KNOWN_FAILURES, C.RECENT_CHANGES, C.PRIOR_REASONING,
-  C.REPOSITORY_MAP, C.CONVENTIONS, C.WIKI_SECTIONS, C.ARCHITECTURE,
-  C.EXECUTION_PLAN, C.PROVIDER_HANDOFF, C.CONSTRAINTS, C.RELEVANT_FILES,
+  C.OPEN_QUESTIONS, C.REPOSITORY_MAP, C.RECENT_CHANGES, C.RELEVANT_FILES,
+  C.PROVIDER_HANDOFF, C.EXECUTION_PLAN, C.CONSTRAINTS, C.WIKI_SECTIONS,
+  C.ARCHITECTURE, C.CONVENTIONS, C.PRIOR_REASONING, C.KNOWN_FAILURES,
 ];
-// Never dropped — the task cannot be done without these.
+// Never dropped outright — the task cannot be done without these. RELEVANT_FILES
+// stays here because a patch needs something to patch, but it is now first in
+// line to be COMPRESSED, down to the two best-scoring files.
 const KEEP = new Set<ContextComponent>([C.OBJECTIVE, C.CURRENT_TASK, C.INSTRUCTIONS, C.RELEVANT_FILES]);
 
 /** Reduce a single component's content type-appropriately (signatures/sentences/bullets). */
 function compressContent(component: ContextComponent, content: string): string {
   switch (component) {
+    case C.RELEVANT_FILES: {
+      // Whole leading files, not a truncated tail of every file. fileSelector
+      // already ranked them, so the first two are the ones the task named; half
+      // a file that stops mid-function is worse than not sending it.
+      const blocks = content.split(/\n\n(?=### )/);
+      return blocks.length > 2 ? blocks.slice(0, 2).join('\n\n') : content;
+    }
     case C.PRIOR_REASONING:
     case C.KNOWN_FAILURES:
       // Keep at most the first 2-3 lines of each bullet/entry.
@@ -334,7 +370,7 @@ function compressContent(component: ContextComponent, content: string): string {
 }
 
 /** Compress then drop low-priority components until under the ceiling (spec §11.4). */
-function enforceBudget(
+export function enforceBudget(
   components: CompiledComponent[],
   ceiling: number,
 ): { compressed: ContextComponent[]; dropped: ContextComponent[] } {
