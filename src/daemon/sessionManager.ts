@@ -15,6 +15,7 @@ import { solveWithVerification } from '../workers/solver.js';
 import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
 import { generateRepro, generateCharacterization, type Repro } from '../workers/verify/reproGenerator.js';
 import { detectFramework } from '../analysis/testRunner.js';
+import { Undo, revert } from '../storage/undo.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
 import { registerCoreWorkers, nextReadyTask } from '../workers/scheduler.js';
@@ -365,6 +366,30 @@ export class SessionManager {
       if (derived.reason) next.failure_reason = derived.reason;
       next.completed_at = now();
       next.output_files = [...new Set([...result.applied, ...result.created])].map((path) => ({ path }));
+
+      // A task that failed verification has already been given every iteration
+      // it gets, and its patch is the thing that failed. Leaving it in the tree
+      // is not partial progress — measured on the benchmark, three failed tasks
+      // left a change that scored three tests WORSE than doing nothing, while
+      // the run correctly reported them failed. A gate that only labels the
+      // damage is not a gate.
+      if (next.status === 'failed') {
+        const records = Undo.forTask(session.repository.path, next.id);
+        const undone = new Set<string>();
+        for (const rec of records) {
+          const r = revert(session.repository.path, rec);
+          for (const p of [...r.restored, ...r.removed]) undone.add(p);
+          Undo.drop(rec.id);
+        }
+        if (undone.size > 0) {
+          next.output_files = [];
+          bus.emit({
+            type: 'log',
+            level: 'warn',
+            message: `Rolled back ${undone.size} file(s) from the failed task: ${[...undone].join(', ')}`,
+          });
+        }
+      }
       Tasks.update(next);
 
       if (next.status === 'completed') {

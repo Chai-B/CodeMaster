@@ -94,8 +94,12 @@ export async function generatePlan(
       bus.emit({ type: 'log', level: 'info', message: `Dropped self-verification task: ${s.title.slice(0, 80)}` });
     }
   }
-  // If it planned nothing but verification, the work itself still has to happen.
-  const specs: TaskSpec[] = kept.length ? kept : emitted;
+  // A plan made entirely of verification is not a plan — measured: three tasks,
+  // all "Verify …", no task that changed anything, and all three failed. Running
+  // them reproduces exactly that. Fall back to the objective itself.
+  const specs: TaskSpec[] = kept.length
+    ? kept
+    : [{ title: session.objective.slice(0, 120), description: session.objective, priority: 'high', type: session.objective_parsed?.task_type }];
 
   // First pass: allocate ids so dependencies can reference siblings by title (spec §4.2.2).
   const ids = specs.map(() => id('task'));
