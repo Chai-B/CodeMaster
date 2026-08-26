@@ -75,7 +75,6 @@ export function applyWikiUpdate(
       content_markdown: update.content,
     };
     Wiki.upsert(entry, sessionId);
-    Wiki.saveVersion(update.key, entry.content_markdown, sessionId, 'created');
     writeMarkdown(entry);
     writeVersion(update.key, entry.content_markdown, stamp);
     bus.emit({ type: 'wiki.created', key: update.key });
@@ -99,7 +98,6 @@ export function applyWikiUpdate(
       : update.content;
 
   // version previous content before overwrite
-  Wiki.saveVersion(update.key, existing.content_markdown, sessionId, 'pre-update');
   writeVersion(update.key, existing.content_markdown, stamp);
 
   const entry: WikiEntry = {

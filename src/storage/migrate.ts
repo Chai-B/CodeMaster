@@ -42,7 +42,6 @@ const BY_SESSION: Array<[string, string]> = [
   ['tasks', 'session_id'],
   ['reasoning', 'session_id'],
   ['failures', 'session_id'],
-  ['session_memory', 'session_id'],
   ['token_usage', 'session_id'],
   ['checkpoints', 'session_id'],
   ['audit_log', 'session_id'],
@@ -136,7 +135,6 @@ function partition(src: DatabaseSync): MigrationReport {
       rows += copyRows(src, db, 'sessions', 'id', ids);
       for (const [table, col] of BY_SESSION) rows += copyRows(src, db, table, col, ids);
       rows += copyRows(src, db, 'wiki_entries', 'wiki_key', keys);
-      rows += copyRows(src, db, 'wiki_versions', 'wiki_key', keys);
       if (repo === UNATTRIBUTED) {
         for (const [table, col] of BY_SESSION) {
           const n = copyRows(src, db, table, col, orphanIds);

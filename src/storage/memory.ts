@@ -89,29 +89,3 @@ export const LongTerm = {
     return Number(res.changes);
   },
 };
-
-export const SessionMem = {
-  set(sessionId: string, key: string, value: unknown): void {
-    const db = getDb();
-    db.prepare('DELETE FROM session_memory WHERE session_id=? AND key=?').run(sessionId, key);
-    db.prepare(
-      'INSERT INTO session_memory (id, session_id, key, value_json, created_at) VALUES (?,?,?,?,?)',
-    ).run(`${sessionId}:${key}`, sessionId, key, J(value), now());
-  },
-
-  get<T>(sessionId: string, key: string, fallback: T): T {
-    const r = getDb()
-      .prepare('SELECT value_json FROM session_memory WHERE session_id=? AND key=?')
-      .get(sessionId, key) as { value_json: string } | undefined;
-    return r ? P(r.value_json, fallback) : fallback;
-  },
-
-  all(sessionId: string): Record<string, unknown> {
-    const rows = getDb()
-      .prepare('SELECT key, value_json FROM session_memory WHERE session_id=?')
-      .all(sessionId) as { key: string; value_json: string }[];
-    const out: Record<string, unknown> = {};
-    for (const r of rows) out[r.key] = P(r.value_json, null);
-    return out;
-  },
-};

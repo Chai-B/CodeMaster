@@ -38,11 +38,3 @@ export interface LongTermMemory {
   tags: string[];
   permanent: boolean;
 }
-
-export interface SessionMemoryEntry {
-  id: string;
-  session_id: string;
-  key: string;
-  value_json: string;
-  created_at: ISO8601;
-}

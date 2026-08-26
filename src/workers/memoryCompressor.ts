@@ -2,7 +2,6 @@
 
 import { callLlm } from './llm.js';
 import { getDb } from '../storage/db.js';
-import { archiveRawOutput } from '../memory/coldStorage.js';
 import type { Worker } from './base.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
@@ -36,9 +35,6 @@ export const MemoryCompressorWorker: Worker<CompressInput, CompressResult> = {
         sessionId: input.sessionId,
         maxTokens: 300,
       });
-      // Archive the full text to cold storage, then replace the active index
-      // entry with the summary (spec §7.5).
-      archiveRawOutput(input.sessionId, `reasoning-${c.id}`, c.detail);
       db.prepare('UPDATE reasoning SET detail=?, importance=importance*0.5 WHERE id=?').run(text.trim(), c.id);
       n += 1;
     }

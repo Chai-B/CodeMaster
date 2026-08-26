@@ -14,6 +14,7 @@ import { Undo, revert } from '../storage/undo.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { GitWorker } from '../analysis/git.js';
 import { claudeCliAvailable } from '../providers/anthropic.js';
+import { anyProviderAvailable } from '../providers/manager.js';
 import { codexCliAvailable } from '../providers/codex.js';
 import fs from 'fs';
 import path from 'path';
@@ -144,18 +145,21 @@ export class CommandRouter {
   }
 
   // ── Session ───────────────────────────────────────────────
+  /** `explicit` distinguishes `/new <objective>` from bare prose typed at the
+   *  prompt. Both start a session, but only one of them was asked for by name,
+   *  and a user who meant to ask a question deserves to be told that their
+   *  sentence just became a session objective. */
   private async objective(text: string, explicit = false): Promise<void> {
     if (!text) {
       this.out('warn', 'Usage: /new <objective>');
       return;
     }
-    this.out('heading', 'New session');
+    this.out('heading', explicit ? 'New session' : 'New session (from your message)');
     const session = await this.sm.createSession(text, process.cwd());
     this.out('success', `Session ${session.id} created`);
     this.out('dim', `Objective: ${session.objective}`);
     this.out('dim', `Type: ${session.objective_parsed?.task_type}`);
     await this.plan();
-    void explicit;
   }
 
   private async resume(arg: string): Promise<void> {
@@ -428,7 +432,7 @@ export class CommandRouter {
       this.out('heading', 'Memory compression');
       this.out('info', `Decay applied to ${updated} reasoning objects`);
       if (!cands.length) return this.out('dim', 'No objects eligible for summarization.');
-      if (!process.env.ANTHROPIC_API_KEY) return this.out('warn', `${cands.length} eligible, but no API key for summarization.`);
+      if (!anyProviderAvailable()) return this.out('warn', `${cands.length} eligible, but no provider for summarization.`);
       const s = this.sm.getCurrent();
       const res = await runWorker(MemoryCompressorWorker,
         { sessionId: s?.id ?? 'maintenance', manager: this.sm.manager, cfg: this.sm.cfg, candidates: cands.slice(0, 10) },
@@ -474,8 +478,7 @@ export class CommandRouter {
     if (sub === 'update' && args[1]) {
       const key = args[1];
       const existing = Wiki.get(key);
-      if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY && !process.env.GEMINI_API_KEY)
-        return this.out('warn', 'LLM-assisted wiki update needs a provider API key.');
+      if (!anyProviderAvailable()) return this.out('warn', 'LLM-assisted wiki update needs a provider.');
       const s = this.sm.getCurrent();
       const { callLlm } = await import('../workers/llm.js');
       const { text } = await callLlm(this.sm.manager, this.sm.cfg, {

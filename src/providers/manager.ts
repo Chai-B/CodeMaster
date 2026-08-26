@@ -64,6 +64,22 @@ export function continuationRequest(
   return { ...full, user: conv.delta, conversation: { id: conv.id, resume: true } };
 }
 
+/** Whether a model can be reached at all. Free-standing because the callers
+ *  that need it most — the wiki bootstrap gate, `/memory compress`, `/wiki
+ *  update` — each hand-rolled their own env-var list, and they disagreed: one
+ *  accepted the Claude CLI, one accepted only ANTHROPIC_API_KEY, none looked at
+ *  stored credentials. A gate that is stricter than the call it guards refuses
+ *  work the system could actually do. */
+export function anyProviderAvailable(): boolean {
+  const env = [
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+    'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+  ];
+  if (env.some((k) => process.env[k])) return true;
+  if (CredentialManager.list().length > 0) return true;
+  return claudeCliAvailable() || codexCliAvailable();
+}
+
 export class ProviderManager {
   private adapters = new Map<string, ProviderAdapter>();
   private accounts: Account[] = [];
@@ -99,13 +115,7 @@ export class ProviderManager {
    * the `claude setup-token` users the startup banner invites.
    */
   hasAnyProvider(): boolean {
-    const env = [
-      'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
-      'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
-    ];
-    if (env.some((k) => process.env[k])) return true;
-    if (CredentialManager.list().length > 0) return true;
-    return claudeCliAvailable() || codexCliAvailable();
+    return anyProviderAvailable();
   }
 
   private makeAccount(providerId: string, alias: string, credRef: string): Account {

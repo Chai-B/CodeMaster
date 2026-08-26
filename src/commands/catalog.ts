@@ -63,5 +63,5 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/plugins', desc: 'List loaded plugins', group: 'Misc' },
   { cmd: '/help', desc: 'Show commands', group: 'Misc', usage: '/help | /help <group> | /help <command>' },
   { cmd: '/clear', desc: 'Clear the screen', group: 'Misc' },
-  { cmd: '/quit', desc: 'Exit CodeMaster', group: 'Misc' },
+  { cmd: '/quit', desc: 'Exit CodeMaster (alias /exit)', group: 'Misc' },
 ];
