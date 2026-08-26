@@ -347,10 +347,16 @@ export class SessionManager {
         .slice(0, 12_000);
       const problem = `${next.title}\n${next.description}`;
       const genOpts = { timeoutMs: this.cfg.verify.timeoutMs };
-      const repro = this.cfg.verify.genRepro && !covered
-        ? await generateRepro(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
-        : null;
-      const characterization = await this.characterizationFor(session, hint);
+      // Independent calls to two different vendors' worth of latency, run one
+      // after the other. Each also shells out to pytest up to three times to
+      // admit its result, so the pair was the longest non-solving stretch of
+      // the run. They share nothing: separate directories, read-only on the repo.
+      const [repro, characterization] = await Promise.all([
+        this.cfg.verify.genRepro && !covered
+          ? generateRepro(session.repository.path, problem, hint, this.manager, this.cfg, session.id, genOpts).catch(() => null)
+          : Promise.resolve(null),
+        this.characterizationFor(session, hint),
+      ]);
       const bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, repro, locus, characterization);
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
