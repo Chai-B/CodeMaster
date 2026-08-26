@@ -393,6 +393,7 @@ const PRIMARY_MIGRATIONS = [
   'ALTER TABLE checkpoints ADD COLUMN tasks_completed INTEGER',
   'ALTER TABLE checkpoints ADD COLUMN tasks_remaining INTEGER',
   'ALTER TABLE tasks ADD COLUMN evidence_json TEXT',
+  'ALTER TABLE token_usage ADD COLUMN role TEXT',
 ];
 
 export function applyPrimarySchema(db: DatabaseSync): void {

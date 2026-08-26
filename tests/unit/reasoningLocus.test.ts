@@ -64,3 +64,27 @@ test('solver records a failure on verify-fail, keyed to the changed files', asyn
   assert.equal(rec.length, 1);
   assert.equal(rec[0]!.approach_attempted, 'edited only alpha.py');
 });
+
+test('IR round-trip keys reasoning to the files the patch touched', async () => {
+  const { parseIR } = await import('../../src/workers/outputParser.js');
+  const { irFromJson } = await import('../../src/workers/irFromJson.js');
+
+  const ir = parseIR(
+    `<task_result><status>completed</status>
+     <patch file="pkg/gamma.py">--- a\n+++ b\n</patch>
+     <reasoning><decision><question>q</question><answer>use a copy</answer></decision></reasoning>
+     </task_result>`,
+    's2', 't2', { provider_id: 'x', model_id: 'y' },
+  );
+  assert.deepEqual(ir.decisions[0]!.affected_files, [{ path: 'pkg/gamma.py' }]);
+
+  const jsonIr = irFromJson(
+    JSON.stringify({ status: 'completed', patches: [{ file: 'pkg/delta.py', diff: 'd' }], decisions: [{ answer: 'a' }] }),
+    's2', 't2', { provider_id: 'x', model_id: 'y' },
+  );
+  assert.deepEqual(jsonIr.decisions[0]!.affected_files, [{ path: 'pkg/delta.py' }]);
+
+  // The point of the field: stored reasoning is retrievable by the code it is about.
+  for (const d of ir.decisions) Reasoning.insert(d as never);
+  assert.equal(Reasoning.byAffectedFiles(['pkg/gamma.py']).length, 1);
+});

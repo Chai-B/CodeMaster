@@ -12,7 +12,7 @@ import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
 import { ConversationLost } from '../types/index.js';
-import type { Account, ProviderAdapter, ModelSpec, TaskType, CompiledPrompt, ProviderRequest, ProviderResponse } from '../types/index.js';
+import type { Account, ProviderAdapter, ModelSpec, LlmRole, LlmEffort, CompiledPrompt, ProviderRequest, ProviderResponse } from '../types/index.js';
 
 export interface SelectedProvider {
   adapter: ProviderAdapter;
@@ -20,6 +20,21 @@ export interface SelectedProvider {
   model: string;
   spec: ModelSpec;
 }
+
+/** Roles whose work is a mechanical transform — a diff review, a module
+ *  summary, a wiki merge. The answer is already in the input, so with no
+ *  configured model they take the cheapest model on the default's own vendor. */
+const DERIVED_CHEAP: ReadonlySet<LlmRole> = new Set<LlmRole>(['review', 'summarize', 'merge']);
+
+/** Reasoning depth per role when the config does not name one. Only the oracle
+ *  gets depth by default: it is the sole source of ground truth, and measured on
+ *  config-precedence a shallow model burned three attempts and 108k tokens
+ *  without producing a test that failed on the bug. The mechanical roles get
+ *  none — thinking about a summary does not make it a better summary. */
+const DERIVED_EFFORT: Partial<Record<LlmRole, LlmEffort>> = { oracle: 'medium' };
+
+/** Extended-thinking budget per effort level, in tokens. */
+const THINKING_BUDGET: Record<LlmEffort, number> = { low: 1024, medium: 4096, high: 12288 };
 
 const ENV_REF: Record<string, string> = {
   anthropic: 'env:ANTHROPIC_API_KEY',
@@ -163,7 +178,7 @@ export class ProviderManager {
   }
 
   /** Account selector (spec §13.3) — health → capacity → rate → context → score. */
-  select(modelId: string, requiredTokens: number, taskType?: TaskType): SelectedProvider {
+  select(modelId: string, requiredTokens: number): SelectedProvider {
     const providerId = this.providerOf(modelId);
     const spec = this.modelSpec(modelId) ?? this.cfg.providers.anthropic.models[0]!;
     const adapter = this.adapters.get(providerId)!;
@@ -176,25 +191,93 @@ export class ProviderManager {
       .filter((a) => this.available(a))
       .filter((a) => a.quota.context_size >= requiredTokens);
 
+    // Latency alone. There used to be a `capabilityMatch(providerId, taskType)`
+    // factor here, but `candidates` is already filtered to one provider, so it
+    // returned the same constant for every entry — a common factor that cannot
+    // change a sort. Which MODEL to use is decided in `modelFor`, above the
+    // account choice; this only picks which account of that model answers.
     const scored = candidates
-      .map((a) => ({
-        a,
-        score:
-          this.capabilityMatch(providerId, taskType) *
-          (1 / Math.max(1, a.health.avg_latency_ms || 1)),
-      }))
+      .map((a) => ({ a, score: 1 / Math.max(1, a.health.avg_latency_ms || 1) }))
       .sort((x, y) => y.score - x.score);
 
     const account = scored[0]?.a ?? this.accounts.find((a) => a.provider_id === providerId) ?? this.accounts[0]!;
     return { adapter, account, model: spec.id, spec };
   }
 
-  private capabilityMatch(providerId: string, taskType?: TaskType): number {
-    const c = this.adapters.get(providerId)?.characteristics;
-    if (!c) return 1;
-    if (taskType === 'plan') return c.planning_quality;
-    if (taskType === 'refactor') return c.refactoring_quality;
-    return c.code_generation_quality;
+  /**
+   * The model one call should use.
+   *
+   * A pin beats everything — it is a promise that every call in the run used
+   * that exact model, and a benchmark whose pin leaked measured nothing. Then
+   * an explicitly requested model (solver escalation, a session's /model, a
+   * proxy client naming one), then the role table, then the global default.
+   *
+   * A model that does not exist, or whose vendor has no credentials, is not a
+   * choice — it falls through rather than failing, so a stale `roles` entry
+   * degrades to the default instead of breaking the run.
+   */
+  modelFor(role?: LlmRole, requested?: string): string {
+    const def = this.cfg.providers.default;
+    if (this.cfg.providers.pinned) return def;
+    for (const want of [requested, role ? this.roleModel(role) : undefined]) {
+      if (want && this.modelSpec(want) && this.providerHasCredentials(this.providerOf(want))) return want;
+    }
+    return def;
+  }
+
+  /** A role with no configured model. The mechanical transforms — a diff review,
+   *  a module summary, a wiki merge — go to the cheapest model on the default's
+   *  own vendor; anything that has to reason stays on the default. Derived
+   *  rather than shipped, so an old config gains a routing table without being
+   *  edited, and moving `providers.default` moves the whole table with it. */
+  private roleModel(role: LlmRole): string {
+    const configured = this.routing(role).model;
+    if (configured) return configured;
+    if (!DERIVED_CHEAP.has(role)) return this.cfg.providers.default;
+    return this.cheapestOn(this.providerOf(this.cfg.providers.default));
+  }
+
+  /** A role's entry, normalised — a bare string is a model id at default effort. */
+  private routing(role: LlmRole): { model?: string; effort?: LlmEffort } {
+    const r = this.cfg.providers.roles?.[role];
+    return typeof r === 'string' ? { model: r } : (r ?? {});
+  }
+
+  /**
+   * How hard this call should think, as an extended-thinking budget in tokens.
+   *
+   * Effort is orthogonal to model choice: opus at 'low' and opus at 'high' are
+   * the same weights at very different prices, so a role can buy reasoning
+   * depth without buying a bigger model — and the mechanical roles can buy a
+   * big model without paying for depth they have no use for.
+   *
+   * Unset means the vendor default (no explicit budget). Under a pin, effort is
+   * suppressed with everything else: a pinned run promises one model answering
+   * one way, and thinking depth changes the answer.
+   */
+  effortFor(role?: LlmRole, requested?: LlmEffort): number | undefined {
+    if (this.cfg.providers.pinned) return undefined;
+    const effort = requested ?? (role ? this.routing(role).effort ?? DERIVED_EFFORT[role] : undefined);
+    if (!effort) return undefined;
+    return THINKING_BUDGET[effort];
+  }
+
+  private cheapestOn(providerId: string): string {
+    return (
+      this.listModels()
+        .filter((m) => this.providerOf(m.id) === providerId)
+        .sort((a, b) => a.cost_per_1m_output - b.cost_per_1m_output)[0]?.id ?? this.cfg.providers.default
+    );
+  }
+
+  /** The model on `providerId` closest in price to `head`. A rescue has to
+   *  answer the same question at the same class: taking each vendor's first
+   *  listed model sent a haiku-routed summary to opus at fifteen times the price. */
+  private nearestOn(providerId: string, head: string): string | undefined {
+    const target = this.modelSpec(head)?.cost_per_1m_output ?? 0;
+    return this.listModels()
+      .filter((m) => this.providerOf(m.id) === providerId)
+      .sort((a, b) => Math.abs(a.cost_per_1m_output - target) - Math.abs(b.cost_per_1m_output - target))[0]?.id;
   }
 
   /** Whether a provider actually has usable credentials — so failover never tries
@@ -236,28 +319,33 @@ export class ProviderManager {
     return better[0]?.id ?? null;
   }
 
-  /** Provider preference order for failover: configured default first (spec §26.7),
-   *  restricted to providers that actually have credentials. */
-  private failoverModelOrder(): string[] {
+  /** Provider preference order for one call: the model this call should use
+   *  first (spec §26.7), then one stand-in per other credentialed vendor. */
+  private failoverModelOrder(head: string): string[] {
     const def = this.cfg.providers.default;
     // A pinned model is a promise that every call used it. Walking to another
     // vendor keeps the run alive but silently answers a different question —
     // measured, a benchmark pinned to haiku failed over to gpt-5-codex mid-run
-    // and its numbers meant nothing. Accounts of this same model are still
-    // tried; `select` and `available` handle that below.
+    // and its numbers meant nothing. Re-checked here and not only in `modelFor`
+    // because this list is the last thing between a routed call and the vendor:
+    // no role and no escalation may widen it. Accounts of this same model are
+    // still tried; `select` and `available` handle that below.
     if (this.cfg.providers.pinned) return [def];
     const seenProvider = new Set<string>();
     const order: string[] = [];
-    if (this.providerHasCredentials(this.providerOf(def))) {
-      order.push(def);
-      seenProvider.add(this.providerOf(def));
+    if (this.providerHasCredentials(this.providerOf(head))) {
+      order.push(head);
+      seenProvider.add(this.providerOf(head));
     }
-    // One model per remaining CREDENTIALED provider, so failover switches providers.
+    // One model per remaining CREDENTIALED provider, so failover switches
+    // providers — and the one nearest `head` in price, so a rescue answers the
+    // same question at the same class.
     for (const m of this.listModels()) {
       const pid = this.providerOf(m.id);
       if (!seenProvider.has(pid) && this.providerHasCredentials(pid)) {
         seenProvider.add(pid);
-        order.push(m.id);
+        const near = this.nearestOn(pid, head);
+        if (near) order.push(near);
       }
     }
     // Vendors that are usable right now go first, so a spent Claude window does
@@ -269,8 +357,8 @@ export class ProviderManager {
       return acct && !this.available(acct) ? 1 : 0;
     };
     order.sort((a, b) => blocked(a) - blocked(b));
-    // Fallback: if nothing is credentialed, still try the default so the error is honest.
-    return order.length ? order : [def];
+    // Fallback: if nothing is credentialed, still try head so the error is honest.
+    return order.length ? order : [head];
   }
 
   /** Ledger key for an account: stable across process restarts, unlike its id. */
@@ -303,9 +391,13 @@ export class ProviderManager {
     prompt: CompiledPrompt,
     conv?: { id: string; turn: number; provider_id?: string; delta: string },
     onConversation?: (id: string, providerId: string) => void,
+    thinkingTokens?: number,
   ): Promise<ProviderResponse> {
     const pid = sel.adapter.provider_id;
-    const full = (): ProviderRequest => sel.adapter.format_prompt(prompt, sel.model);
+    const full = (): ProviderRequest => ({
+      ...sel.adapter.format_prompt(prompt, sel.model),
+      thinking_tokens: thinkingTokens,
+    });
     const canResume = sel.adapter.continuation_available
       ? sel.adapter.continuation_available(sel.account)
       : !!sel.adapter.supports_continuation;
@@ -330,7 +422,7 @@ export class ProviderManager {
   async invokeWithFailover(
     compiled: CompiledPrompt,
     requiredTokens: number,
-    taskType?: TaskType,
+    role?: LlmRole,
     opts?: {
       onVendorSwitch?: (from: string, to: string) => Promise<CompiledPrompt>;
       /** Continue one vendor-side conversation across solver iterations. `delta`
@@ -340,6 +432,11 @@ export class ProviderManager {
       /** Called when a conversation was actually opened or continued, so the
        *  caller can bind the id to the vendor that owns it. */
       onConversation?: (id: string, providerId: string) => void;
+      /** This call, on this model — solver escalation, a session's /model, a
+       *  proxy client naming one. Loses to a pin; see modelFor. */
+      model?: string;
+      /** Override the role's reasoning depth for this call. */
+      effort?: LlmEffort;
     },
   ): Promise<{ sel: SelectedProvider; response: ProviderResponse }> {
     let lastErr: unknown;
@@ -347,10 +444,11 @@ export class ProviderManager {
     let lastProvider: string | undefined;
     const tried: string[] = [];
 
-    for (const model of this.failoverModelOrder()) {
+    const thinking = this.effortFor(role, opts?.effort);
+    for (const model of this.failoverModelOrder(this.modelFor(role, opts?.model))) {
       // A cancelled run must not walk on to the next vendor.
       throwIfCancelled();
-      const sel = this.select(model, requiredTokens, taskType);
+      const sel = this.select(model, requiredTokens);
       if (!this.available(sel.account)) continue;
       const pid = sel.adapter.provider_id;
       const key = this.key(sel.account);
@@ -373,7 +471,7 @@ export class ProviderManager {
       tried.push(pid);
 
       try {
-        const response = await this.invokeOne(sel, prompt, opts?.conversation, opts?.onConversation);
+        const response = await this.invokeOne(sel, prompt, opts?.conversation, opts?.onConversation, thinking);
         QuotaLedger.recordSuccess(key, pid);
         sel.account.health.status = 'healthy';
         return { sel, response };

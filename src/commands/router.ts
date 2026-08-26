@@ -479,6 +479,7 @@ export class CommandRouter {
       const s = this.sm.getCurrent();
       const { callLlm } = await import('../workers/llm.js');
       const { text } = await callLlm(this.sm.manager, this.sm.cfg, {
+        role: 'summarize',
         system: 'Update or write a concise project wiki entry in markdown. Output only the markdown body.',
         user: `Wiki key: ${key}\n\nExisting content:\n${existing?.content_markdown ?? '(none)'}\n\nProduce an improved, current version.`,
         sessionId: s?.id ?? 'manual',

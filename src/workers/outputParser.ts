@@ -5,6 +5,7 @@ import { id, now } from '../util/id.js';
 import type {
   IntermediateRepresentation,
   IRStatus,
+  FileRef,
   Patch,
   NewFile,
   Decision,
@@ -77,6 +78,14 @@ export function parseIR(
     .filter((b) => b.attrs.path)
     .map((b) => ({ path: b.attrs.path!, content: unescapeXml(b.body.replace(/^\n/, '').replace(/\n$/, '')) }));
 
+  // The code this reasoning is about. Reasoning.byAffectedFiles is the only
+  // retrieval arm keyed on locus rather than prose, and it could never match a
+  // row while this was hardcoded empty — every decision the model made was
+  // findable only by keyword.
+  const touched: FileRef[] = [...patches.map((p) => p.file), ...files_created.map((f) => f.path)]
+    .filter((f) => f && f !== 'unknown')
+    .map((path) => ({ path }));
+
   const reasoningXml = firstTag(xml, 'reasoning') ?? '';
   const base = (extra: Partial<Decision>) => ({
     id: id('reasoning'),
@@ -84,7 +93,7 @@ export function parseIR(
     task_id: taskId,
     produced_by: producedBy,
     produced_at: now(),
-    affected_files: [] as never[],
+    affected_files: touched,
     affected_modules: [] as string[],
     tags: [] as string[],
     permanent: true,

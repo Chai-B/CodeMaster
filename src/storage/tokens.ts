@@ -5,7 +5,7 @@ import path from 'path';
 import { getDb } from './db.js';
 import { id, now } from '../util/id.js';
 import { LOGS_DIR, ensureDirs, loadConfig } from '../config.js';
-import type { TokenUsage } from '../types/index.js';
+import type { TokenUsage, LlmRole } from '../types/index.js';
 
 // Append-only audit log (spec §22.4) — provider/account/session/task + token
 // counts and component list. Never the API key, never the context. Not read
@@ -40,6 +40,8 @@ export interface TokenRecord {
   provider_id: string;
   account_id: string;
   model_id: string;
+  /** What this call was for. Absent on rows written before roles existed. */
+  role?: LlmRole;
   usage: TokenUsage;
   cost_usd: number;
   components: string[];
@@ -53,13 +55,13 @@ export const Tokens = {
       `INSERT INTO token_usage
       (id, session_id, task_id, provider_id, account_id, model_id, input_tokens,
        output_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
-       invocation_at, context_components_json, wasted_tokens, cost_usd)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       invocation_at, context_components_json, wasted_tokens, cost_usd, role)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       id('tok'), r.session_id, r.task_id ?? null, r.provider_id, r.account_id, r.model_id,
       r.usage.input_tokens, r.usage.output_tokens, r.usage.total_tokens,
       r.usage.cache_read_tokens ?? null, r.usage.cache_write_tokens ?? null, now(),
-      JSON.stringify(r.components), r.wasted_tokens ?? null, r.cost_usd,
+      JSON.stringify(r.components), r.wasted_tokens ?? null, r.cost_usd, r.role ?? null,
     );
     db.prepare(
       `INSERT INTO audit_log (id, ts, provider_id, account_id, session_id, task_id,
@@ -70,6 +72,26 @@ export const Tokens = {
       r.usage.input_tokens, r.usage.output_tokens, r.components.join(','),
     );
     appendAudit(r);
+  },
+
+  /** Cost per call role, split by the model that actually served it. Failover
+   *  can move a role off its routed model, and a run that credits an opus
+   *  rescue to the haiku role concludes the opposite of the truth. */
+  byRole(sessionId?: string): Array<{ role: string; model_id: string; calls: number; tokens: number; cost: number }> {
+    const where = sessionId ? 'WHERE session_id=?' : '';
+    return getDb()
+      .prepare(
+        `SELECT COALESCE(role,'unrouted') role, model_id, COUNT(*) calls,
+         COALESCE(SUM(total_tokens),0) tokens, COALESCE(SUM(cost_usd),0) cost
+         FROM token_usage ${where} GROUP BY role, model_id ORDER BY cost DESC`,
+      )
+      .all(...(sessionId ? [sessionId] : [])) as Array<{
+      role: string;
+      model_id: string;
+      calls: number;
+      tokens: number;
+      cost: number;
+    }>;
   },
 
   sessionTotal(sessionId: string): { input: number; output: number; total: number; cost: number } {

@@ -7,6 +7,7 @@ import { id, now } from '../util/id.js';
 import type {
   IntermediateRepresentation,
   IRStatus,
+  FileRef,
   Patch,
   NewFile,
   Decision,
@@ -73,13 +74,29 @@ export function irFromJson(
   const statusRaw = (data.status ?? 'completed').toLowerCase();
   const status = (VALID_STATUS.includes(statusRaw as IRStatus) ? statusRaw : 'completed') as IRStatus;
 
+  const patches: Patch[] = (data.patches ?? [])
+    .filter((p) => p.diff)
+    .map((p) => ({ file: p.file ?? 'unknown', diff: p.diff! }));
+
+  const files_created: NewFile[] = (data.files_created ?? [])
+    .filter((f) => f.path)
+    .map((f) => ({ path: f.path!, content: f.content ?? '' }));
+
+  // The code this reasoning is about. Reasoning.byAffectedFiles is the only
+  // retrieval arm keyed on locus rather than prose, and it could never match a
+  // row while this was hardcoded empty — every decision the model made was
+  // findable only by keyword.
+  const touched: FileRef[] = [...patches.map((x) => x.file), ...files_created.map((f) => f.path)]
+    .filter((f) => f && f !== 'unknown')
+    .map((path) => ({ path }));
+
   const base = () => ({
     id: id('reasoning'),
     session_id: sessionId,
     task_id: taskId,
     produced_by: producedBy,
     produced_at: now(),
-    affected_files: [] as never[],
+    affected_files: touched,
     affected_modules: [] as string[],
     tags: [] as string[],
     permanent: true,
@@ -88,14 +105,6 @@ export function irFromJson(
     importance: 0.6,
     evidence: [] as never[],
   });
-
-  const patches: Patch[] = (data.patches ?? [])
-    .filter((p) => p.diff)
-    .map((p) => ({ file: p.file ?? 'unknown', diff: p.diff! }));
-
-  const files_created: NewFile[] = (data.files_created ?? [])
-    .filter((f) => f.path)
-    .map((f) => ({ path: f.path!, content: f.content ?? '' }));
 
   const decisions: Decision[] = (data.decisions ?? []).map((d) => ({
     ...base(),

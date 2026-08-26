@@ -10,7 +10,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import yaml from 'js-yaml';
-import type { ModelSpec } from './types/index.js';
+import type { ModelSpec, LlmRole, RoleRouting } from './types/index.js';
 
 const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 export const DATA_DIR = process.env.CODEMASTER_DATA_DIR || path.join(XDG_CONFIG, 'codemaster');
@@ -134,6 +134,13 @@ export interface Config {
      *  or a CI job. Suppresses escalation, which would otherwise silently swap
      *  the model out from under a measurement. */
     pinned?: boolean;
+    /** Model and reasoning effort per call role. Any role left out is derived
+     *  from `default` (see ProviderManager.modelFor / effortFor), so a config
+     *  written before roles existed keeps working and `default` stays the one
+     *  knob that moves everything. A bare string is a model id at default
+     *  effort: `roles: { oracle: 'claude-opus-4-8' }`, or with effort:
+     *  `roles: { oracle: { model: 'claude-opus-4-8', effort: 'high' } }`. */
+    roles?: Partial<Record<LlmRole, RoleRouting>>;
     anthropic: ProviderModels;
     openai: ProviderModels;
     google: ProviderModels;
@@ -280,7 +287,7 @@ export function saveConfig(cfg: Config): void {
 }
 
 export function allModels(cfg: Config): ModelSpec[] {
-  const { default: _default, pinned: _pinned, ...byProvider } = cfg.providers;
+  const { default: _default, pinned: _pinned, roles: _roles, ...byProvider } = cfg.providers;
   return Object.values(byProvider).flatMap((p) => p.models);
 }
 

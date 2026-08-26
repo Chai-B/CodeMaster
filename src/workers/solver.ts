@@ -42,7 +42,15 @@ export async function solveWithVerification(
   verify: VerifyFn,
   maxIters = 3,
   // Injectable for testing; defaults to the real LLM-backed executor.
-  exec: (s: Session, t: Task, m: ProviderManager, c: Config, tier?: number, conv?: Conversation) => Promise<ExecuteResult> = executeTask,
+  exec: (
+    s: Session,
+    t: Task,
+    m: ProviderManager,
+    c: Config,
+    tier?: number,
+    conv?: Conversation,
+    model?: string,
+  ) => Promise<ExecuteResult> = executeTask,
 ): Promise<SolveResult> {
   const origDesc = task.description;
   let last!: ExecuteResult;
@@ -61,15 +69,18 @@ export async function solveWithVerification(
   const conversation: Conversation = { id: uuid(), turn: 0, delta: '' };
   let lastFailure = '';
   let firstFailure = '';
-  let escalated = false;
-  let originalModel = '';
+  /** The model this task escalated to, if it did. A stack local, not a write to
+   *  `cfg.providers.default`: the config object is shared by every task running
+   *  in this process, so mutating it escalated everyone else's next call too, and
+   *  a throw between the mutation and its restore left the whole process on the
+   *  stronger model. Empty means "whatever routing resolves". */
+  let escalatedTo = '';
   /** Not the loop index. Escalation opens a NEW conversation, and turn 0 is what
    *  makes the next call send full context — resuming the old id would keep the
    *  old model, since the CLI's --resume path carries no --model flag. */
   let convTurn = 0;
   let freshConversation = false;
 
-  try {
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     throwIfCancelled();
     iterations = i + 1;
@@ -77,7 +88,7 @@ export async function solveWithVerification(
     conversation.turn = convTurn;
     // The context budget climbs only after a pass has actually failed at the
     // current size — the first attempt never pays for a window it did not need.
-    last = await exec(session, task, manager, cfg, start + i, conversation);
+    last = await exec(session, task, manager, cfg, start + i, conversation, escalatedTo || undefined);
     totalTokens += last.tokens;
 
     const v = await verify();
@@ -121,15 +132,17 @@ export async function solveWithVerification(
     // change the answer, and routing across models is the layer's reason to
     // exist. Once per task, and never when the caller pinned the model.
     if (v.output === lastFailure) {
-      const stronger = !cfg.providers?.default || cfg.providers.pinned ? null : manager.strongerThan(cfg.providers.default);
-      if (stronger && !escalated && i < maxIters - 1) {
-        escalated = true;
-        originalModel = cfg.providers.default;
-        cfg.providers.default = stronger;
+      // Escalate from where this task actually stands: a session switched with
+      // /model runs on `current_provider`, not on the global default, so reading
+      // the default would step up from a model nobody was using.
+      const from = escalatedTo || session.current_provider?.model_id || cfg.providers?.default;
+      const stronger = !from || cfg.providers.pinned ? null : manager.strongerThan(from);
+      if (stronger && !escalatedTo && i < maxIters - 1) {
+        escalatedTo = stronger;
         conversation.id = uuid();
         conversation.provider_id = undefined;
         freshConversation = true;
-        bus.emit({ type: 'log', level: 'warn', message: `Stuck on ${originalModel}; escalating this task to ${stronger}.` });
+        bus.emit({ type: 'log', level: 'warn', message: `Stuck on ${from}; escalating this task to ${stronger}.` });
       } else {
         bus.emit({ type: 'log', level: 'warn', message: 'Same failure as the previous iteration; stopping instead of repeating it.' });
         break;
@@ -162,12 +175,6 @@ export async function solveWithVerification(
       } else convTurn += 1;
       bus.emit({ type: 'log', level: 'warn', message: `Verification failed; retrying with feedback.` });
     }
-  }
-
-  } finally {
-    // Escalation is per task. Leaving the session on the stronger model would
-    // silently re-price every task after this one.
-    if (originalModel) cfg.providers.default = originalModel;
   }
 
   task.description = origDesc;

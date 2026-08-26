@@ -88,12 +88,21 @@ export async function executeTask(
   cfg: Config,
   tier = 0,
   conversation?: Conversation,
+  /** This task, on this model — the solver's escalation target. Passed per call
+   *  so two tasks escalating at once cannot see each other's choice. */
+  model?: string,
 ): Promise<ExecuteResult> {
   const started = Date.now();
   throwIfCancelled();
   bus.emit({ type: 'task.started', task_id: task.id, title: task.title });
 
-  const primary = manager.select(session.current_provider?.model_id ?? cfg.providers.default, cfg.context.max_context_tokens);
+  // What this call will actually use, resolved ONCE: the same string sizes the
+  // context, keys the prompt cache and goes to the vendor. They used to be three
+  // different answers — `/model` changed the cache key and nothing else, so a
+  // sonnet answer was stored under a key that said haiku and later served as
+  // haiku's. Resolving here makes all three agree.
+  const requested = model ?? session.current_provider?.model_id;
+  const primary = manager.select(manager.modelFor('solve', requested), cfg.context.max_context_tokens);
 
   bus.emit({ type: 'worker.started', worker: 'FileSelector', detail: task.title });
   const compiled = await compileContext(session, task, {
@@ -145,8 +154,9 @@ export async function executeTask(
   const { sel, response } = await manager.invokeWithFailover(
     compiled,
     cfg.context.max_context_tokens,
-    task.type,
+    'solve',
     {
+      model: requested,
       conversation,
       onConversation: (_id, providerId) => {
         if (conversation) conversation.provider_id = providerId;
@@ -173,6 +183,7 @@ export async function executeTask(
   Tokens.record({
     session_id: session.id,
     task_id: task.id,
+    role: 'solve',
     provider_id: sel.adapter.provider_id,
     account_id: sel.account.id,
     model_id: sel.model,
@@ -197,7 +208,7 @@ export async function executeTask(
       const retry = await invokeWithBackoff(() => sel.adapter.invoke(retryReq, sel.account));
       manager.recordUsage(sel.account, retry.usage.total_tokens, retry.latency_ms);
       Tokens.record({
-        session_id: session.id, task_id: task.id, provider_id: sel.adapter.provider_id,
+        session_id: session.id, task_id: task.id, role: 'solve', provider_id: sel.adapter.provider_id,
         account_id: sel.account.id, model_id: sel.model, usage: retry.usage,
         // A retry costs real money. Recording it as free understated the run's
         // own cost by a full call — measured, one such retry was 74,602 tokens.
