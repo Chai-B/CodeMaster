@@ -74,3 +74,46 @@ test('a fix that passed first time teaches nothing and writes no playbook entry'
     () => ({ ok: true, output: '' }), 3, fakeExec(10));
   assert.equal(Wiki.get('playbook/debug-x'), null);
 });
+
+test('a task stuck on one model escalates one rung, then restores it', async () => {
+  const { solveWithVerification } = await import('../../src/workers/solver.js');
+  const cfg = {
+    providers: {
+      default: 'cheap',
+      anthropic: { models: [
+        { id: 'cheap', context_size: 200_000, cost_per_1m_input: 1, cost_per_1m_output: 5 },
+        { id: 'mid', context_size: 200_000, cost_per_1m_input: 3, cost_per_1m_output: 15 },
+        { id: 'top', context_size: 200_000, cost_per_1m_input: 15, cost_per_1m_output: 75 },
+      ] },
+    },
+  } as unknown as Parameters<typeof solveWithVerification>[3];
+
+  const models = cfg.providers.anthropic.models as { id: string; cost_per_1m_output: number }[];
+  const manager = {
+    strongerThan: (id: string): string | null => {
+      const here = models.find((m) => m.id === id)!;
+      return (
+        models
+          .filter((m) => m.cost_per_1m_output > here.cost_per_1m_output)
+          .sort((a, b) => a.cost_per_1m_output - b.cost_per_1m_output)[0]?.id ?? null
+      );
+    },
+  } as unknown as Parameters<typeof solveWithVerification>[2];
+
+  const seen: string[] = [];
+  const exec = async (): Promise<unknown> => {
+    seen.push(cfg.providers.default);
+    return { ir: { status: 'completed', summary: '' }, tokens: 1, ms: 1, applied: [], created: [], failed: [], reasoningStored: 0, wikiUpdated: 0 };
+  };
+  // Byte-identical failure every time: the same model would only repeat itself.
+  const verify = (): { ok: boolean; output: string } => ({ ok: false, output: 'AssertionError: bound exceeded' });
+
+  const session = { id: 's', repository: { path: process.cwd() }, objective: 'o' } as unknown as Parameters<typeof solveWithVerification>[0];
+  const task = { id: 't', title: 'fix it', description: 'd', type: 'implement' } as unknown as Parameters<typeof solveWithVerification>[1];
+
+  await solveWithVerification(session, task, manager, cfg, verify, 3, exec as never);
+
+  assert.deepEqual(seen, ['cheap', 'cheap', 'mid']);
+  // One rung only, and the session is left where it started.
+  assert.equal(cfg.providers.default, 'cheap');
+});

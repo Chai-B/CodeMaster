@@ -120,6 +120,9 @@ export async function runHeadless(argv: string[]): Promise<number> {
       return 2;
     }
     sm.cfg.providers.default = flags.model;
+    // An explicitly named model is the whole point of the flag: nothing may
+    // escalate off it, or the run stops measuring what it claims to.
+    sm.cfg.providers.pinned = true;
   }
 
   // Ctrl-C pauses rather than abandons: applied work stays on disk and the

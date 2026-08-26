@@ -130,6 +130,10 @@ export interface Config {
   };
   providers: {
     default: string;
+    /** The caller named an exact model and every call must use it — a benchmark
+     *  or a CI job. Suppresses escalation, which would otherwise silently swap
+     *  the model out from under a measurement. */
+    pinned?: boolean;
     anthropic: ProviderModels;
     openai: ProviderModels;
     google: ProviderModels;
@@ -276,7 +280,7 @@ export function saveConfig(cfg: Config): void {
 }
 
 export function allModels(cfg: Config): ModelSpec[] {
-  const { default: _default, ...byProvider } = cfg.providers;
+  const { default: _default, pinned: _pinned, ...byProvider } = cfg.providers;
   return Object.values(byProvider).flatMap((p) => p.models);
 }
 
