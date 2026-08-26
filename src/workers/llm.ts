@@ -13,6 +13,12 @@ export interface LlmCallOptions {
   sessionId: string;
   taskId?: string;
   maxTokens?: number;
+  /** Continue one vendor-side conversation across repeated calls, so a retry
+   *  sends only its correction instead of re-paying for the same context.
+   *  Measured: three repro attempts on config-precedence cost 108,096 tokens,
+   *  and two of them re-sent a code surface the vendor already held. */
+  conversation?: { id: string; turn: number; provider_id?: string; delta: string };
+  onConversation?: (id: string, providerId: string) => void;
 }
 
 export async function callLlm(
@@ -38,7 +44,10 @@ export async function callLlm(
   // rate-limited account made every worker call throw — and the repro
   // generator swallows that as `null`, so a spent quota silently removed the
   // only sound oracle in the system rather than moving to another provider.
-  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens);
+  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, undefined, {
+    conversation: opts.conversation,
+    onConversation: opts.onConversation,
+  });
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
   Tokens.record({

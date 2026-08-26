@@ -12,6 +12,7 @@ import { bus } from '../../events/bus.js';
 import { frameworkForNewTest, resolvePytest, type Framework } from '../../analysis/testRunner.js';
 import type { ProviderManager } from '../../providers/manager.js';
 import { repoDataDir, type Config } from '../../config.js';
+import { uuid } from '../../util/id.js';
 
 export interface Repro {
   path: string; // absolute path to the generated test, outside the repo
@@ -243,9 +244,21 @@ async function generateOracle(
   const file = path.join(dir, fileName);
   const cleanup = (): void => fs.rmSync(dir, { recursive: true, force: true });
 
+  // Every attempt after the first differs from the one before it only by the
+  // correction. Re-sending the problem and the whole code surface each time
+  // buys nothing the vendor does not already hold — measured on
+  // config-precedence, three attempts cost 108,096 tokens and admitted nothing.
+  const conversation = { id: uuid(), turn: 0, provider_id: undefined as string | undefined, delta: '' };
+
   const ask = async (correction: string): Promise<string | null> => {
+    const closing = kind === 'repro' ? `Write the failing test now.` : `Write the passing test now.`;
+    conversation.delta = correction + closing;
     const { text } = await callLlm(manager, cfg, {
       system: kind === 'repro' ? SYSTEM : CHARACTERIZATION_SYSTEM,
+      conversation,
+      onConversation: (_id, providerId) => {
+        conversation.provider_id = providerId;
+      },
       user:
         (kind === 'repro'
           ? `## Reported problem\n${problem.slice(0, 4000)}\n\n`
@@ -257,10 +270,11 @@ async function generateOracle(
         (surface ? '' : `## Relevant code\n${contextHint.slice(0, 6000)}\n\n`) +
         (surface ? `## The real code of this repository — names, arities, attributes and the constraints in each body are EXACT; anything not shown here does not exist. Read the constructors before you build inputs.\n${surface}\n\n` : '') +
         correction +
-        (kind === 'repro' ? `Write the failing test now.` : `Write the passing test now.`),
+        closing,
       sessionId,
       maxTokens: 1200,
     });
+    conversation.turn += 1;
     return extractCode(text);
   };
 
