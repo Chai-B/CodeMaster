@@ -110,7 +110,7 @@ diff --git a/relative/path b/relative/path
 -removed
 +added`;
 
-export const SYSTEM_PROMPT = `You are the execution engine of CodeMaster Next, a persistent reasoning operating system for software engineering.
+export const SYSTEM_PROMPT = `You are the execution engine of CodeMaster, a persistent reasoning layer for software engineering.
 
 You receive a deterministically compiled context: objective, plan, prior reasoning, repository knowledge, and the exact files relevant to the current task. This context is assembled from structured state — not conversation history. Trust it as the complete and authoritative picture.
 

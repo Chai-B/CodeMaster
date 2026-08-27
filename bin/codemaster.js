@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CodeMaster Next launcher — runs the TypeScript entry via the bundled tsx CLI.
+// CodeMaster launcher — runs the TypeScript entry via the bundled tsx CLI.
 // Works from a global install with no network access (no `npx`).
 
 import { spawnSync } from 'child_process';
