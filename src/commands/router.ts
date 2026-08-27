@@ -29,7 +29,7 @@ import { runWorker } from '../workers/base.js';
 import { applyDecay, findCompressionCandidates } from '../memory/lifecycle.js';
 import { recoverAll } from '../daemon/recovery.js';
 import { tokensByTaskType, providerEfficiency, profileTask } from '../analysis/tokenAnalytics.js';
-import { listPlugins, listCommandPlugins, getCommandPlugin } from '../plugins/loader.js';
+import { listPlugins, listCommandPlugins, getCommandPlugin, PLUGINS_DIR } from '../plugins/loader.js';
 import { bootstrapWiki } from '../wiki/bootstrap.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { bus } from '../events/bus.js';
@@ -313,22 +313,42 @@ export class CommandRouter {
     }
   }
 
+  /**
+   * Several vendors' keys held at once, and a way to say which one answers.
+   * The key goes on the command line — the TUI drops this one line from history
+   * and masks its echo, so the secret does not survive the call.
+   */
   private account(args: string[] = []): void {
     if (args[0] === 'add' && args[1] && args[2]) {
-      // /account add <provider> <alias>  (key read from env CODEMASTER_NEW_KEY)
-      const key = process.env.CODEMASTER_NEW_KEY;
-      if (!key) return this.out('warn', 'Set CODEMASTER_NEW_KEY env to the API key, then: /account add <provider> <alias>');
+      const key = args[3] ?? process.env.CODEMASTER_NEW_KEY;
+      if (!key) return this.out('warn', 'Usage: /account add <provider> <alias> <key>  (or set CODEMASTER_NEW_KEY)');
       const acct = this.sm.manager.addAccount(args[1], args[2], key);
-      return this.out(acct ? 'success' : 'error', acct ? `Added account ${args[2]} (${args[1]})` : `Unknown provider ${args[1]}`);
+      if (!acct) return this.out('error', `Unknown provider ${args[1]}. Known: ${this.sm.manager.listProviders().join(', ')}`);
+      this.out('success', `Added account ${args[2]} (${args[1]})`);
+      return this.out('dim', `Routing can now reach ${args[1]}. /account use ${args[2]} makes it the one that answers.`);
+    }
+    if (args[0] === 'use' && args[1]) {
+      const chose = this.sm.manager.useAccount(args[1]);
+      if (!chose) return this.out('warn', `No account named ${args[1]}. Run /account to list them.`);
+      return this.out('success', `${args[1]} now answers first, for any model on its provider.`);
     }
     if (args[0] === 'remove' && args[1]) {
       const removed = this.sm.manager.removeAccount(args[1]);
       return this.out(removed ? 'success' : 'warn', `Account ${args[1]} ${removed ? 'removed' : 'not found'}`);
     }
     this.out('heading', 'Accounts');
+    const active = this.sm.manager.activeAccount();
     for (const a of this.sm.manager.listAccounts()) {
-      this.out('info', `${a.alias} (${a.provider_id})  health: ${a.health.status}  used today: ${fmtTokens(a.quota.tokens_used_today)}`);
+      // Presence is not usability: the constructor makes an env-backed account
+      // for every vendor whether or not that variable is ever set.
+      const usable = this.sm.manager.accountResolves(a);
+      const src = a.credential_ref.startsWith('cred:') ? 'stored' : a.credential_ref;
+      this.out(
+        usable ? 'info' : 'dim',
+        `${a.alias === active ? '●' : ' '} ${a.alias} (${a.provider_id})  ${usable ? src : `${src} — no credential`}  ${a.health.status}  ${fmtTokens(a.quota.tokens_used_today)} today`,
+      );
     }
+    this.out('dim', '/account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
   }
 
   /** What this repository has taught the tool — observations only. */
@@ -949,8 +969,11 @@ export class CommandRouter {
     }
 
     if (this.sm.manager.hasAnyProvider()) {
-      const accounts = this.sm.manager.listAccounts();
-      ok(`Providers: ${accounts.map((a) => `${a.provider_id}/${a.alias} (${a.health.status})`).join(', ')}`);
+      // Only the accounts whose credential resolves. Listing all four vendors as
+      // healthy when none of them can be called is worse than saying nothing.
+      const usable = this.sm.manager.listAccounts().filter((a) => this.sm.manager.accountResolves(a));
+      if (usable.length) ok(`Providers: ${usable.map((a) => `${a.provider_id}/${a.alias} (${a.health.status})`).join(', ')}`);
+      else bad('Credentials found, but none of them resolve.', 'Run /account to see which, then /account add <provider> <alias> <key>.');
     } else {
       bad('No provider credentials.', 'Set ANTHROPIC_API_KEY / OPENAI_API_KEY, run `claude setup-token`, or /account add.');
     }
@@ -975,7 +998,7 @@ export class CommandRouter {
   private plugins(): void {
     this.out('heading', 'Plugins');
     const plugins = listPlugins();
-    if (!plugins.length) this.out('dim', `None. Drop plugins into ~/.codemaster/plugins/<name>/ with a plugin.json.`);
+    if (!plugins.length) this.out('dim', `None. Drop plugins into ${PLUGINS_DIR}/<name>/ with a plugin.json.`);
     for (const p of plugins) this.out('info', `${p.name} v${p.version} (${p.type}) — ${p.description}`);
     const cmds = listCommandPlugins();
     if (cmds.length) {
