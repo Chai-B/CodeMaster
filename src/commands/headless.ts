@@ -99,9 +99,14 @@ async function askHeadless(argv: string[]): Promise<number> {
   if (!fs.existsSync(flags.repo)) { process.stderr.write(`No such directory: ${flags.repo}\n`); return 2; }
   setActiveRepo(flags.repo);
 
-  const off = flags.verbose
-    ? bus.onAny((ev) => { const e = eventToLog(ev); if (e?.text) process.stderr.write(`${e.text}\n`); })
-    : (): void => undefined;
+  // Indexing a repository for the first time takes seconds. Without a line on
+  // stderr, the first ask in a repository is indistinguishable from a hang.
+  const off = bus.onAny((ev) => {
+    const indexing = (ev.type === 'worker.started' || ev.type === 'worker.finished') && ev.worker === 'StaticIndexer';
+    if (!flags.verbose && !indexing) return;
+    const e = eventToLog(ev);
+    if (e?.text) process.stderr.write(`${e.text}\n`);
+  });
 
   const daemon = new Daemon();
   const sm = daemon.sm;

@@ -92,6 +92,16 @@ export async function answerQuestion(
 ): Promise<{ text: string; tokens: number; model: string }> {
   const api = staticAnalysis(repoPath);
   const commit = (await api.git.isRepo()) ? await api.git.headCommit() : 'no-git';
+
+  // A repository nobody has run a session in has no index, and an unindexed
+  // repository answers every question with "Total files: 0". `createSession`
+  // indexes on the write path; ask never reaches it, so it indexes here.
+  if (!api.stats()) {
+    bus.emit({ type: 'worker.started', worker: 'StaticIndexer', detail: 'indexing repository' });
+    const stats = await api.reindex({ embed: true });
+    bus.emit({ type: 'worker.finished', worker: 'StaticIndexer', detail: `${stats.files} files, ${stats.symbols} symbols` });
+  }
+
   const { session, task } = ephemeral(question, repoPath, commit);
 
   bus.emit({ type: 'worker.started', worker: 'Asker', detail: 'selecting files' });
