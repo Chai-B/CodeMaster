@@ -39,7 +39,8 @@ import { COMMANDS } from './catalog.js';
 import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
 import { activeRepoPath, listProjects, loadConfig, saveConfig, CONFIG_PATH } from '../config.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
-import type { Session } from '../types/index.js';
+import type { Session, LlmRole } from '../types/index.js';
+import type { Config } from '../config.js';
 
 registerCoreWorkers();
 
@@ -802,7 +803,7 @@ export class CommandRouter {
         this.out(m === active ? 'info' : 'dim', `  ${role.padEnd(10)} ${m}`);
       }
       if (this.sm.cfg.providers.pinned) this.out('dim', '  (pinned — every call uses this model)');
-      this.out('dim', 'Switch with /model <model_id>. Override one role with providers.roles.<role> in config.');
+      this.out('dim', 'Switch with /model <model_id>. Move one role with /config set providers.roles.<role> <model_id>.');
       return;
     }
     if (!this.sm.manager.modelSpec(arg)) return this.out('warn', `Unknown model: ${arg}. Run /model to see what is available.`);
@@ -822,6 +823,69 @@ export class CommandRouter {
     this.out('success', `Default model set to ${arg} (${providerId}).`);
   }
 
+  /**
+   * The routing keys, which the flat check in `config` cannot see.
+   *
+   * `providers.roles` and `providers.pinned` are deliberately absent from
+   * DEFAULT_CONFIG — a populated literal would deep-merge over the user's YAML
+   * and shadow `providers.default` — and the consequence was that the one table
+   * the routing work exists to expose could only be set by hand-editing a file.
+   * Handled here rather than by loosening that check, so an unknown role or an
+   * unknown model is still rejected by name instead of being written as an
+   * entry that silently degrades to the default.
+   *
+   * Returns true when it owned the key; the message is already emitted.
+   */
+  private setRouting(cfg: Config, key: string, raw: string): boolean {
+    if (key === 'providers.pinned') {
+      if (raw !== 'true' && raw !== 'false') {
+        this.out('warn', 'providers.pinned takes true or false.');
+        return true;
+      }
+      cfg.providers.pinned = raw === 'true';
+      saveConfig(cfg);
+      // The running manager holds the config object loaded at startup, so a
+      // saved-only change would take effect on the next launch and look like it
+      // had done nothing now.
+      this.sm.cfg.providers.pinned = cfg.providers.pinned;
+      this.out('success', `providers.pinned = ${raw}`);
+      this.out('dim', raw === 'true'
+        ? 'Every role now uses providers.default — no per-role routing, no escalation, no failover to another vendor.'
+        : 'Roles route again, and a stuck task may escalate.');
+      return true;
+    }
+
+    const m = /^providers\.roles\.([^.]+)(?:\.(model|effort))?$/.exec(key);
+    if (!m) return false;
+    const role = m[1]!;
+    if (!(LLM_ROLES as readonly string[]).includes(role)) {
+      this.out('warn', `Unknown role: ${role}. Known: ${LLM_ROLES.join(', ')}`);
+      return true;
+    }
+    const field = m[2] ?? 'model';
+    if (field === 'effort' && !['low', 'medium', 'high'].includes(raw)) {
+      this.out('warn', `${key} takes low, medium or high.`);
+      return true;
+    }
+    if (field === 'model' && !this.sm.manager.modelSpec(raw)) {
+      this.out('warn', `Unknown model: ${raw}. Run /model to see what is configured.`);
+      return true;
+    }
+
+    // Always written as an object, even when only a model was given. A bare
+    // string is a valid entry, but two shapes in one file means the next reader
+    // has to guess which one they are looking at.
+    const roles = (cfg.providers.roles ??= {});
+    const existing = roles[role as LlmRole];
+    const base = typeof existing === 'string' ? { model: existing } : { ...(existing ?? {}) };
+    roles[role as LlmRole] = { ...base, [field]: raw };
+    saveConfig(cfg);
+    this.sm.cfg.providers.roles = roles;
+    this.out('success', `${key} = ${raw}`);
+    this.out('dim', '/model shows what every role buys now.');
+    return true;
+  }
+
   /** Read and change settings without leaving the tool or hand-editing YAML. */
   private config(args: string[]): void {
     const cfg = loadConfig();
@@ -830,12 +894,13 @@ export class CommandRouter {
       this.out('heading', 'Configuration');
       this.out('dim', CONFIG_PATH);
       for (const [k, v] of flat) this.out('info', `${k.padEnd(40)} ${v}`);
-      this.out('dim', 'Change one with /config set <key> <value>.');
+      this.out('dim', 'Change one with /config set <key> <value>. Role routing lives under providers.roles.<role>, and providers.pinned locks every role to the default.');
       return;
     }
     if (args[0] !== 'set' || args.length < 3) return this.usage('/config');
     const key = args[1]!;
     const raw = args.slice(2).join(' ');
+    if (this.setRouting(cfg, key, raw)) return;
     if (!flat.some(([k]) => k === key)) return this.out('warn', `Unknown setting: ${key}. Run /config to see the keys.`);
     const applied = setPath(cfg as unknown as Record<string, unknown>, key, raw);
     if (!applied.ok) return this.out('warn', applied.reason);
