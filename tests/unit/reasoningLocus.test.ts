@@ -88,3 +88,51 @@ test('IR round-trip keys reasoning to the files the patch touched', async () => 
   for (const d of ir.decisions) Reasoning.insert(d as never);
   assert.equal(Reasoning.byAffectedFiles(['pkg/gamma.py']).length, 1);
 });
+
+test('a wiki conflict queues at most one open resolver, not a chain', async () => {
+  const { Sessions, Tasks } = await import('../../src/storage/sessions.js');
+  const { processIR } = await import('../../src/workers/irProcessor.js');
+  const { applyWikiUpdate } = await import('../../src/wiki/updater.js');
+
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-conf-'));
+  const session = {
+    id: 'conf-s', created_at: now(), updated_at: now(), status: 'active',
+    objective: 'fix the resolver', repository: { path: repo, commit: 'no-git' },
+    progress: { total: 0, completed: 0, failed: 0 }, constraints: [], open_questions: [],
+    working_files: [], decisions: [], provider_history: [], checkpoints: [],
+    token_usage: { total_input: 0, total_output: 0, total: 0, by_provider: {}, cost_usd: 0 }, current_provider: { provider_id: 'anthropic', model_id: 'm' },
+    metadata: {},
+  } as never;
+  Sessions.insert(session);
+
+  const KEY = 'notes/thing';
+  applyWikiUpdate({ key: KEY, content: 'A'.repeat(400), is_diff: false }, 'conf-s', 'queue');
+
+  const task = {
+    id: 'conf-t', session_id: 'conf-s', title: 'work', description: '', type: 'implement',
+    status: 'in_progress', input_files: [], output_files: [], dependencies: [], blocking: [],
+    reasoning_refs: [], decision_refs: [], estimated_tokens: 0, order: 1,
+  } as never;
+  Tasks.insert(task);
+
+  const cfg = { wiki: { auto_update: true, conflict_strategy: 'queue' }, memory: {}, checkpointing: {} } as never;
+  const ir = (content: string): never => ({
+    session_id: 'conf-s', task_id: 'conf-t', status: 'completed', patches: [], files_created: [],
+    files_deleted: [], commands_run: [], decisions: [], observations: [], risks: [], assumptions: [],
+    wiki_updates: [{ key: KEY, content, is_diff: false }], next_tasks: [], open_questions: [],
+    produced_by: { provider_id: 'x', model_id: 'y' },
+  }) as never;
+
+  // The resolver's own wiki update lands on the same key and is a synthesis of
+  // two entries, so it is materially different by construction and conflicts
+  // again. Without a guard each resolution queued the next: measured on a real
+  // run at three solver iterations and 106k tokens spent on a `notes/` entry
+  // unrelated to the objective, while the code fix cost 41k.
+  await processIR(ir('B'.repeat(400)), session, task, cfg);
+  const resolvers = (): unknown[] =>
+    Tasks.forSession('conf-s').filter((t) => t.title === `Resolve knowledge conflict: ${KEY}`);
+  assert.equal(resolvers().length, 1, 'first conflict queues a resolver');
+
+  await processIR(ir('C'.repeat(400)), session, task, cfg);
+  assert.equal(resolvers().length, 1, 'a second conflict on the same key must not queue a chain');
+});
