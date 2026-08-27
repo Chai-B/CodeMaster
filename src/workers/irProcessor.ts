@@ -95,11 +95,21 @@ export async function processIR(
       wikiUpdated.push(`${res.key} (${res.action})`);
       // Contradiction → queue a verification task; keep both entries flagged
       // until a model resolves it (spec §7.6).
-      if (res.action === 'conflict') {
+      // At most one OPEN resolver per key. The resolution task's own
+      // wiki update lands on the same key and is materially different by
+      // construction — it is a synthesis of two entries — so it conflicted again
+      // and queued another resolver, forever. Measured on a benchmark run: three
+      // solver iterations, 106k tokens, on a conflict in a `notes/` entry that
+      // had nothing to do with the objective, while the actual code fix cost 41k.
+      const title = `Resolve knowledge conflict: ${res.key}`;
+      const alreadyQueued = Tasks.forSession(session.id).some(
+        (t) => t.title === title && t.status !== 'completed' && t.status !== 'failed',
+      );
+      if (res.action === 'conflict' && !alreadyQueued) {
         Tasks.insert({
           id: id('task'),
           session_id: session.id,
-          title: `Resolve knowledge conflict: ${res.key}`,
+          title,
           description:
             `Two contradictory updates to wiki entry "${res.key}". The second has been ` +
             `stored and the entry flagged. Decide which is right, or write a single entry ` +

@@ -65,7 +65,11 @@ const RESULTS = path.join(ROOT, 'bench/results');
 // blocks every write there, which reads as "the agent changed nothing".
 const WORK = path.join(os.tmpdir(), 'cm-bench', TASK_NAME);
 
-const MODEL = process.env.MODEL ?? 'claude-haiku-4-5-20251001';
+// MODEL=auto leaves the run unpinned, which is the only way to measure routing:
+// a pin collapses every role onto one model by design, so a pinned A/B compares
+// nothing. The baseline still needs a concrete model, so it keeps the default.
+const UNPINNED = process.env.MODEL === 'auto';
+const MODEL = UNPINNED ? 'claude-haiku-4-5-20251001' : (process.env.MODEL ?? 'claude-haiku-4-5-20251001');
 const CLI_MODEL = /haiku/.test(MODEL) ? 'haiku' : /opus/.test(MODEL) ? 'opus' : 'sonnet';
 
 interface Run {
@@ -173,7 +177,10 @@ function runCodemaster(): Run {
   const started = Date.now();
   const r = spawnSync(
     'npx',
-    ['tsx', path.join(ROOT, 'src/index.tsx'), 'run', '--repo', dir, '--model', MODEL, '--json', '--verbose'],
+    [
+      'tsx', path.join(ROOT, 'src/index.tsx'), 'run', '--repo', dir,
+      ...(UNPINNED ? [] : ['--model', MODEL]), '--json', '--verbose',
+    ],
     { cwd: ROOT, input: OBJECTIVE, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] },
   );
   const seconds = Math.round((Date.now() - started) / 1000);
@@ -185,7 +192,10 @@ function runCodemaster(): Run {
   let reasoning = '';
   try {
     const j = JSON.parse(r.stdout ?? '') as {
-      tokens?: { total?: number; cost_usd?: number; by_model?: Record<string, number> };
+      tokens?: {
+        total?: number; cost_usd?: number; by_model?: Record<string, number>;
+        by_role?: Array<{ role: string; model_id: string; calls: number; tokens: number; cost: number }>;
+      };
       tasks?: Array<{ title: string; status: string; verified?: boolean; evidence?: { provenance?: string } }>;
       verified?: number;
     };
@@ -201,7 +211,14 @@ function runCodemaster(): Run {
         .join('\n') +
       // Failover can move a run onto another model; a result naming one model
       // without checking this is not reproducible.
-      (models.length ? `\n\nmodels used: ${models.join(', ')}` : '');
+      (models.length ? `\n\nmodels used: ${models.join(', ')}` : '') +
+      // Which model each KIND of call bought. `models used` alone cannot show
+      // whether the cheap model went to the mechanical work or to the solving.
+      ((j.tokens?.by_role ?? []).length
+        ? '\n\n' + (j.tokens?.by_role ?? [])
+            .map((b) => `  ${b.role.padEnd(10)} ${b.model_id.padEnd(28)} ${String(b.calls).padStart(3)} call(s)  $${b.cost.toFixed(4)}`)
+            .join('\n')
+        : '');
   } catch {
     reasoning = '(no JSON result — see stderr)';
   }
@@ -264,7 +281,7 @@ function report(): void {
     return;
   }
 
-  console.log(`\ntask: ${TASK_NAME} · model: ${MODEL}\n`);
+  console.log(`\ntask: ${TASK_NAME} · model: ${UNPINNED ? 'unpinned (codemaster routes) / ' + MODEL + ' baseline' : MODEL}\n`);
   console.log('side          tests   claimed        cost   tokens      time   files changed');
   for (const r of runs) {
     console.log(
