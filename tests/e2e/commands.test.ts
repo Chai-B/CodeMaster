@@ -118,6 +118,25 @@ test('/why names the signals that selected a file, or says it was not selected',
   assert.match(out, /app\.py|not in the context|No task/);
 });
 
+test('the role routing table is settable from inside the tool', async () => {
+  const model = (await run('/model')).match(/(claude-[\w.-]+)/)?.[1];
+  assert.ok(model, '/model should list at least one model');
+
+  const good = await run(`/config set providers.roles.oracle ${model}`);
+  assert.match(good, new RegExp(`providers\\.roles\\.oracle = ${model}`));
+  assert.match(await run('/model'), new RegExp(`oracle[^\n]*${model}`), 'the table has to actually move');
+
+  // Rejected by name rather than written as an entry that degrades to the
+  // default — a silent degrade is how a routing table drifts unnoticed.
+  assert.match(await run('/config set providers.roles.nonesuch ' + model), /Unknown role: nonesuch/);
+  assert.match(await run('/config set providers.roles.oracle no-such-model'), /Unknown model: no-such-model/);
+  assert.match(await run('/config set providers.roles.oracle.effort blazing'), /low, medium or high/);
+  assert.match(await run('/config set providers.pinned yes'), /true or false/);
+
+  assert.match(await run('/config set providers.pinned true'), /providers\.pinned = true/);
+  await run('/config set providers.pinned false');
+});
+
 test('a question is answered read-only and starts nothing', async () => {
   const { Sessions } = await import('../../src/storage/sessions.js');
   const before = Sessions.list(500).length;
