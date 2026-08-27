@@ -30,6 +30,7 @@ import { applyDecay, findCompressionCandidates } from '../memory/lifecycle.js';
 import { recoverAll } from '../daemon/recovery.js';
 import { tokensByTaskType, providerEfficiency, profileTask } from '../analysis/tokenAnalytics.js';
 import { listPlugins, listCommandPlugins, getCommandPlugin, PLUGINS_DIR } from '../plugins/loader.js';
+import { answerQuestion, looksLikeQuestion } from '../workers/asker.js';
 import { bootstrapWiki } from '../wiki/bootstrap.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { bus } from '../events/bus.js';
@@ -58,6 +59,15 @@ export class CommandRouter {
     if (!text) return;
 
     if (!text.startsWith('/')) {
+      // A question is the most common thing typed at a coding tool, and it used
+      // to buy a session row, a task list and a planning call. Auto-detection is
+      // narrow and always announced, so a misroute costs one cheap call and is
+      // visible, never silent.
+      if (looksLikeQuestion(text)) {
+        this.out('dim', 'Answering read-only — no session started. /new <objective> forces one.');
+        await this.ask(text);
+        return;
+      }
       await this.objective(text);
       return;
     }
@@ -80,6 +90,7 @@ export class CommandRouter {
   private async route(cmd: string, arg: string, args: string[]): Promise<void> {
     switch (cmd) {
       case '/new': return this.objective(arg, true);
+      case '/ask': return this.ask(arg);
       case '/resume': return this.resume(arg);
       case '/pause': return this.pause();
       case '/complete': return this.complete();
@@ -143,6 +154,18 @@ export class CommandRouter {
       return null;
     }
     return s;
+  }
+
+  /** Reads the repository and answers. Persists nothing — the point is that a
+   *  question costs one call and leaves no state to clean up afterwards. */
+  private async ask(text: string): Promise<void> {
+    if (!text) return this.out('warn', 'Usage: /ask <question about this repository>');
+    if (!this.sm.manager.hasAnyProvider()) return this.out('warn', 'No provider credentials. Run /doctor.');
+    const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
+    const { text: answer, tokens } = await answerQuestion(text, repo, this.sm.manager, this.sm.cfg);
+    this.out('heading', 'Answer');
+    for (const line of answer.split('\n')) this.out('info', line);
+    this.out('dim', `${fmtTokens(tokens)} tokens · nothing was written. /new <objective> to act on this.`);
   }
 
   // ── Session ───────────────────────────────────────────────

@@ -38,18 +38,3 @@ export function parseObjective(text: string): ParsedObjective {
     task_type: taskType,
   };
 }
-
-/** Map a slash pipeline command to a default task type. */
-export function commandTaskType(cmd: string): TaskType | null {
-  const map: Record<string, TaskType> = {
-    '/fix': 'debug',
-    '/refactor': 'refactor',
-    '/test': 'test',
-    '/generate': 'implement',
-    '/implement': 'implement',
-    '/review': 'review',
-    '/explain': 'review',
-    '/docs': 'implement',
-  };
-  return map[cmd] ?? null;
-}
