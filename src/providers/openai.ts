@@ -41,7 +41,10 @@ export class OpenAIAdapter implements ProviderAdapter {
 
   format_prompt(compiled: CompiledPrompt, model: string): ProviderRequest {
     // Provider-native output format lives only in the adapter (spec §15.1).
-    return { system: compiled.system, user: `${compiled.body}\n\n${JSON_OUTPUT_FORMAT}`, model, max_tokens: compiled.max_output_tokens ?? 8192 };
+    // A free-form prompt already carries its own contract; overriding it here
+    // would hand back JSON to a caller that asked for prose.
+    const body = compiled.free_form ? compiled.body : `${compiled.body}\n\n${JSON_OUTPUT_FORMAT}`;
+    return { system: compiled.system, user: body, model, max_tokens: compiled.max_output_tokens ?? 8192 };
   }
 
   async invoke(request: ProviderRequest, account: Account): Promise<ProviderResponse> {

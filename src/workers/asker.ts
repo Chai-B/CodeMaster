@@ -100,6 +100,8 @@ export async function answerQuestion(
     maxContextTokens: manager.select(model, cfg.context.max_context_tokens).spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
     taskInstructions: ASK_INSTRUCTIONS,
+    // The answer is read by a person, not applied by a patcher.
+    prose: true,
   });
 
   // The answer IS the deliverable here, so it goes to the solve model rather

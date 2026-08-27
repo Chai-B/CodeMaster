@@ -141,3 +141,26 @@ test('a pin collapses every role to one model; unpinned, mechanical roles go che
   // failing, since the caller may be a proxy client naming a foreign model.
   assert.equal(open.modelFor('solve', 'gpt-4-imaginary'), 'claude-sonnet-4-6');
 });
+
+test('a free-form prompt is not overridden by a provider-native output format', () => {
+  const spec = [{ id: 'm', context_size: 100_000, cost_per_1m_input: 1, cost_per_1m_output: 1 }];
+  const adapters = [new OpenAIAdapter(spec), new GeminiAdapter(spec), new CodexAdapter(spec)];
+  const compiled = {
+    session_id: 's', task_id: 't', task_type: 'review' as const, compiled_at: '',
+    system: 'answer in prose', body: '# Question\nWhat does foo do?',
+    components: [], total_tokens: 0, max_tokens: 100_000, included: [], omitted: [],
+  };
+
+  for (const a of adapters) {
+    // These three adapters each append their own contract — JSON for OpenAI and
+    // Gemini, a unified diff for Codex. `/ask` wants an answer a person reads,
+    // so the body it compiled has to survive the adapter untouched.
+    const free = a.format_prompt({ ...compiled, free_form: true }, 'm');
+    assert.equal(free.user, compiled.body, `${a.constructor.name} overrode a free-form prompt`);
+
+    // The default path is unchanged: a work-product prompt still gets the
+    // machine-readable contract, or nothing downstream can parse the result.
+    const normal = a.format_prompt(compiled, 'm');
+    assert.ok(normal.user.length > compiled.body.length, `${a.constructor.name} dropped its output format`);
+  }
+});
