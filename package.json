@@ -10,8 +10,7 @@
     "start": "tsx src/index.tsx",
     "dev": "tsx watch src/index.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/unit/*.test.ts tests/integration/*.test.ts tests/e2e/*.test.ts",
-    "bench": "node --import tsx bench/run.ts"
+    "test": "node --import tsx --test tests/unit/*.test.ts tests/integration/*.test.ts tests/e2e/*.test.ts"
   },
   "files": [
     "bin/",

@@ -15,5 +15,3 @@ build/
 
 # Leaked E2E temp output (test writes a relative "var/folders/..." path)
 var/
-# Superseded by bench/mf_e2e.ts
-scratch_mf_e2e.mjs
