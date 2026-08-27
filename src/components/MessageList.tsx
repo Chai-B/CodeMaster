@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { LogEntry } from '../utils/parser';
+import { LogEntry } from '../util/parser';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED } from '../themes/blue';
 
 export function MessageList({ logs }: { logs: LogEntry[] }) {

@@ -9,7 +9,7 @@ import path from 'path';
 import { Header } from './components/Header.js';
 import { MessageList } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
-import { eventToLog, type LogEntry, type LogType, type SessionStatusView } from './utils/parser.js';
+import { eventToLog, type LogEntry, type LogType, type SessionStatusView } from './util/parser.js';
 import { BLUE_HI, BLUE_DIM, MUTED, BRAILLE } from './themes/blue.js';
 
 import { bus } from './events/bus.js';

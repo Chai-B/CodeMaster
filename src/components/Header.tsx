@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED } from '../themes/blue';
-import type { SessionStatusView } from '../utils/parser';
+import type { SessionStatusView } from '../util/parser';
 
 interface HeaderProps {
   shortCwd: string;

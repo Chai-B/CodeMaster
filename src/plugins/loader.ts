@@ -1,4 +1,4 @@
-// Plugin loader (spec §18) — loads plugins from ~/.codemaster/plugins/.
+// Plugin loader (spec §18) — loads plugins from PLUGINS_DIR ($XDG_CONFIG_HOME/codemaster/plugins).
 // Extension points: provider, worker, memory, analyzer, command, storage.
 
 import fs from 'fs';

@@ -9,7 +9,7 @@ import { bus } from '../events/bus.js';
 import { Daemon } from '../daemon/daemon.js';
 import { Tasks } from '../storage/sessions.js';
 import { Tokens } from '../storage/tokens.js';
-import { eventToLog } from '../utils/parser.js';
+import { eventToLog } from '../util/parser.js';
 import { GitWorker } from '../analysis/git.js';
 import { answerQuestion } from '../workers/asker.js';
 import type { Session } from '../types/index.js';
