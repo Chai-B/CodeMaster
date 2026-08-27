@@ -11,12 +11,14 @@ import { Tasks } from '../storage/sessions.js';
 import { Tokens } from '../storage/tokens.js';
 import { eventToLog } from '../utils/parser.js';
 import { GitWorker } from '../analysis/git.js';
+import { answerQuestion } from '../workers/asker.js';
 import type { Session } from '../types/index.js';
 
 const USAGE = `codemaster — persistent reasoning layer for AI coding agents
 
   codemaster                        interactive TUI
   codemaster run [objective]        plan and execute an objective, then exit
+  codemaster ask [question]         answer a question about the repository, read-only
   codemaster mcp [--repo <path>]    MCP stdio server for other agents
   codemaster proxy [--port <n>]     OpenAI-compatible endpoint on 127.0.0.1
   codemaster --version
@@ -26,6 +28,9 @@ Options for run:
   --repo <path>     repository to work in (default: cwd)
   --model <id>      model to run on (default: the configured default)
   --verbose         stream progress to stderr even with --json
+
+ask takes --repo, --model and --json; it reads the repository and prints an
+answer without creating a session, a task or a checkpoint.
 
 The objective may be piped instead of passed as an argument:
   echo "fix the parser" | codemaster run --json
@@ -83,7 +88,53 @@ function changedFiles(repo: string): string[] {
     .filter(Boolean);
 }
 
+/** `codemaster ask "<question>"` — the read-only half of the CLI. Shares the
+ *  flag parser and the repo scoping with `run`, and deliberately shares nothing
+ *  else: no daemon start, no session, no task, no checkpoint. */
+async function askHeadless(argv: string[]): Promise<number> {
+  const flags = parse(argv);
+  if (!flags) { process.stderr.write(USAGE); return 2; }
+  const question = flags.objective || readStdin();
+  if (!question) { process.stderr.write('No question given.\n\n' + USAGE); return 2; }
+  if (!fs.existsSync(flags.repo)) { process.stderr.write(`No such directory: ${flags.repo}\n`); return 2; }
+  setActiveRepo(flags.repo);
+
+  const off = flags.verbose
+    ? bus.onAny((ev) => { const e = eventToLog(ev); if (e?.text) process.stderr.write(`${e.text}\n`); })
+    : (): void => undefined;
+
+  const daemon = new Daemon();
+  const sm = daemon.sm;
+  if (flags.model) {
+    if (!allModels(sm.cfg).some((m) => m.id === flags.model)) {
+      process.stderr.write(`Unknown model: ${flags.model}\n`);
+      return 2;
+    }
+    sm.cfg.providers.default = flags.model;
+    sm.cfg.providers.pinned = true;
+  }
+  try {
+    if (!sm.manager.hasAnyProvider()) {
+      process.stderr.write('No provider credentials — set an API key, run `claude setup-token`, or use /account add.\n');
+      return 3;
+    }
+    const { text, tokens, model } = await answerQuestion(question, flags.repo, sm.manager, sm.cfg);
+    if (flags.json) process.stdout.write(JSON.stringify({ question, repo: flags.repo, model, answer: text, tokens }, null, 2) + '\n');
+    else process.stdout.write(`${text}\n`);
+    return 0;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (flags.json) process.stdout.write(JSON.stringify({ status: 'error', question, error: message }, null, 2) + '\n');
+    process.stderr.write(`${message}\n`);
+    return 1;
+  } finally {
+    off();
+    await daemon.stop();
+  }
+}
+
 export async function runHeadless(argv: string[]): Promise<number> {
+  if (argv[0] === 'ask') return askHeadless(argv.slice(1));
   if (argv[0] !== 'run') {
     process.stderr.write(USAGE);
     return argv[0] === '--help' || argv[0] === '-h' ? 0 : 2;

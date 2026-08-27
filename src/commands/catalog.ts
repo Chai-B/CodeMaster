@@ -11,6 +11,7 @@ export interface CommandDef {
 
 export const COMMANDS: CommandDef[] = [
   // Session
+  { cmd: '/ask', desc: 'Answer a question about the repository, read-only', group: 'Session', usage: '/ask <question>' },
   { cmd: '/new', desc: 'Create a session with an objective', group: 'Session', usage: '/new <objective>' },
   { cmd: '/resume', desc: 'Resume a paused/crashed session', group: 'Session', usage: '/resume [session_id]' },
   { cmd: '/recover', desc: 'Recover incomplete sessions after a crash', group: 'Session' },

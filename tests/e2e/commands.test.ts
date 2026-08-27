@@ -118,6 +118,31 @@ test('/why names the signals that selected a file, or says it was not selected',
   assert.match(out, /app\.py|not in the context|No task/);
 });
 
+test('a question is answered read-only and starts nothing', async () => {
+  const { Sessions } = await import('../../src/storage/sessions.js');
+  const before = Sessions.list(500).length;
+
+  // Stop at the credential gate: what is under test is the routing decision,
+  // not the model's answer, and a test must never buy a real call.
+  const real = sm.manager.hasAnyProvider.bind(sm.manager);
+  sm.manager.hasAnyProvider = () => false;
+  const out = await run('what does charge() do?');
+  sm.manager.hasAnyProvider = real;
+
+  assert.match(out, /read-only/i, 'a misroute has to be visible, not silent');
+  assert.equal(Sessions.list(500).length, before, 'a question must not leave a session behind');
+});
+
+test('an instruction still becomes a session, question mark or not', async () => {
+  const { looksLikeQuestion } = await import('../../src/workers/asker.js');
+  for (const q of ['what does charge() do?', 'why is this slow', 'How does routing pick a model?', 'explain the resolver'])
+    assert.equal(looksLikeQuestion(q), true, q);
+  // An imperative opener wins over a trailing question mark — "fix the parser?"
+  // is someone asking for a change, not for an explanation.
+  for (const o of ['fix the parser?', 'add a retry to the client', 'refactor resolver.py', '/ask what is this'])
+    assert.equal(looksLikeQuestion(o), false, o);
+});
+
 test('every catalog command is routable', async () => {
   const { COMMANDS } = await import('../../src/commands/catalog.js');
   for (const c of COMMANDS) {
