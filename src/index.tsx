@@ -219,13 +219,17 @@ function App() {
       setInput('');
       if (!text) return;
 
-      inputHistoryRef.current.push(text);
+      // `/account add <provider> <alias> <key>` is the one line that carries a
+      // secret. Up-arrow would replay it and the transcript would keep it, so
+      // this line is never recalled and the key is masked in the echo.
+      const secret = /^\/account\s+add\s+\S+\s+\S+\s+\S/.test(text);
+      if (!secret) inputHistoryRef.current.push(text);
       historyIdxRef.current = -1;
 
       if (text === '/quit' || text === '/exit') { exit(); return; }
       if (text === '/clear') { dispatch({ type: 'clear' }); return; }
 
-      log('user', text);
+      log('user', secret ? text.split(/\s+/).slice(0, 4).join(' ') + ' ****' : text);
       setRunning(true);
       try {
         await router.dispatch(text);

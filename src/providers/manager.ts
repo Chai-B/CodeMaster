@@ -84,6 +84,8 @@ export class ProviderManager {
   private adapters = new Map<string, ProviderAdapter>();
   private accounts: Account[] = [];
   private modelToProvider = new Map<string, string>();
+  /** Set by `/account use` — session-scoped, never written to config. */
+  private preferred?: string;
 
   constructor(private cfg: Config) {
     this.adapters.set('anthropic', new AnthropicAdapter(cfg.providers.anthropic.models));
@@ -187,6 +189,38 @@ export class ProviderManager {
     return true;
   }
 
+  /** Whether this account's credential can actually be produced at call time.
+   *  An env-backed account whose variable is unset is a placeholder the
+   *  constructor makes for every vendor, not an account anyone can call. */
+  private resolves(a: Account): boolean {
+    if (a.credential_ref.startsWith('cred:')) return CredentialManager.has(a.credential_ref.slice(5));
+    if (a.credential_ref.startsWith('env:')) {
+      return !!process.env[a.credential_ref.slice(4)] || this.envOrCliCredentials(a.provider_id);
+    }
+    return true;
+  }
+
+  /** `/account use <alias>` — an explicit choice outranks a latency measurement. */
+  private preference(a: Account): number {
+    return this.preferred && a.alias === this.preferred ? 1 : 0;
+  }
+
+  /** Returns false if no such account, so the command can say so by name. */
+  useAccount(alias: string): boolean {
+    if (!this.accounts.some((a) => a.alias === alias)) return false;
+    this.preferred = alias;
+    return true;
+  }
+
+  activeAccount(): string | undefined {
+    return this.preferred;
+  }
+
+  /** For `/account` and `/doctor`: presence is not the same as usable. */
+  accountResolves(a: Account): boolean {
+    return this.resolves(a);
+  }
+
   /** Account selector (spec §13.3) — health → capacity → rate → context → score. */
   select(modelId: string, requiredTokens: number): SelectedProvider {
     const providerId = this.providerOf(modelId);
@@ -206,9 +240,19 @@ export class ProviderManager {
     // returned the same constant for every entry — a common factor that cannot
     // change a sort. Which MODEL to use is decided in `modelFor`, above the
     // account choice; this only picks which account of that model answers.
-    const scored = candidates
+    // The constructor seeds an env-backed `default` account for every vendor
+    // whether or not that variable is set, and every fresh account scores the
+    // same on latency — so a stable sort handed the placeholder the win on
+    // insertion order alone, and the adapter threw "no API key" with a working
+    // stored key sitting one entry below it.
+    const usable = candidates.filter((a) => this.resolves(a));
+    if (candidates.length && !usable.length) {
+      throw new Error(`No usable credential for ${providerId}. Add one with: /account add ${providerId} <alias> <key>`);
+    }
+
+    const scored = usable
       .map((a) => ({ a, score: 1 / Math.max(1, a.health.avg_latency_ms || 1) }))
-      .sort((x, y) => y.score - x.score);
+      .sort((x, y) => this.preference(y.a) - this.preference(x.a) || y.score - x.score);
 
     const account = scored[0]?.a ?? this.accounts.find((a) => a.provider_id === providerId) ?? this.accounts[0]!;
     return { adapter, account, model: spec.id, spec };
@@ -232,7 +276,17 @@ export class ProviderManager {
     for (const want of [requested, role ? this.roleModel(role) : undefined]) {
       if (want && this.modelSpec(want) && this.providerHasCredentials(this.providerOf(want))) return want;
     }
-    return def;
+    if (this.providerHasCredentials(this.providerOf(def))) return def;
+    // The default's own vendor has no key either. Holding a usable key for some
+    // other vendor should mean the tool runs: the config ships a default and
+    // most people never edit it, so failing on it strands a working credential.
+    return this.cheapestCredentialed() ?? def;
+  }
+
+  private cheapestCredentialed(): string | undefined {
+    return this.listModels()
+      .filter((m) => this.providerHasCredentials(this.providerOf(m.id)))
+      .sort((a, b) => a.cost_per_1m_output - b.cost_per_1m_output)[0]?.id;
   }
 
   /** A role with no configured model. The mechanical transforms — a diff review,
@@ -291,8 +345,24 @@ export class ProviderManager {
   }
 
   /** Whether a provider actually has usable credentials — so failover never tries
-   *  a keyless provider and throws a confusing error (spec §13.3 filter by health). */
+   *  a keyless provider and throws a confusing error (spec §13.3 filter by health).
+   *
+   *  Env and CLI are asked first: they are the common case and cost nothing. But a
+   *  key added through `/account add` lives only in the credential store, and a
+   *  vendor invisible here is invisible to `modelFor` (role routing),
+   *  `failoverModelOrder` (rescue) and `strongerThan` (escalation) — so a stored
+   *  key that the adapters can already resolve would never be reached at all. */
   providerHasCredentials(providerId: string): boolean {
+    if (this.envOrCliCredentials(providerId)) return true;
+    return this.accounts.some(
+      (a) =>
+        a.provider_id === providerId &&
+        a.credential_ref.startsWith('cred:') &&
+        CredentialManager.has(a.credential_ref.slice(5)),
+    );
+  }
+
+  private envOrCliCredentials(providerId: string): boolean {
     switch (providerId) {
       case 'anthropic':
         return claudeCliAvailable() || !!(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN);

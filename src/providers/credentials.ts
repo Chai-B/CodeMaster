@@ -137,6 +137,12 @@ export const CredentialManager = {
     removeFromIndex(accountId);
   },
 
+  /** Whether an id has a credential, without decrypting one. Routing asks this
+   *  on every call it makes; a gate should never pay a key derivation to answer. */
+  has(accountId: string): boolean {
+    return this.list().includes(accountId);
+  },
+
   list(): string[] {
     ensureDirs();
     // Union of the id index and any legacy .enc files on disk.
