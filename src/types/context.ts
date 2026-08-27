@@ -42,6 +42,10 @@ export interface CompiledPrompt {
   compiled_at: ISO8601;
 
   system: string;
+  /** The prompt asks for prose, not the IR envelope. Adapters with a native
+   *  structured format must not override it — the caller wants an answer a
+   *  person reads, not one a parser does. */
+  free_form?: boolean;
   components: CompiledComponent[];
   body: string; // full assembled markdown
 

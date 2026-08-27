@@ -9,7 +9,7 @@ import { Learning } from '../learning/reflector.js';
 import { readRelevantSections, readConventions, readArchitecture } from '../wiki/reader.js';
 import { Reasoning, Failures } from '../storage/reasoning.js';
 import { LongTerm } from '../storage/memory.js';
-import { OUTPUT_FORMAT, SYSTEM_PROMPT } from './outputFormat.js';
+import { OUTPUT_FORMAT, SYSTEM_PROMPT, PROSE_OUTPUT_FORMAT, PROSE_SYSTEM_PROMPT } from './outputFormat.js';
 import { estimateTokens } from '../util/tokens.js';
 import { now } from '../util/id.js';
 import { ContextComponent } from '../types/index.js';
@@ -25,6 +25,10 @@ export interface CompileOptions {
   /** Escalation rung (spec §11): 0 = smallest budget. Raised only after a
    *  verification pass has failed at the current size. */
   tier?: number;
+  /** Answer in prose instead of the IR envelope. `/ask` has nothing to parse,
+   *  store or apply, so the contract that makes a result machine-readable only
+   *  makes the answer unreadable. */
+  prose?: boolean;
 }
 
 export async function compileContext(
@@ -237,12 +241,14 @@ export async function compileContext(
 
   // Graded budget enforcement (spec §11.4): compress low-priority components,
   // then drop them, until the context fits the model window (reserving output room).
-  const overhead = estimateTokens(OUTPUT_FORMAT) + estimateTokens(SYSTEM_PROMPT);
+  const format = opts.prose ? PROSE_OUTPUT_FORMAT : OUTPUT_FORMAT;
+  const system = opts.prose ? PROSE_SYSTEM_PROMPT : SYSTEM_PROMPT;
+  const overhead = estimateTokens(format) + estimateTokens(system);
   const ceiling = Math.max(1, budget - 8192 - overhead);
   const { compressed, dropped } = enforceBudget(ordered, ceiling);
   for (const d of dropped) omitted.push(d);
 
-  const totalTokens = ordered.reduce((a, c) => a + c.estimated_tokens, 0) + estimateTokens(OUTPUT_FORMAT);
+  const totalTokens = ordered.reduce((a, c) => a + c.estimated_tokens, 0) + estimateTokens(format);
 
   const budgetComment = `<!-- Profile: ${profileName}
      Compiled: ${now()}
@@ -256,7 +262,7 @@ export async function compileContext(
   const body = [
     '# CodeMaster Context',
     ...ordered.map((c) => `## ${c.heading}\n${c.content}`),
-    OUTPUT_FORMAT,
+    format,
     budgetComment,
   ].join('\n\n');
 
@@ -265,7 +271,8 @@ export async function compileContext(
     task_id: task.id,
     task_type: task.type,
     compiled_at: now(),
-    system: SYSTEM_PROMPT,
+    system,
+    free_form: opts.prose ?? false,
     components: ordered,
     body,
     total_tokens: totalTokens,
