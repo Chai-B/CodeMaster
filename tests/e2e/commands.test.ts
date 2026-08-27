@@ -48,6 +48,27 @@ test('/model lists models and rejects one that does not exist', async () => {
   assert.match(await run('/model not-a-real-model'), /Unknown model/);
 });
 
+test('/model shows which model each role buys, since the table is nowhere in config', async () => {
+  // The role table is derived from `providers.default`, so nothing on disk says
+  // a summarize call buys a cheaper model than a solve call. This listing is the
+  // only place a user can see it.
+  const out = await run('/model');
+  for (const role of ['solve', 'plan', 'oracle', 'review', 'summarize', 'merge']) {
+    assert.match(out, new RegExp(`${role}\\s+\\S`), `no row for ${role}`);
+  }
+});
+
+test('/cost reports spend per role, not only per vendor window', async () => {
+  const { Tokens } = await import('../../src/storage/tokens.js');
+  Tokens.record({
+    session_id: 'cost-s', role: 'summarize', provider_id: 'anthropic', account_id: 'a',
+    model_id: 'claude-haiku-4-5-20251001',
+    usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+    cost_usd: 0.001, components: ['worker'],
+  } as never);
+  assert.match(await run('/cost'), /summarize\s+claude-haiku/);
+});
+
 test('/config shows settings and set writes them back typed', async () => {
   assert.match(await run('/config'), /context\.max_context_tokens/);
   assert.match(await run('/config set context.max_files 12'), /context\.max_files = 12/);
@@ -100,6 +121,10 @@ test('/why names the signals that selected a file, or says it was not selected',
 test('every catalog command is routable', async () => {
   const { COMMANDS } = await import('../../src/commands/catalog.js');
   for (const c of COMMANDS) {
+    // The two that the TUI owns, not the router: only the layer holding the Ink
+    // app can clear its screen or exit it, so index.tsx intercepts them before
+    // dispatch. Listing them in the catalog is what makes them discoverable in
+    // /help and autocomplete.
     if (['/quit', '/clear'].includes(c.cmd)) continue;
     const out = await run(`${c.cmd} --help`);
     assert.match(out, /Usage:/, `${c.cmd} has no usage help`);

@@ -3,19 +3,18 @@
   "passed": 8,
   "total": 8,
   "failures": [],
-  "tokens": 223434,
-  "costUsd": 1.0114987500000001,
-  "claimedVerified": 2,
-  "claimedTasks": 3,
+  "tokens": 115454,
+  "costUsd": 0.48986999999999997,
+  "claimedVerified": 1,
+  "claimedTasks": 1,
   "provenance": [
-    "repro-admitted",
-    "none"
+    "repro-admitted"
   ],
-  "seconds": 397,
+  "seconds": 112,
   "changed": [
     "resolve/merge.py",
     "resolve/resolver.py"
   ],
-  "reasoning": "ok   [verified] Fix layer order and deep-copy isolation in resolver\nok   [verified] Resolve knowledge conflict: notes/codemaster-bench-task-two\nfail [unverified] Resolve knowledge conflict: notes/codemaster-bench-task-two\n\nmodels used: claude-sonnet-4-6, gpt-5-codex\n\n  solve      claude-sonnet-4-6              2 call(s)  $0.3922\n  oracle     claude-sonnet-4-6              2 call(s)  $0.3859\n  plan       claude-sonnet-4-6              1 call(s)  $0.2027\n  solve      gpt-5-codex                    1 call(s)  $0.0307",
-  "diff": "diff --git a/resolve/merge.py b/resolve/merge.py\nindex 71f8723..acd5cb2 100644\n--- a/resolve/merge.py\n+++ b/resolve/merge.py\n@@ -1,12 +1,16 @@\n \"\"\"Recursive mapping merge.\"\"\"\n \n+import copy\n+\n \n def deep_merge(base, incoming):\n     \"\"\"Return base updated with incoming. Nested mappings merge key by key.\"\"\"\n-    out = base\n+    out = base.copy()\n     for key, value in incoming.items():\n         if isinstance(value, dict) and isinstance(out.get(key), dict):\n             out[key] = deep_merge(out[key], value)\n+        elif isinstance(value, dict):\n+            out[key] = copy.deepcopy(value)\n         else:\n-            out[key] = value\n+            out[key] = copy.deepcopy(value)\n     return out\ndiff --git a/resolve/resolver.py b/resolve/resolver.py\nindex 860c25e..a4d7f73 100644\n--- a/resolve/resolver.py\n+++ b/resolve/resolver.py\n@@ -5,6 +5,6 @@ from .merge import deep_merge\n def resolve(sources):\n     \"\"\"Collapse the layer mapping into one configuration dict.\"\"\"\n     result = {}\n-    for _name, layer in reversed(list(ordered(sources))):\n+    for _name, layer in ordered(sources):\n         result = deep_merge(result, layer)\n     return result\n"
+  "reasoning": "ok   [verified] Fix layer precedence order and full-value isolation in deep_merge\n\nmodels used: claude-sonnet-4-6\n\n  plan       claude-sonnet-4-6              1 call(s)  $0.2109\n  solve      claude-sonnet-4-6              1 call(s)  $0.1590\n  oracle     claude-sonnet-4-6              1 call(s)  $0.1200",
+  "diff": "diff --git a/resolve/merge.py b/resolve/merge.py\nindex 71f8723..480935c 100644\n--- a/resolve/merge.py\n+++ b/resolve/merge.py\n@@ -1,12 +1,13 @@\n \"\"\"Recursive mapping merge.\"\"\"\n+import copy\n \n \n def deep_merge(base, incoming):\n     \"\"\"Return base updated with incoming. Nested mappings merge key by key.\"\"\"\n-    out = base\n+    out = base.copy()\n     for key, value in incoming.items():\n         if isinstance(value, dict) and isinstance(out.get(key), dict):\n             out[key] = deep_merge(out[key], value)\n         else:\n-            out[key] = value\n+            out[key] = copy.deepcopy(value)\n     return out\ndiff --git a/resolve/resolver.py b/resolve/resolver.py\nindex 860c25e..a4d7f73 100644\n--- a/resolve/resolver.py\n+++ b/resolve/resolver.py\n@@ -5,6 +5,6 @@ from .merge import deep_merge\n def resolve(sources):\n     \"\"\"Collapse the layer mapping into one configuration dict.\"\"\"\n     result = {}\n-    for _name, layer in reversed(list(ordered(sources))):\n+    for _name, layer in ordered(sources):\n         result = deep_merge(result, layer)\n     return result\n"
 }
