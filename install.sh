@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeMaster Next — one-command installer.
+# CodeMaster — one-command installer.
 # Usage (from a clone):   ./install.sh
 # Or remote one-liner:
 #   curl -fsSL https://raw.githubusercontent.com/Chai-B/CodeMaster/main/install.sh | bash
@@ -12,14 +12,16 @@ REPO_URL="https://github.com/Chai-B/CodeMaster.git"
 if [ -f "$(dirname "$0")/package.json" ]; then
   DIR="$(cd "$(dirname "$0")" && pwd)"
 else
-  DIR="${CODEMASTER_DIR:-$HOME/.codemaster-next}"
+  DIR="${CODEMASTER_DIR:-$HOME/.codemaster-src}"
   echo "▸ Cloning CodeMaster into $DIR"
   rm -rf "$DIR"
   git clone --depth 1 "$REPO_URL" "$DIR"
 fi
 cd "$DIR"
 
-command -v node >/dev/null 2>&1 || { echo "✗ Node.js 20+ is required. Install it first."; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "✗ Node.js 22.5+ is required. Install it first."; exit 1; }
+node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=5)?0:1)' || {
+  echo "✗ Node.js 22.5+ is required (node:sqlite); found $(node -v)."; exit 1; }
 
 echo "▸ Installing dependencies"
 npm install --omit=dev --no-audit --no-fund
@@ -29,7 +31,7 @@ if command -v codemaster >/dev/null 2>&1; then
   OLD="$(command -v codemaster)"
   echo "▸ Removing previous codemaster at $OLD"
   npm uninstall -g codemaster >/dev/null 2>&1 || true
-  npm uninstall -g codemaster-next >/dev/null 2>&1 || true
+  npm uninstall -g codemaster-next >/dev/null 2>&1 || true  # pre-1.0 package name
   # Stale symlink left behind by another package manager (e.g. Homebrew node).
   [ -L "$OLD" ] && rm -f "$OLD" 2>/dev/null || true
 fi

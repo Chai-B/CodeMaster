@@ -99,7 +99,7 @@ function StatusBar({ running, status }: { running: boolean; status: SessionStatu
   return (
     <Box justifyContent="space-between" paddingX={1}>
       <Text color={MUTED} dimColor>{left}  ·  Ctrl+Q quit  ·  Ctrl+L clear</Text>
-      <Text color={MUTED} dimColor>codemaster-next v{VERSION}</Text>
+      <Text color={MUTED} dimColor>codemaster v{VERSION}</Text>
     </Box>
   );
 }
@@ -137,7 +137,7 @@ function App() {
       if (entry && (entry.type !== 'plain' || entry.text)) dispatch({ type: 'add', entry });
       setStatus(computeStatus());
     });
-    log('heading', 'CodeMaster Next');
+    log('heading', 'CodeMaster');
     if (firstRunHere(cwd)) {
       // Nothing has been indexed and nothing has been run here, so the generic
       // one-liner would leave a new user with no idea what order to do things

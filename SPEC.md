@@ -1,4 +1,4 @@
-# CodeMaster Next
+# CodeMaster
 ## A Persistent Reasoning Operating System for AI Software Engineering
 
 **Version:** 0.1 — Draft Specification  
@@ -66,7 +66,7 @@ Consider how a traditional operating system relates to a CPU. The CPU is powerfu
 
 Current AI coding tools have powerful CPUs. They have no OS.
 
-CodeMaster Next is that OS.
+CodeMaster is that OS.
 
 It manages memory. It compiles context. It schedules workers. It maintains structured state. It checkpoints sessions. It handles provider switching. It builds and maintains repository intelligence. It preserves and replays reasoning. It treats LLMs as interchangeable execution engines rather than the source of truth.
 
@@ -88,9 +88,9 @@ When a developer establishes a coding convention, that convention does not live 
 
 When a function is refactored, the repository knowledge graph is updated, the affected wiki entries are flagged for review, and the model is not asked to rediscover what changed.
 
-This is the foundational idea that separates CodeMaster Next from every existing AI coding tool.
+This is the foundational idea that separates CodeMaster from every existing AI coding tool.
 
-### 1.4 What CodeMaster Next Is Not
+### 1.4 What CodeMaster Is Not
 
 - It is not another AI coding assistant.
 - It is not a wrapper around Claude Code.
@@ -343,7 +343,7 @@ Developer
 
 ### 4.1 Process Model
 
-CodeMaster Next is architected as a multi-process runtime with the following top-level processes:
+CodeMaster is architected as a multi-process runtime with the following top-level processes:
 
 ```
 codemaster-daemon          # Main orchestration process
@@ -1026,7 +1026,7 @@ Permanent memories bypass this calculation entirely.
 
 In every existing AI coding system, reasoning is ephemeral. It exists in the context window during generation, then disappears. The only way to recover it is to regenerate it — spending the same tokens again.
 
-CodeMaster Next treats reasoning as a first-class, persistent, structured artifact.
+CodeMaster treats reasoning as a first-class, persistent, structured artifact.
 
 This changes the economics of AI-assisted engineering fundamentally. Reasoning is an investment, not an operating cost. You pay for it once. You benefit from it indefinitely.
 
@@ -1659,7 +1659,7 @@ The model always receives a budget summary comment at the top of the context:
 
 ### 12.1 Philosophy
 
-Workers are the operating system processes of CodeMaster Next. Like OS processes, they:
+Workers are the operating system processes of CodeMaster. Like OS processes, they:
 
 - Have a single, well-defined responsibility
 - Communicate through structured contracts, not freeform language
@@ -2470,7 +2470,7 @@ my-plugin/
   "description": "Adds support for X",
   "type": "provider|worker|memory|analyzer|command|storage",
   "entry_point": "src/index.ts",
-  "requires": ["codemaster-next>=0.1.0"],
+  "requires": ["codemaster>=1.0.0"],
   "config_schema": {
     "type": "object",
     "properties": {
@@ -2968,7 +2968,7 @@ During an active session, the terminal shows a persistent status bar:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║ CodeMaster Next │ Session: impl-github-scanner │ Task 3/7 │ Tokens: 42k/500k ║
+║ CodeMaster │ Session: impl-github-scanner │ Task 3/7 │ Tokens: 42k/500k ║
 ║ Provider: claude-opus-4 (acct-A) │ Checkpoint: 8min ago │ Status: executing  ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
