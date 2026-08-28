@@ -10,7 +10,7 @@ import { Daemon } from '../daemon/daemon.js';
 import { Tasks } from '../storage/sessions.js';
 import { Tokens } from '../storage/tokens.js';
 import { eventToLog } from '../util/parser.js';
-import { GitWorker } from '../analysis/git.js';
+import { GitWorker, isRepoRoot } from '../analysis/git.js';
 import { answerQuestion } from '../workers/asker.js';
 import type { Session } from '../types/index.js';
 
@@ -79,6 +79,9 @@ function git(repo: string, args: string[]): string {
 /** Paths touched in the working tree, including files the run created — which
  *  `git diff HEAD` alone omits, making a pure file-creation run look empty. */
 function changedFiles(repo: string): string[] {
+  // Only when `repo` is itself the top of a work tree. Otherwise git walks up
+  // and reports a parent repository's dirty files as this run's output.
+  if (!isRepoRoot(repo)) return [];
   // Without `--untracked-files=all`, git collapses a new directory to `tests/`
   // and the reported change list names a directory instead of the files in it.
   return git(repo, ['status', '--porcelain', '--untracked-files=all'])
@@ -224,6 +227,11 @@ export async function runHeadless(argv: string[]): Promise<number> {
     const verifiedCount = tasks.filter((t) => t.evidence?.verified).length;
 
     if (flags.json) {
+      // Outside a git repository there is no working tree to diff, so the
+      // patcher's own record is the only truthful answer — without it a run in
+      // a plain directory reported no files after writing eleven.
+      const fromGit = changedFiles(flags.repo);
+      const written = [...new Set(tasks.flatMap((t) => t.output_files.map((f) => f.path)))];
       process.stdout.write(
         JSON.stringify({
           session_id: session.id,
@@ -249,7 +257,7 @@ export async function runHeadless(argv: string[]): Promise<number> {
             input: tokens.input, output: tokens.output, total: tokens.total, cost_usd: tokens.cost,
             by_model: Tokens.byModel(session.id), by_role: Tokens.byRole(session.id),
           },
-          files_changed: changedFiles(flags.repo),
+          files_changed: fromGit.length ? fromGit : written,
           diff: new GitWorker(flags.repo).fullWorkingDiff(),
         }, null, 2) + '\n',
       );

@@ -7,6 +7,7 @@ import { Reasoning } from '../storage/reasoning.js';
 import { Tokens } from '../storage/tokens.js';
 import { LongTerm } from '../storage/memory.js';
 import { staticAnalysis } from '../analysis/api.js';
+import { isRepoRoot } from '../analysis/git.js';
 import { startWatching, stopWatching } from '../analysis/watcher.js';
 import { parseObjective } from '../workers/intentParser.js';
 import { generatePlan } from '../workers/planner.js';
@@ -15,7 +16,6 @@ import { solveWithVerification, type VerifyResult } from '../workers/solver.js';
 import { makeBehavioralVerify, type TestResults } from '../workers/verify/behavioralVerify.js';
 import { generateRepro, generateCharacterization, type Repro } from '../workers/verify/reproGenerator.js';
 import { detectFramework } from '../analysis/testRunner.js';
-import { Undo, revert } from '../storage/undo.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
 import { registerCoreWorkers, nextReadyTask } from '../workers/scheduler.js';
@@ -104,6 +104,13 @@ export function deriveStatus(result: ExecuteResult, evidence: TaskEvidence): { s
 }
 
 function gitChangedFiles(repoPath: string): string[] {
+  // Only when this directory is itself the top of a work tree. `git status`
+  // answers "is this path INSIDE a repository", so running it in a plain
+  // directory under a versioned home returned the whole home repo's dirty
+  // files, with paths relative to the home directory — and the crash guard
+  // then failed on files that do not exist here. This is a supplement to the
+  // patcher's own list, never the sole source.
+  if (!isRepoRoot(repoPath)) return [];
   // `git diff` cannot see a file that is not tracked yet, so every file the
   // model CREATED was invisible to the crash guard, the use-site gate and the
   // locus check — precisely the files most likely to be wrong.
@@ -372,12 +379,12 @@ export class SessionManager {
       // generating while the solver patches is safe.
       type BV = ReturnType<typeof makeBehavioralVerify>;
       let bv: BV | null = null;
-      const verify = async (): Promise<VerifyResult> => {
+      const verify = async (changed: string[]): Promise<VerifyResult> => {
         if (!bv) {
           const [r, c] = await oracles;
           bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, r, locus, c);
         }
-        return (bv as BV).verify();
+        return (bv as BV).verify(changed);
       };
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
@@ -405,28 +412,16 @@ export class SessionManager {
       next.completed_at = now();
       next.output_files = [...new Set([...result.applied, ...result.created])].map((path) => ({ path }));
 
-      // A task that failed verification has already been given every iteration
-      // it gets, and its patch is the thing that failed. Leaving it in the tree
-      // is not partial progress — measured on the benchmark, three failed tasks
-      // left a change that scored three tests WORSE than doing nothing, while
-      // the run correctly reported them failed. A gate that only labels the
-      // damage is not a gate.
-      if (next.status === 'failed') {
-        const records = Undo.forTask(session.repository.path, next.id);
-        const undone = new Set<string>();
-        for (const rec of records) {
-          const r = revert(session.repository.path, rec);
-          for (const p of [...r.restored, ...r.removed]) undone.add(p);
-          Undo.drop(rec.id);
-        }
-        if (undone.size > 0) {
-          next.output_files = [];
-          bus.emit({
-            type: 'log',
-            level: 'warn',
-            message: `Rolled back ${undone.size} file(s) from the failed task: ${[...undone].join(', ')}`,
-          });
-        }
+      // A failed task keeps its work. Deleting it is not a gate — it destroyed
+      // the only deliverable of a run whose files were correct and whose gate
+      // was wrong. The undo journal is written for every patch, so `/undo`
+      // reverses it in one command when that is actually what is wanted.
+      if (next.status === 'failed' && next.output_files.length > 0) {
+        bus.emit({
+          type: 'log',
+          level: 'warn',
+          message: `Task failed but its changes were kept: ${next.output_files.map((f) => f.path).join(', ')} — /undo to reverse.`,
+        });
       }
       Tasks.update(next);
 

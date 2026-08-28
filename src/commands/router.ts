@@ -96,7 +96,7 @@ export class CommandRouter {
       case '/pause': return this.pause();
       case '/complete': return this.complete();
       case '/session': return this.session(args);
-      case '/plan': return this.plan();
+      case '/plan': { await this.plan(); return; }
       case '/tasks': return this.tasks();
       case '/task': return this.taskDetail(arg);
       case '/run': return this.run(false);
@@ -174,6 +174,9 @@ export class CommandRouter {
    *  prompt. Both start a session, but only one of them was asked for by name,
    *  and a user who meant to ask a question deserves to be told that their
    *  sentence just became a session objective. */
+  /** An objective plans AND runs. Stopping after the plan meant every request
+   *  took two commands and left a planned-but-untouched session behind if the
+   *  second was never typed. `/plan` still plans without executing. */
   private async objective(text: string, explicit = false): Promise<void> {
     if (!text) {
       this.out('warn', 'Usage: /new <objective>');
@@ -181,10 +184,9 @@ export class CommandRouter {
     }
     this.out('heading', explicit ? 'New session' : 'New session (from your message)');
     const session = await this.sm.createSession(text, process.cwd());
-    this.out('success', `Session ${session.id} created`);
-    this.out('dim', `Objective: ${session.objective}`);
-    this.out('dim', `Type: ${session.objective_parsed?.task_type}`);
-    await this.plan();
+    this.out('dim', `${session.id} · ${session.objective_parsed?.task_type} · ${session.objective}`);
+    if (!(await this.plan(true))) return;
+    await this.run(true);
   }
 
   private async resume(arg: string): Promise<void> {
@@ -241,18 +243,48 @@ export class CommandRouter {
   }
 
   // ── Planning ──────────────────────────────────────────────
-  private async plan(): Promise<void> {
+  /** One ending, not a scatter of lines. What was produced, what proved it,
+   *  what it cost, and how to take it back — the four things worth reading. */
+  private summarise(s: Session): void {
+    const tasks = Tasks.forSession(s.id);
+    const done = tasks.filter((t) => t.status === 'completed');
+    const failed = tasks.filter((t) => t.status === 'failed');
+    const blocked = tasks.filter((t) => t.status === 'blocked');
+    const verified = tasks.filter((t) => t.evidence?.verified);
+    const files = [...new Set(tasks.flatMap((t) => t.output_files.map((f) => f.path)))];
+    const tok = Tokens.sessionTotal(s.id);
+    const secs = Math.max(0, Math.round((Date.now() - new Date(s.created_at).getTime()) / 1000));
+    const elapsed = secs >= 60 ? `${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s` : `${secs}s`;
+
+    const state = failed.length || blocked.length
+      ? `${failed.length} failed, ${blocked.length} blocked`
+      : verified.length === tasks.length
+        ? 'verified'
+        : 'applied, unverified';
+    this.out('heading', `Done · ${done.length}/${tasks.length} · ${state}`);
+    if (files.length) this.out('dim', `Files    ${files.join(', ')}`);
+    // Why nothing proved it — the question a person actually asks next.
+    const why = tasks.find((t) => !t.evidence?.verified)?.evidence?.reason ?? failed[0]?.failure_reason;
+    if (why && verified.length < tasks.length) this.out('dim', `Why      ${why.split('\n')[0]!.slice(0, 150)}`);
+    this.out('dim', `Cost     ${tok.total.toLocaleString()} tokens · $${tok.cost.toFixed(4)} · ${elapsed}`);
+    if (files.length) this.out('dim', `Undo     /undo`);
+  }
+
+  /** True when a plan exists afterwards. `auto` suppresses the "now run it"
+   *  hint, because the caller is about to. */
+  private async plan(auto = false): Promise<boolean> {
     const s = this.requireSession();
-    if (!s) return;
+    if (!s) return false;
     this.out('heading', 'Planning');
     if (!this.sm.manager.hasAnyProvider()) {
       this.out('warn', 'No provider credentials — planning needs an LLM. Session created; set an API key, run `claude setup-token`, or /account add, then run /plan.');
-      return;
+      return false;
     }
     const tasks = await this.sm.plan(s);
-    this.out('success', `Plan generated: ${tasks.length} tasks`);
+    this.out('success', `${tasks.length} task${tasks.length === 1 ? '' : 's'} planned`);
     this.tasks();
-    this.out('dim', 'Run /run to execute the next task, or /runall for all.');
+    if (!auto) this.out('dim', 'Run /run to execute the next task, or /runall for all.');
+    return tasks.length > 0;
   }
 
   private tasks(): void {
@@ -291,7 +323,7 @@ export class CommandRouter {
     try {
       if (all) {
         await this.sm.runAll(s);
-        this.out('success', `Done. ${s.progress.completed}/${s.progress.total} completed, ${s.progress.failed} failed`);
+        this.summarise(s);
       } else {
         const t = await this.sm.runNextTask(s);
         if (!t) this.out('dim', 'No pending tasks.');

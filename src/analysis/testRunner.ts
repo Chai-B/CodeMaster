@@ -71,11 +71,16 @@ export function detectFramework(repoPath: string): Framework {
 export function frameworkForNewTest(repoPath: string): Framework {
   const known = detectFramework(repoPath);
   if (known !== 'unknown') return known;
+  // Inferring from a file extension alone once answered 'vitest' for a
+  // directory holding one script.js and no package.json — and the repro oracle
+  // then spent 450k tokens ($6.30) writing a test that nothing here could ever
+  // run. An inferred framework must be one this machine can actually execute;
+  // otherwise the honest answer is that there is no way to test this yet.
   const ext = dominantSourceExt(repoPath);
-  if (ext === 'py') return 'pytest';
-  if (ext === 'ts' || ext === 'js') return jsRunnerFrom(repoPath) ?? 'vitest';
-  if (ext === 'go') return 'gotest';
-  if (ext === 'rs') return 'cargo';
+  if (ext === 'py') return resolvePytest('python3') ? 'pytest' : 'unknown';
+  if (ext === 'ts' || ext === 'js') return jsRunnerFrom(repoPath) ?? 'unknown';
+  if (ext === 'go') return fs.existsSync(path.join(repoPath, 'go.mod')) ? 'gotest' : 'unknown';
+  if (ext === 'rs') return fs.existsSync(path.join(repoPath, 'Cargo.toml')) ? 'cargo' : 'unknown';
   return 'unknown';
 }
 
@@ -297,8 +302,16 @@ function isEnvImportError(stderr: string, mod: string): boolean {
 export function typeOrImportCheck(repoPath: string, changedFiles: string[], opts: RunOpts = {}): GuardResult {
   const timeout = opts.timeoutMs ?? 60_000;
   const py = opts.pythonBin ?? 'python3';
-  const tsChanged = changedFiles.filter((f) => /\.(ts|tsx)$/.test(f));
-  const pyChanged = changedFiles.filter((f) => /\.py$/.test(f));
+  // A path we cannot resolve is not a syntax error. Compiling a file that is
+  // not there raises FileNotFoundError, which this gate reported as a broken
+  // patch — failing a run where nothing was ever wrong with the code.
+  const root = path.resolve(repoPath) + path.sep;
+  const present = changedFiles.filter((f) => {
+    const abs = path.resolve(repoPath, f);
+    return (abs + path.sep).startsWith(root) && fs.existsSync(abs);
+  });
+  const tsChanged = present.filter((f) => /\.(ts|tsx)$/.test(f));
+  const pyChanged = present.filter((f) => /\.py$/.test(f));
 
   if (pyChanged.length) {
     for (const f of pyChanged) {

@@ -35,8 +35,12 @@ export async function unvisitedUseSites(repoPath: string, changedFiles: string[]
   const graph = callGraph(repoPath);
   const deps = dependencyGraph(repoPath);
 
+  const root = path.resolve(repoPath) + path.sep;
   for (const rel of changedFiles) {
     if (isTestFile(rel)) continue;
+    // The working directory is the boundary: a path that resolves above it
+    // belongs to someone else's repository and is not ours to gate on.
+    if (!(path.resolve(repoPath, rel) + path.sep).startsWith(root)) continue;
     const lang = languageOf(rel);
     if (!lang) continue;
     let content: string;

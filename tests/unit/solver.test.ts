@@ -120,3 +120,32 @@ test('a task stuck on one model escalates one rung without touching shared confi
   // stack local, so a concurrent task cannot be re-priced by this one.
   assert.equal(cfg.providers.default, 'cheap');
 });
+
+test('a failure the model cannot act on stops at one iteration and keeps the work', async () => {
+  let verifyCalls = 0;
+  let execCalls = 0;
+  const exec = async () => {
+    execCalls++;
+    return { ir: { summary: 'wrote the page' } as any, tokens: 80_000, ms: 1, applied: [], created: ['index.html'], failed: [], reasoningStored: 0, wikiUpdated: [] };
+  };
+  const r = await solveWithVerification({ repository: { path: repo } } as any, mkTask(), {} as any, {} as any,
+    () => { verifyCalls++; return { ok: false, actionable: false, output: 'the crash guard could not read a changed file' }; },
+    3, exec);
+  assert.equal(r.iterations, 1);
+  assert.equal(execCalls, 1);
+  assert.equal(verifyCalls, 1);
+  assert.equal(r.verified, false);
+  // One call, not three, and no escalation: 80k rather than 240k plus opus rates.
+  assert.equal(r.totalTokens, 80_000);
+  assert.deepEqual(r.last.created, ['index.html']);
+});
+
+test('the solver hands the verifier the files it actually wrote', async () => {
+  let seen: string[] = [];
+  const exec = async () => ({
+    ir: {} as any, tokens: 10, ms: 1, applied: ['a.ts'], created: ['b.ts'], failed: [], reasoningStored: 0, wikiUpdated: [],
+  });
+  await solveWithVerification({ repository: { path: repo } } as any, mkTask(), {} as any, {} as any,
+    (changed) => { seen = changed; return { ok: true, output: '' }; }, 3, exec);
+  assert.deepEqual(seen, ['a.ts', 'b.ts']);
+});

@@ -2,10 +2,34 @@
 
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { spawnSync } from 'child_process';
+import fs from 'fs';
 
 export interface ChangedFile {
   path: string;
   status: string;
+}
+
+/**
+ * True only when `dir` is itself the top of a git work tree.
+ *
+ * `checkIsRepo()` — and a bare `git status` — answer "is this path INSIDE a
+ * work tree", so a plain directory under a repository inherits it. A run in
+ * `~/Desktop/test` with `~` under version control read the whole home
+ * repository: `git status` returned its dirty files, with paths relative to
+ * `~`, and the crash guard then failed on files that do not exist relative to
+ * the working directory. The working directory is the boundary; nothing above
+ * it is ours to read.
+ */
+export function isRepoRoot(dir: string): boolean {
+  const r = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' });
+  if (r.status !== 0) return false;
+  const top = (r.stdout ?? '').trim();
+  if (!top) return false;
+  try {
+    return fs.realpathSync(top) === fs.realpathSync(dir);
+  } catch {
+    return false;
+  }
 }
 
 export class GitWorker {
@@ -14,15 +38,21 @@ export class GitWorker {
     this.git = simpleGit(repoPath);
   }
 
+  /** Every read below runs git with `cwd = repoPath`, and git walks up. Unless
+   *  this directory is itself the top of a work tree, the answer would describe
+   *  somebody else's repository, so each method returns its empty value instead.
+   *  `--json` output once carried a 16MB diff of the user's home repo this way. */
+  private owned: boolean | null = null;
+  private get owns(): boolean {
+    return (this.owned ??= isRepoRoot(this.repoPath));
+  }
+
   async isRepo(): Promise<boolean> {
-    try {
-      return await this.git.checkIsRepo();
-    } catch {
-      return false;
-    }
+    return this.owns;
   }
 
   async headCommit(): Promise<string> {
+    if (!this.owns) return 'uncommitted';
     try {
       return (await this.git.revparse(['HEAD'])).trim();
     } catch {
@@ -31,6 +61,7 @@ export class GitWorker {
   }
 
   async branch(): Promise<string> {
+    if (!this.owns) return 'unknown';
     try {
       return (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     } catch {
@@ -39,6 +70,7 @@ export class GitWorker {
   }
 
   async changedFilesSince(ref: string): Promise<ChangedFile[]> {
+    if (!this.owns) return [];
     try {
       const out = await this.git.raw(['diff', '--name-status', ref]);
       return out
@@ -54,6 +86,7 @@ export class GitWorker {
   }
 
   async diffSince(ref: string): Promise<string> {
+    if (!this.owns) return '';
     try {
       return await this.git.diff([ref]);
     } catch {
@@ -68,6 +101,7 @@ export class GitWorker {
    * exists on disk had never been created, costing a needless correction round.
    */
   fullWorkingDiff(): string {
+    if (!this.owns) return '';
     const run = (args: string[]): string => {
       // `diff --no-index` exits 1 when the files differ, so read stdout rather
       // than gating on the status code.
@@ -84,6 +118,7 @@ export class GitWorker {
   }
 
   async workingDiff(): Promise<string> {
+    if (!this.owns) return '';
     try {
       return await this.git.diff();
     } catch {
@@ -92,6 +127,7 @@ export class GitWorker {
   }
 
   async status(): Promise<{ modified: string[]; created: string[]; deleted: string[]; staged: string[] }> {
+    if (!this.owns) return { modified: [], created: [], deleted: [], staged: [] };
     try {
       const s = await this.git.status();
       return {
@@ -106,6 +142,7 @@ export class GitWorker {
   }
 
   async log(file: string | undefined, n: number): Promise<Array<{ hash: string; message: string; date: string }>> {
+    if (!this.owns) return [];
     try {
       const opts: string[] = ['--max-count', String(n)];
       if (file) opts.push('--', file);
@@ -117,6 +154,7 @@ export class GitWorker {
   }
 
   async blame(file: string): Promise<string> {
+    if (!this.owns) return '';
     try {
       return await this.git.raw(['blame', '--line-porcelain', file]);
     } catch {
@@ -126,6 +164,7 @@ export class GitWorker {
 
   /** Files frequently changed together with the given file (git proximity, spec §10.3 step 4). */
   async coChangedFiles(file: string, n = 20): Promise<string[]> {
+    if (!this.owns) return [];
     try {
       const out = await this.git.raw(['log', '--max-count', String(n), '--name-only', '--pretty=format:', '--', file]);
       const counts = new Map<string, number>();
@@ -140,6 +179,7 @@ export class GitWorker {
   }
 
   async createCheckpointPatch(sinceRef: string): Promise<string> {
+    if (!this.owns) return '';
     try {
       return await this.git.diff([sinceRef]);
     } catch {
@@ -149,6 +189,7 @@ export class GitWorker {
 
   /** Structured diff between two states (spec §5.2.6 diff(commit_a, commit_b)). */
   async diffBetween(a: string, b: string): Promise<string> {
+    if (!this.owns) return '';
     try {
       return await this.git.diff([`${a}..${b}`]);
     } catch {
@@ -158,6 +199,7 @@ export class GitWorker {
 
   /** Available stash entries (spec §5.2.6 stash_list). */
   async stashList(): Promise<string[]> {
+    if (!this.owns) return [];
     try {
       const out = await this.git.raw(['stash', 'list']);
       return out.split('\n').filter(Boolean);
@@ -168,6 +210,7 @@ export class GitWorker {
 
   /** Current branch + ahead/behind remote (spec §5.2.6 branch_status). */
   async branchStatus(): Promise<{ branch: string; ahead: number; behind: number; tracking: string | null }> {
+    if (!this.owns) return { branch: 'unknown', ahead: 0, behind: 0, tracking: null };
     try {
       const s = await this.git.status();
       return { branch: s.current ?? 'unknown', ahead: s.ahead, behind: s.behind, tracking: s.tracking ?? null };

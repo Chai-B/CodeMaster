@@ -235,8 +235,12 @@ async function invokeViaClaudeCli(request: ProviderRequest): Promise<ProviderRes
   // Resuming replays the vendor's system prompt from its own cache, so the
   // continuation turn carries only the new content. Opening under a chosen id
   // is what makes that id resumable later.
+  // Both branches carry the trimming flags: `--resume` does not inherit them
+  // from the call that opened the conversation, and without them turn two
+  // reloaded every MCP server again — measured, 118,665 tokens against 33,551.
+  const trim = ['--strict-mcp-config', '--setting-sources', ''];
   const args = conv?.resume
-    ? ['--resume', conv.id, '-p', '--output-format', 'json']
+    ? ['--resume', conv.id, '-p', ...trim, '--output-format', 'json']
     : [
         ...(conv ? ['--session-id', conv.id] : []),
         '--model', cliModelAlias(request.model),
@@ -244,6 +248,13 @@ async function invokeViaClaudeCli(request: ProviderRequest): Promise<ProviderRes
         '--system-prompt', request.system,
         '--disallowed-tools', ...CLI_DISALLOWED_TOOLS,
         '--exclude-dynamic-system-prompt-sections',
+        // The CLI injects the user's own MCP servers and settings into every
+        // call it makes. CodeMaster compiles its own context and passes its own
+        // system prompt, so none of that is wanted here — and it is not free:
+        // measured on this machine, "say ok" cost 108,386 input tokens without
+        // these flags and 18,889 with them, the difference being four MCP
+        // servers' tool schemas re-sent on every single call.
+        ...trim,
         '--output-format', 'json',
       ];
   // The CLI emits its whole JSON body at the end, so there is no partial output

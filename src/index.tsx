@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Box, render, Text, useApp, useInput } from 'ink';
+import { Box, render, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
-import path from 'path';
 
 import { Header } from './components/Header.js';
 import { MessageList } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
-import { eventToLog, type LogEntry, type LogType, type SessionStatusView } from './util/parser.js';
+import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView } from './util/parser.js';
 import { BLUE_HI, BLUE_DIM, MUTED, BRAILLE } from './themes/blue.js';
 
 import { bus } from './events/bus.js';
@@ -29,13 +28,63 @@ const sm = daemon.sm;
 const router = daemon.router;
 
 // ── Log state ───────────────────────────────────────────────────────────────
+// Two regions, not one list. `settled` is written to the terminal exactly once
+// via <Static>; `live` is the phase currently running and is the only thing
+// that repaints. When a phase ends it collapses to a single result line and
+// moves across, so a finished run reads as a few lines rather than every line
+// the workers emitted.
+interface LogState {
+  settled: LogEntry[];
+  live: LogEntry[];
+  phase: Phase | null;
+  phaseStart: number;
+  clearGen: number;
+  verbose: boolean;
+}
+
+const EMPTY_LOGS: LogState = { settled: [], live: [], phase: null, phaseStart: 0, clearGen: 0, verbose: false };
+
 let _id = 0;
+
+/** One line standing in for a phase's whole output: what it was, and what it
+ *  cost in wall time. The detail is gone from the screen, not from the run. */
+function collapse(state: LogState): LogEntry[] {
+  if (!state.phase || state.live.length === 0) return state.live;
+  const secs = Math.max(0, Math.round((Date.now() - state.phaseStart) / 1000));
+  const result =
+    [...state.live].reverse().find((e) => e.type === 'success' || e.type === 'error')?.text ??
+    `${state.live.length} step${state.live.length === 1 ? '' : 's'}`;
+  return [{ id: ++_id, type: 'dim', text: `${state.phase.padEnd(11)}${result} · ${secs}s` }];
+}
+
 function logReducer(
-  state: LogEntry[],
-  action: { type: 'add'; entry: Omit<LogEntry, 'id'> } | { type: 'clear' },
-): LogEntry[] {
-  if (action.type === 'clear') return [];
-  return [...state, { ...action.entry, id: ++_id }].slice(-500);
+  state: LogState,
+  action:
+    | { type: 'add'; entry: Omit<LogEntry, 'id'> }
+    | { type: 'clear' }
+    | { type: 'verbose'; on: boolean },
+): LogState {
+  if (action.type === 'clear') return { ...EMPTY_LOGS, clearGen: state.clearGen + 1, verbose: state.verbose };
+  if (action.type === 'verbose') return { ...state, verbose: action.on };
+
+  const phase = phaseOf(action.entry, state.phase);
+  const entry: LogEntry = { ...action.entry, phase: phase ?? undefined, id: ++_id };
+
+  // Nothing collapses in verbose mode: every line goes straight to the
+  // permanent region, which is what /verbose is for.
+  if (state.verbose) {
+    return { ...state, phase, settled: [...state.settled, entry].slice(-2000), live: [] };
+  }
+  if (phase === state.phase) {
+    return { ...state, live: [...state.live, entry].slice(-40) };
+  }
+  return {
+    ...state,
+    phase,
+    phaseStart: Date.now(),
+    settled: [...state.settled, ...collapse(state), ...(phase ? [] : [entry])].slice(-2000),
+    live: phase ? [entry] : [],
+  };
 }
 
 function computeStatus(): SessionStatusView | null {
@@ -56,15 +105,19 @@ function computeStatus(): SessionStatusView | null {
 }
 
 // ── Mini components ───────────────────────────────────────────────────────────
-function Spinner({ label }: { label: string }) {
+/** One line that updates in place, replacing the repeated "still working — 15s
+ *  elapsed" lines that used to accumulate one per poll. */
+function Spinner({ label, since }: { label: string; since: number }) {
   const [f, setF] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setF((i) => (i + 1) % BRAILLE.length), 80);
     return () => clearInterval(t);
   }, []);
+  const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
   return (
-    <Box marginLeft={2} marginY={1}>
+    <Box marginLeft={2} marginTop={1}>
       <Text color={BLUE_HI} bold>{BRAILLE[f]} {label}</Text>
+      <Text color={MUTED}>  {secs}s · esc to stop</Text>
     </Box>
   );
 }
@@ -118,9 +171,17 @@ function firstRunHere(repoPath: string): boolean {
 
 function App() {
   const { exit } = useApp();
-  const [logs, dispatch] = useReducer(logReducer, [] as LogEntry[]);
+  const [logs, dispatch] = useReducer(logReducer, EMPTY_LOGS);
+  // <Static> lines are already in the terminal's scrollback, so emptying the
+  // log state alone leaves them on screen — /clear would look broken. Clear the
+  // screen and the scrollback too, which is what the command means.
+  const { stdout } = useStdout();
+  useEffect(() => {
+    if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
+  }, [logs.clearGen, stdout]);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
+  const [startedAt, setStartedAt] = useState(Date.now());
   const [status, setStatus] = useState<SessionStatusView | null>(null);
   const [acOptions, setAcOptions] = useState<Cmd[]>([]);
   const [acIndex, setAcIndex] = useState(0);
@@ -137,7 +198,6 @@ function App() {
       if (entry && (entry.type !== 'plain' || entry.text)) dispatch({ type: 'add', entry });
       setStatus(computeStatus());
     });
-    log('heading', 'CodeMaster');
     if (firstRunHere(cwd)) {
       // Nothing has been indexed and nothing has been run here, so the generic
       // one-liner would leave a new user with no idea what order to do things
@@ -169,6 +229,9 @@ function App() {
     // Ctrl-C stops the running task and keeps the session; with nothing
     // running there is nothing to stop, so it leaves.
     if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
+    // Esc is what people reach for to stop a running thing. It stops the task,
+    // not the process — the session and everything on disk survive.
+    if (key.escape && running) { cancelActive(); return; }
 
     if (acOptions.length > 0) {
       if (key.upArrow) setAcIndex((i) => (i <= 0 ? acOptions.length - 1 : i - 1));
@@ -228,8 +291,12 @@ function App() {
 
       if (text === '/quit' || text === '/exit') { exit(); return; }
       if (text === '/clear') { dispatch({ type: 'clear' }); return; }
+      // Collapsing is a rendering choice, so /verbose has to be honoured here
+      // as well as by the router that owns the flag.
+      if (/^\/verbose\b/.test(text)) dispatch({ type: 'verbose', on: !/\boff\b/.test(text) });
 
       log('user', secret ? text.split(/\s+/).slice(0, 4).join(' ') + ' ****' : text);
+      setStartedAt(Date.now());
       setRunning(true);
       try {
         await router.dispatch(text);
@@ -247,9 +314,9 @@ function App() {
 
   return (
     <Box flexDirection="column" width="100%">
-      <Header shortCwd={path.basename(shortCwd) === shortCwd ? shortCwd : shortCwd} session={status} />
-      <MessageList logs={logs} />
-      {running && <Spinner label="working…" />}
+      <Header shortCwd={shortCwd} version={VERSION} session={status} />
+      <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} />
+      {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} />}
       {!running && acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
       <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} active={!running} placeholder="/new <objective> or /help" />
       <StatusBar running={running} status={status} />

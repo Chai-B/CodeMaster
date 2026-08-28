@@ -24,8 +24,18 @@ export interface VerifyResult {
    *  files the task named. The work still stands, but `verified` must not claim
    *  it was checked. */
   confident?: boolean;
+  /** False when the rejection is about our own tooling rather than the patch —
+   *  a runner that will not start, a path that does not resolve, no framework
+   *  in this repository at all. The model cannot fix any of those, so feeding
+   *  the message back buys a byte-identical answer at full price. Iterating
+   *  stops, the work stays, and the task reports unverified with the reason. */
+  actionable?: boolean;
 }
-export type VerifyFn = () => VerifyResult | Promise<VerifyResult>;
+/** Takes the files this iteration actually wrote. Deriving them from
+ *  `git status` instead read whatever repository happened to sit above the
+ *  working directory; the patcher's own list is authoritative and works in a
+ *  directory with no git at all. */
+export type VerifyFn = (changed: string[]) => VerifyResult | Promise<VerifyResult>;
 
 export interface SolveResult {
   last: ExecuteResult;
@@ -91,9 +101,14 @@ export async function solveWithVerification(
     last = await exec(session, task, manager, cfg, start + i, conversation, escalatedTo || undefined);
     totalTokens += last.tokens;
 
-    const v = await verify();
-    if (v.ok) {
-      verified = v.confident !== false;
+    const changed = [...last.applied, ...last.created];
+    const v = await verify(changed);
+    // A rejection the model cannot act on is not a failed patch. Iterating on
+    // it produced three identical answers and an escalation to a stronger model
+    // on a run where nothing was ever wrong with the code — 337k tokens for a
+    // path the guard could not resolve. Keep the work, say what was not checked.
+    if (v.ok || v.actionable === false) {
+      verified = v.ok && v.confident !== false;
       bus.emit(
         verified
           ? { type: 'log', level: 'success', message: `Verification passed on iteration ${iterations}.` }
@@ -104,7 +119,6 @@ export async function solveWithVerification(
     // Record the non-working approach (spec §8.5) so it is retrievable as a
     // "do not repeat" both by the next iteration and by future tasks that touch
     // the same files — this is how failure memory compounds.
-    const changed = [...last.applied, ...last.created];
     if (changed.length) {
       try {
         Failures.insert({

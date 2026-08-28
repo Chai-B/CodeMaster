@@ -14,10 +14,32 @@ export type LogType =
   | 'user'
   | 'reasoning';
 
+/** Which stage of a run a line belongs to. Settled stages collapse to a single
+ *  result line so a finished run reads as four lines, not four hundred. */
+export type Phase = 'Planning' | 'Solving' | 'Verifying';
+
 export interface LogEntry {
   id: number;
   type: LogType;
   text: string;
+  phase?: Phase;
+}
+
+/** The phase a line belongs to, from the text the router and workers already
+ *  emit. Deliberately a lookup on existing output rather than a new field
+ *  threaded through every emitter. */
+export function phaseOf(entry: Omit<LogEntry, 'id'>, current: Phase | null): Phase | null {
+  const t = entry.text;
+  if (entry.type === 'heading') {
+    if (/^Planning/.test(t)) return 'Planning';
+    if (/^Done/.test(t)) return null;
+    return current;
+  }
+  // A task boundary is emitted as a separator: everything after it is the solve.
+  if (entry.type === 'sep') return 'Solving';
+  if (/^Solver iteration/.test(t)) return 'Solving';
+  if (/^(Verification|Applied, but unverified|Verifier)/.test(t)) return 'Verifying';
+  return current;
 }
 
 export interface SessionStatusView {

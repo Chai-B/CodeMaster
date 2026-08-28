@@ -11,6 +11,7 @@ process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bv-'
 
 const { detectFramework, frameworkForNewTest, typeOrImportCheck, runTests } = await import('../../src/analysis/testRunner.js');
 const { makeBehavioralVerify } = await import('../../src/workers/verify/behavioralVerify.js');
+const { isRepoRoot } = await import('../../src/analysis/git.js');
 const { rkgQuery } = await import('../../src/rkg/query.js');
 const { getRepoDb } = await import('../../src/storage/db.js');
 
@@ -78,7 +79,7 @@ test('typeOrImportCheck: a missing top-level package is an env skip, not a failu
 test('behavioralVerify: no relevant tests and no repro → low-confidence pass', async () => {
   const repo = mkRepo({ 'README.md': 'x' });
   const { verify, lastResults } = makeBehavioralVerify(repo, () => []);
-  const r = (await verify()) as { ok: boolean; output: string; confident?: boolean };
+  const r = (await verify([])) as { ok: boolean; output: string; confident?: boolean };
   assert.equal(r.ok, true);
   // The work stands, but nothing exercised it — `verified` must not claim it did.
   assert.equal(r.confident, false);
@@ -90,7 +91,7 @@ test('behavioralVerify: a still-failing repro forces ok:false', async () => {
   const repo = mkRepo({ 'README.md': 'x' });
   const fakeRepro = { path: '.cm_repro/t.py', run: () => ({ ok: false, output: 'AssertionError: alias not used' }), cleanup() {} };
   const { verify, lastResults } = makeBehavioralVerify(repo, () => [], {}, fakeRepro);
-  const r = (await verify()) as { ok: boolean; output: string };
+  const r = (await verify([])) as { ok: boolean; output: string };
   assert.equal(r.ok, false);
   assert.match(r.output, /reproduction test/i);
   assert.equal(lastResults()?.reproUsed, true);
@@ -110,14 +111,14 @@ test('behavioralVerify: a passing repro with no other tests → ok:true', async 
   const repo = mkRepo({ 'README.md': 'x' });
   const fakeRepro = { path: '.cm_repro/t.py', run: () => ({ ok: true, output: '1 passed' }), cleanup() {} };
   const { verify } = makeBehavioralVerify(repo, () => [], {}, fakeRepro);
-  const r = (await verify()) as { ok: boolean };
+  const r = (await verify([])) as { ok: boolean };
   assert.equal(r.ok, true);
 });
 
 test('a green suite that never touched the named files is not a verification', async () => {
   const repo = mkRepo({ 'other.py': 'X = 1\n' });
   const { verify } = makeBehavioralVerify(repo, () => ['other.py'], {}, null, ['target.py']);
-  const r = (await verify()) as { ok: boolean; confident?: boolean };
+  const r = (await verify([])) as { ok: boolean; confident?: boolean };
   assert.equal(r.ok, true);
   assert.equal(r.confident, false);
 });
@@ -197,7 +198,7 @@ test('behavioralVerify: the use-site gate fails the run and names the callers', 
   seedIndex(repo, { def: 'billing.py', oldSig: 'def charge(user, amount):', caller: 'checkout.py', callerFn: 'pay', imports: ['billing'] });
 
   const { verify, lastResults } = makeBehavioralVerify(repo, () => ['billing.py']);
-  const r = (await verify()) as { ok: boolean; output: string };
+  const r = (await verify([])) as { ok: boolean; output: string };
   assert.equal(r.ok, false);
   assert.match(r.output, /checkout\.py/);
   assert.equal(lastResults()?.framework, 'use-sites');
@@ -292,7 +293,7 @@ test('behavioralVerify: a failing characterization test is a hard gate', async (
   const passingRepro = { path: '.cm/repro.py', run: () => ({ ok: true, output: '1 passed' }), cleanup() {} };
   const brokenChar = { path: '.cm/char.py', run: () => ({ ok: false, output: 'AssertionError: union != batch join' }), cleanup() {} };
   const { verify, lastResults } = makeBehavioralVerify(repo, () => [], {}, passingRepro, [], brokenChar);
-  const r = (await verify()) as { ok: boolean; output: string };
+  const r = (await verify([])) as { ok: boolean; output: string };
   // The fix arrived (repro green) and still broke something that worked before.
   assert.equal(r.ok, false);
   assert.match(r.output, /broke behavior that worked before/i);
@@ -304,7 +305,7 @@ test('behavioralVerify: a passing characterization does not by itself verify', a
   const repo = mkRepo({ 'README.md': 'x' });
   const okChar = { path: '.cm/char.py', run: () => ({ ok: true, output: '1 passed' }), cleanup() {} };
   const { verify } = makeBehavioralVerify(repo, () => [], {}, null, [], okChar);
-  const r = (await verify()) as { ok: boolean; confident?: boolean };
+  const r = (await verify([])) as { ok: boolean; confident?: boolean };
   assert.equal(r.ok, true);
   // Preserving old behavior is not evidence the new behavior arrived.
   assert.equal(r.confident, false);
@@ -391,4 +392,76 @@ test('the oracle snapshot falls back to the repo itself outside a git repository
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- Repository boundary -----------------------------------------------------
+// A plain directory that happens to live inside someone else's git work tree.
+// This is the shape that cost a real run 337k tokens and deleted its own output:
+// `git status` walked up to the parent repo, the crash guard tried to compile a
+// file from it, and FileNotFoundError was reported as a broken patch.
+
+test('a non-git directory nested in a git repo reports no git of its own', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-parent-'));
+  execFileSync('git', ['init', '-q'], { cwd: parent });
+  fs.writeFileSync(path.join(parent, 'dirty.py'), 'def f(:\n');
+  const child = path.join(parent, 'work');
+  fs.mkdirSync(child);
+
+  assert.equal(isRepoRoot(parent), true);
+  assert.equal(isRepoRoot(child), false);
+});
+
+test('the crash guard never fails on a path it cannot resolve', () => {
+  const repo = mkRepo({ 'ok.py': 'x = 1\n' });
+  // Exactly what `git status` handed it from the parent repository: a path that
+  // is real somewhere else and absent here.
+  const g = typeOrImportCheck(repo, ['Desktop/other-project/app/routes.py', 'ok.py']);
+  assert.equal(g.ok, true);
+});
+
+test('the guard refuses to gate on a file above the working directory', () => {
+  const repo = mkRepo({ 'ok.py': 'x = 1\n' });
+  fs.writeFileSync(path.join(repo, '..', 'cm-outside-broken.py'), 'def f(:\n');
+  const g = typeOrImportCheck(repo, ['../cm-outside-broken.py']);
+  assert.equal(g.ok, true);
+});
+
+test('verification uses the files the patcher wrote, not the ambient git tree', async () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-parent2-'));
+  execFileSync('git', ['init', '-q'], { cwd: parent });
+  fs.writeFileSync(path.join(parent, 'broken.py'), 'def f(:\n');
+  const child = path.join(parent, 'site');
+  fs.mkdirSync(child);
+  fs.writeFileSync(path.join(child, 'index.html'), '<!doctype html><title>t</title>\n');
+
+  // The closure contributes nothing, because `site` is not a repository root.
+  const { verify } = makeBehavioralVerify(child, () => []);
+  const r = await verify(['index.html']);
+  assert.equal(r.ok, true);
+  // No test framework here, so the work stands but nothing proved it.
+  assert.equal(r.confident, false);
+});
+
+test('an unreadable changed file stops the loop instead of iterating on it', async () => {
+  const repo = mkRepo({ 'ok.py': 'x = 1\n' });
+  // A path that resolves inside the repo and is a real .py, but is not there —
+  // the guard's own failure, which the model cannot act on.
+  const { verify, lastResults } = makeBehavioralVerify(repo, () => ['ghost.py']);
+  fs.writeFileSync(path.join(repo, 'ghost.py'), 'x = 1\n');
+  const r = await verify([]);
+  assert.equal(r.ok, true);
+  assert.notEqual(lastResults()?.framework, 'guard');
+});
+
+test('a framework is only inferred when this machine can actually run it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-nofw-'));
+  fs.writeFileSync(path.join(dir, 'script.js'), 'const board = [];\n');
+  fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><body></body>\n');
+  // No package.json, so no runner: naming one here sent the repro oracle after
+  // a test nothing could execute.
+  assert.equal(frameworkForNewTest(dir), 'unknown');
+
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ devDependencies: { vitest: '^1' } }));
+  assert.equal(frameworkForNewTest(dir), 'vitest');
+  fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -4,6 +4,8 @@
 // timeout) never produce a false negative. Only ever runs the repo's own
 // discovered tests + the admitted repro — never an externally supplied oracle.
 
+import fs from 'fs';
+import path from 'path';
 import { staticAnalysis } from '../../analysis/api.js';
 import { unvisitedUseSites, describeUseSiteGaps } from '../../analysis/useSites.js';
 import { runTests, typeOrImportCheck, type RunOpts } from '../../analysis/testRunner.js';
@@ -28,8 +30,22 @@ export interface BehavioralVerify {
   lastResults: () => TestResults | null;
 }
 
+/** Paths that exist and resolve inside the repository. A path we cannot resolve
+ *  is not evidence of a broken patch — it is evidence we were handed the wrong
+ *  path, and gating on it fails a run nothing was ever wrong with. */
+function insideRepo(repoPath: string, files: string[]): string[] {
+  const root = path.resolve(repoPath) + path.sep;
+  return files.filter((f) => {
+    const abs = path.resolve(repoPath, f);
+    return (abs + path.sep).startsWith(root) && fs.existsSync(abs);
+  });
+}
+
 export function makeBehavioralVerify(
   repoPath: string,
+  /** Files that exist and live inside `repoPath`, supplied by the caller from
+   *  what the patcher actually wrote. This used to be a `git status` closure,
+   *  which read whatever repository sat above a non-git working directory. */
   getChangedFiles: () => string[],
   opts: RunOpts = {},
   repro?: Repro | null,
@@ -43,13 +59,25 @@ export function makeBehavioralVerify(
 ): BehavioralVerify {
   let last: TestResults | null = null;
 
-  const verify: VerifyFn = async () => {
-    const changed = getChangedFiles();
+  const verify: VerifyFn = async (written: string[] = []) => {
+    // The patcher's own list first — it is authoritative and needs no git.
+    // `getChangedFiles` only adds anything when the working directory really is
+    // a repository root, so a nested non-git directory contributes nothing.
+    const changed = insideRepo(repoPath, [...new Set([...written, ...getChangedFiles()])]);
 
     // 1. Crash guard — syntax/type/import errors on the changed files (hard gate).
     const guard = typeOrImportCheck(repoPath, changed, opts);
     if (guard.ran && !guard.ok) {
-      last = { ran: false, passed: 0, failed: 0, total: 0, framework: 'guard', guardOk: false, reproUsed: !!repro, discoveredTests: [], output: guard.output };
+      // A file the guard could not open is our path handling failing, not the
+      // model's patch. Feeding it back bought three identical answers and an
+      // escalation on a run where nothing was wrong with the code. It is
+      // recorded as "no gate ran", not as a guard rejection, so `deriveStatus`
+      // reports the task unverified rather than failed.
+      const unreadable = /FileNotFoundError|No such file or directory/.test(guard.output);
+      last = { ran: false, passed: 0, failed: 0, total: 0, framework: unreadable ? 'none' : 'guard', guardOk: !unreadable, reproUsed: !!repro, discoveredTests: [], output: guard.output };
+      if (unreadable) {
+        return { ok: false, actionable: false, output: `the crash guard could not read a changed file:\n${guard.output}` };
+      }
       const invented = /No module named '([^']+)'|cannot import name '([^']+)'/.exec(guard.output);
       const hint = invented
         ? `\n\nYou referenced '${invented[1] ?? invented[2]}', which does NOT exist in this repository at this commit. Do not invent or reorganize imports, and do not migrate to a different library layout. Use only modules and names that already exist here, and make the SMALLEST change that fixes the bug.`
