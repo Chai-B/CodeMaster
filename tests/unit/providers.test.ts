@@ -142,6 +142,75 @@ test('a pin collapses every role to one model; unpinned, mechanical roles go che
   assert.equal(open.modelFor('solve', 'gpt-4-imaginary'), 'claude-sonnet-4-6');
 });
 
+// One model for a whole run means paying the hardest job's price on every job.
+// The tier is the automatic half of routing: a pure function of what the caller
+// already knows about the job, resolved against whatever the vendor lists.
+test('a job is sized by what it carries, and the tier picks the model', async () => {
+  const { ProviderManager, tierFor } = await import('../../src/providers/manager.js');
+
+  // A mechanical transform is settled by its role alone — the answer is already
+  // in the prompt, and no amount of model produces a better summary of it.
+  for (const role of ['review', 'summarize', 'merge'] as const) {
+    assert.equal(tierFor({ role, taskType: 'debug', files: 20 }), 'light');
+  }
+
+  assert.equal(tierFor({ role: 'solve', taskType: 'test', files: 1 }), 'light');
+  assert.equal(tierFor({ role: 'solve', taskType: 'implement', files: 1 }), 'standard');
+  assert.equal(tierFor({ role: 'solve', taskType: 'debug', files: 1 }), 'standard');
+  assert.equal(tierFor({ role: 'solve', taskType: 'debug', files: 4 }), 'heavy');
+  assert.equal(tierFor({ role: 'solve', taskType: 'implement', files: 12 }), 'heavy');
+  assert.equal(tierFor({ role: 'solve', taskType: 'implement', contextTokens: 60_000 }), 'heavy');
+  // A pass already failed at the smaller context budget, or this repository has
+  // needed the bigger one before. Either way it is not an ordinary job.
+  assert.equal(tierFor({ role: 'solve', taskType: 'implement', files: 1, contextTier: 1 }), 'heavy');
+  // An answer a person reads is never checked by a gate, so it holds the floor.
+  assert.equal(tierFor({ role: 'solve', taskType: 'review', files: 1 }), 'light');
+  assert.equal(tierFor({ role: 'solve', taskType: 'review', files: 1, prose: true }), 'standard');
+
+  const cfg = {
+    providers: {
+      default: 'claude-sonnet-4-6',
+      anthropic: {
+        models: [
+          { id: 'claude-opus-4-8', context_size: 200_000, cost_per_1m_input: 15, cost_per_1m_output: 75 },
+          { id: 'claude-sonnet-4-6', context_size: 200_000, cost_per_1m_input: 3, cost_per_1m_output: 15 },
+          { id: 'claude-haiku-4-5-20251001', context_size: 200_000, cost_per_1m_input: 1, cost_per_1m_output: 5 },
+        ],
+      },
+      openai: { models: [] },
+      google: { models: [] },
+      openai_codex: { models: [] },
+    },
+  } as unknown as ConstructorParameters<typeof ProviderManager>[0];
+
+  const m = new ProviderManager(cfg);
+  // 'standard' is the configured default, so setting `providers.default` still
+  // decides what ordinary work runs on; the tier only moves off it either way.
+  assert.equal(m.modelFor('solve', undefined, 'light'), 'claude-haiku-4-5-20251001');
+  assert.equal(m.modelFor('solve', undefined, 'standard'), 'claude-sonnet-4-6');
+  assert.equal(m.modelFor('solve', undefined, 'heavy'), 'claude-opus-4-8');
+
+  // Precedence is unchanged: an explicitly configured role, an explicitly
+  // requested model and a pin each beat the automatic choice, in that order.
+  cfg.providers.roles = { solve: 'claude-haiku-4-5-20251001' };
+  assert.equal(new ProviderManager(cfg).modelFor('solve', undefined, 'heavy'), 'claude-haiku-4-5-20251001');
+  delete cfg.providers.roles;
+  assert.equal(m.modelFor('solve', 'claude-haiku-4-5-20251001', 'heavy'), 'claude-haiku-4-5-20251001');
+  cfg.providers.pinned = true;
+  const pinned = new ProviderManager(cfg);
+  for (const t of ['light', 'standard', 'heavy'] as const) {
+    assert.equal(pinned.modelFor('solve', undefined, t), 'claude-sonnet-4-6');
+  }
+  cfg.providers.pinned = false;
+
+  // A default the user set above everything the vendor lists is still what
+  // 'heavy' means — a step up may never resolve to something weaker.
+  cfg.providers.default = 'claude-opus-4-8';
+  const top = new ProviderManager(cfg);
+  assert.equal(top.modelFor('solve', undefined, 'heavy'), 'claude-opus-4-8');
+  assert.equal(top.modelFor('solve', undefined, 'light'), 'claude-haiku-4-5-20251001');
+});
+
 test('a free-form prompt is not overridden by a provider-native output format', () => {
   const spec = [{ id: 'm', context_size: 100_000, cost_per_1m_input: 1, cost_per_1m_output: 1 }];
   const adapters = [new OpenAIAdapter(spec), new GeminiAdapter(spec), new CodexAdapter(spec)];

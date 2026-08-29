@@ -12,7 +12,7 @@ import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
 import { ConversationLost } from '../types/index.js';
-import type { Account, ProviderAdapter, ModelSpec, LlmRole, LlmEffort, CompiledPrompt, ProviderRequest, ProviderResponse, TokenUsage } from '../types/index.js';
+import type { Account, ProviderAdapter, ModelSpec, LlmRole, LlmEffort, LlmTier, TaskType, CompiledPrompt, ProviderRequest, ProviderResponse, TokenUsage } from '../types/index.js';
 
 /** Anthropic's published ratios, and the closest thing to a cross-vendor norm.
  *  A spec that bills differently overrides them. */
@@ -61,6 +61,63 @@ const DERIVED_EFFORT: Partial<Record<LlmRole, LlmEffort>> = { oracle: 'medium' }
 
 /** Extended-thinking budget per effort level, in tokens. */
 const THINKING_BUDGET: Record<LlmEffort, number> = { low: 1024, medium: 4096, high: 12288 };
+
+/** What a job looks like before it is sent, from numbers the caller already
+ *  has. Everything is optional: a caller that knows nothing gets 'standard',
+ *  which is the model it would have used anyway. */
+export interface JobSignals {
+  role: LlmRole;
+  /** The task's own type, when the call belongs to one. */
+  taskType?: TaskType;
+  /** Files the job has to reason across. */
+  files?: number;
+  /** Tokens of context it will carry, when that is known before compiling. */
+  contextTokens?: number;
+  /** Context-budget tier this attempt runs at. Above zero means either a pass
+   *  already failed at the smaller budget or this repository has needed a
+   *  bigger window for this kind of task before — both say harder than usual. */
+  contextTier?: number;
+  /** The answer is read by a person rather than applied and re-verified. No
+   *  gate catches a weak one, so a prose deliverable never drops below the
+   *  default model. */
+  prose?: boolean;
+}
+
+/**
+ * Which tier one job is worth — the whole of the automatic part of routing.
+ *
+ * A pure function of numbers the caller already holds, so the same job always
+ * routes the same way and a run can be explained after the fact. It only
+ * decides a *class*; which model that class names depends on the configured
+ * default and on what the vendor actually offers (see `tierModel`).
+ *
+ * The mechanical roles are settled by their role alone: a diff review or a
+ * module summary is a transform of text already in the prompt, and no amount of
+ * model buys a better one. Everything else scores on what the job carries.
+ */
+export function tierFor(s: JobSignals): LlmTier {
+  if (DERIVED_CHEAP.has(s.role)) return 'light';
+
+  let score = 0;
+  // Finding a fault and reshaping code across files are the two jobs where a
+  // cheaper model loops instead of converging. Writing a patch or a plan starts
+  // one rung down but still never at the bottom: a patch that will not apply
+  // costs an entire extra iteration, which is more than the cheaper model saved.
+  // Reading code and writing a test are the jobs that survive the bottom rung.
+  if (s.taskType === 'debug' || s.taskType === 'refactor') score += 2;
+  else if (s.taskType === 'implement' || s.taskType === 'plan') score += 1;
+
+  const files = s.files ?? 0;
+  const tokens = s.contextTokens ?? 0;
+  if (files > 8 || tokens > 40_000) score += 2;
+  else if (files > 2 || tokens > 12_000) score += 1;
+
+  if ((s.contextTier ?? 0) > 0) score += 2;
+
+  if (score >= 3) return 'heavy';
+  if (score <= 0) return s.prose ? 'standard' : 'light';
+  return 'standard';
+}
 
 const ENV_REF: Record<string, string> = {
   anthropic: 'env:ANTHROPIC_API_KEY',
@@ -296,10 +353,10 @@ export class ProviderManager {
    * choice — it falls through rather than failing, so a stale `roles` entry
    * degrades to the default instead of breaking the run.
    */
-  modelFor(role?: LlmRole, requested?: string): string {
+  modelFor(role?: LlmRole, requested?: string, tier?: LlmTier): string {
     const def = this.cfg.providers.default;
     if (this.cfg.providers.pinned) return def;
-    for (const want of [requested, role ? this.roleModel(role) : undefined]) {
+    for (const want of [requested, role ? this.roleModel(role, tier) : undefined]) {
       if (want && this.modelSpec(want) && this.providerHasCredentials(this.providerOf(want))) return want;
     }
     if (this.providerHasCredentials(this.providerOf(def))) return def;
@@ -320,11 +377,35 @@ export class ProviderManager {
    *  own vendor; anything that has to reason stays on the default. Derived
    *  rather than shipped, so an old config gains a routing table without being
    *  edited, and moving `providers.default` moves the whole table with it. */
-  private roleModel(role: LlmRole): string {
+  private roleModel(role: LlmRole, tier?: LlmTier): string {
     const configured = this.routing(role).model;
     if (configured) return configured;
+    if (tier) return this.tierModel(tier);
     if (!DERIVED_CHEAP.has(role)) return this.cfg.providers.default;
     return this.cheapestOn(this.providerOf(this.cfg.providers.default));
+  }
+
+  /** The model a tier names, on the default's own vendor.
+   *
+   *  'standard' is the configured default, so setting `providers.default` still
+   *  decides what ordinary work runs on and the automatic part only moves off
+   *  it in the two directions the job asked for: down to the vendor's cheapest
+   *  model for work that is a small edit, up to its strongest for work that is
+   *  not. Staying on one vendor keeps the conversation resumable and keeps a
+   *  step up from crossing into a vendor the user has no key for; failover
+   *  handles the case where the vendor itself is gone. */
+  private tierModel(tier: LlmTier): string {
+    const def = this.cfg.providers.default;
+    if (tier === 'standard') return def;
+    const ranked = this.listModels()
+      .filter((m) => this.providerOf(m.id) === this.providerOf(def))
+      .sort((a, b) => a.cost_per_1m_output - b.cost_per_1m_output);
+    if (!ranked.length) return def;
+    if (tier === 'light') return ranked[0]!.id;
+    // A default the user set above everything the vendor lists is still the
+    // default: 'heavy' may never resolve to something weaker than 'standard'.
+    const top = ranked[ranked.length - 1]!;
+    return top.cost_per_1m_output >= (this.modelSpec(def)?.cost_per_1m_output ?? 0) ? top.id : def;
   }
 
   /** A role's entry, normalised — a bare string is a model id at default effort. */
@@ -345,9 +426,13 @@ export class ProviderManager {
    * suppressed with everything else: a pinned run promises one model answering
    * one way, and thinking depth changes the answer.
    */
-  effortFor(role?: LlmRole, requested?: LlmEffort): number | undefined {
+  effortFor(role?: LlmRole, requested?: LlmEffort, tier?: LlmTier): number | undefined {
     if (this.cfg.providers.pinned) return undefined;
-    const effort = requested ?? (role ? this.routing(role).effort ?? DERIVED_EFFORT[role] : undefined);
+    // A job routed to the strongest model is one the signals called hard, and
+    // depth is the cheaper half of that answer — it buys reasoning without
+    // buying a second call at the top price.
+    const derived = role ? this.routing(role).effort ?? DERIVED_EFFORT[role] : undefined;
+    const effort = requested ?? derived ?? (tier === 'heavy' ? 'medium' : undefined);
     if (!effort) return undefined;
     return THINKING_BUDGET[effort];
   }
@@ -543,6 +628,9 @@ export class ProviderManager {
       model?: string;
       /** Override the role's reasoning depth for this call. */
       effort?: LlmEffort;
+      /** How much model this job is worth, from `tierFor`. Loses to a pin, to
+       *  an explicitly requested model and to a configured role entry. */
+      tier?: LlmTier;
     },
   ): Promise<{ sel: SelectedProvider; response: ProviderResponse }> {
     let lastErr: unknown;
@@ -550,8 +638,8 @@ export class ProviderManager {
     let lastProvider: string | undefined;
     const tried: string[] = [];
 
-    const thinking = this.effortFor(role, opts?.effort);
-    for (const model of this.failoverModelOrder(this.modelFor(role, opts?.model))) {
+    const thinking = this.effortFor(role, opts?.effort, opts?.tier);
+    for (const model of this.failoverModelOrder(this.modelFor(role, opts?.model, opts?.tier))) {
       // A cancelled run must not walk on to the next vendor.
       throwIfCancelled();
       const sel = this.select(model, requiredTokens);

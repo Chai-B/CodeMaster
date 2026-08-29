@@ -9,7 +9,7 @@ import { PromptCache, promptHash } from '../storage/promptCache.js';
 import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
 import { throwIfCancelled } from '../util/cancel.js';
-import { invokeWithBackoff, type ProviderManager } from '../providers/manager.js';
+import { invokeWithBackoff, tierFor, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
 
@@ -102,7 +102,17 @@ export async function executeTask(
   // sonnet answer was stored under a key that said haiku and later served as
   // haiku's. Resolving here makes all three agree.
   const requested = model ?? session.current_provider?.model_id;
-  const primary = manager.select(manager.modelFor('solve', requested), cfg.context.max_context_tokens);
+  // Resolved before the context is compiled, not after, for the same reason:
+  // the tier decides the model, and the model has to be the one the cache key
+  // and the context budget were built from.
+  const jobTier = tierFor({
+    role: 'solve',
+    taskType: task.type,
+    files: task.input_files.length,
+    contextTokens: task.estimated_tokens || undefined,
+    contextTier: tier,
+  });
+  const primary = manager.select(manager.modelFor('solve', requested, jobTier), cfg.context.max_context_tokens);
 
   bus.emit({ type: 'worker.started', worker: 'FileSelector', detail: task.title });
   const compiled = await compileContext(session, task, {
@@ -157,6 +167,7 @@ export async function executeTask(
     'solve',
     {
       model: requested,
+      tier: jobTier,
       conversation,
       onConversation: (_id, providerId) => {
         if (conversation) conversation.provider_id = providerId;

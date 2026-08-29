@@ -6,7 +6,7 @@ import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { namedFiles } from '../context/fileSelector.js';
-import type { ProviderManager } from '../providers/manager.js';
+import { tierFor, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task, ExecutionPlan, TaskType, TaskSpec } from '../types/index.js';
 
@@ -59,7 +59,8 @@ export async function generatePlan(
 
   bus.emit({ type: 'worker.started', worker: 'Planner', detail: 'compiling planning context' });
 
-  const primary = manager.select(manager.modelFor('plan'), cfg.context.max_context_tokens);
+  const planTier = tierFor({ role: 'plan', taskType: 'plan', files: planningTask.input_files.length });
+  const primary = manager.select(manager.modelFor('plan', undefined, planTier), cfg.context.max_context_tokens);
   const compiled = await compileContext(session, planningTask, {
     maxContextTokens: primary.spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
@@ -67,7 +68,9 @@ export async function generatePlan(
   });
 
   // Plan with automatic failover across healthy providers (spec §13, §26.7).
-  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, 'plan');
+  const { sel, response } = await manager.invokeWithFailover(compiled, cfg.context.max_context_tokens, 'plan', {
+    tier: planTier,
+  });
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
 

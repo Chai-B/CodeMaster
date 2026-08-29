@@ -15,7 +15,7 @@ import { namedFiles } from '../context/fileSelector.js';
 import { parseObjective } from './intentParser.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
-import type { ProviderManager } from '../providers/manager.js';
+import { tierFor, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task } from '../types/index.js';
 
@@ -142,7 +142,11 @@ export async function answerQuestion(
   const { session, task } = ephemeral(question, repoPath, commit);
 
   bus.emit({ type: 'worker.started', worker: 'Asker', detail: 'selecting files' });
-  const model = manager.modelFor('solve');
+  // A question is answered once and read by a person, so `prose` keeps it off
+  // the cheapest model however small it looks; one that names several files, or
+  // drags in a large context, still steps up.
+  const askTier = tierFor({ role: 'solve', taskType: task.type, files: task.input_files.length, prose: true });
+  const model = manager.modelFor('solve', undefined, askTier);
   const compiled = await compileContext(session, task, {
     maxContextTokens: manager.select(model, cfg.context.max_context_tokens).spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
@@ -156,6 +160,7 @@ export async function answerQuestion(
   // than one of the cheap mechanical roles.
   const { text, tokens } = await callLlm(manager, cfg, {
     role: 'solve',
+    tier: askTier,
     system: compiled.system,
     user: compiled.body,
     sessionId: session.id,

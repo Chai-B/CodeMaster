@@ -6,7 +6,7 @@ import { PromptCache, promptHash } from '../storage/promptCache.js';
 import { bus } from '../events/bus.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
-import type { CompiledPrompt, LlmRole, LlmEffort, TaskType } from '../types/index.js';
+import type { CompiledPrompt, LlmRole, LlmEffort, LlmTier, TaskType } from '../types/index.js';
 
 /** The role is what this call is for; task_type is the nearest thing the context
  *  schema can say about it. Only plan and oracle map cleanly — the mechanical
@@ -30,6 +30,9 @@ export interface LlmCallOptions {
   /** Override the role's configured model for this call — the oracle's
    *  escalation after a failed admission. */
   model?: string;
+  /** How much model this job is worth, from `tierFor`. Left unset the role's
+   *  own routing decides, which is what every mechanical call wants. */
+  tier?: LlmTier;
   system: string;
   user: string;
   sessionId: string;
@@ -69,7 +72,7 @@ export async function callLlm(
   // conversation are stateful (the oracle's retries send only a correction), so
   // they are deliberately not cached.
   const cacheable = !opts.conversation;
-  const model = manager.modelFor(opts.role, opts.model);
+  const model = manager.modelFor(opts.role, opts.model, opts.tier);
   const key = promptHash(`${opts.system}\n${opts.user}`, model);
   if (cacheable) {
     const hit = PromptCache.getText(key);
@@ -87,6 +90,7 @@ export async function callLlm(
     conversation: opts.conversation,
     onConversation: opts.onConversation,
     model: opts.model,
+    tier: opts.tier,
     effort: opts.effort,
   });
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });

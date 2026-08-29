@@ -81,6 +81,8 @@ const FORM: PromptSpec = {
   ],
 };
 
+const SPECS: PromptSpec[] = [SELECT, CONFIRM, FORM];
+
 const ENTER = '\r';
 const DOWN = '\x1b[B';
 const ESC = '\x1b';
@@ -114,7 +116,7 @@ test('an installed prompter receives the spec and its answer comes back typed', 
 // composer off the bottom of the screen.
 test('promptRows matches the height every prompt actually draws', async () => {
   for (const cols of [40, 60, 80, 120]) {
-    for (const spec of [SELECT, CONFIRM, FORM]) {
+    for (const spec of SPECS) {
       const { drawn } = await drive(spec, [], cols);
       const lines = drawn.split('\n');
       if (lines.at(-1) === '') lines.pop();
@@ -125,7 +127,7 @@ test('promptRows matches the height every prompt actually draws', async () => {
 
 test('no prompt line exceeds the terminal width', async () => {
   for (const cols of [30, 40, 52, 80]) {
-    for (const spec of [SELECT, CONFIRM, FORM]) {
+    for (const spec of SPECS) {
       for (const line of (await drive(spec, [], cols)).drawn.split('\n')) {
         const w = stringWidth(line.replace(/\s+$/, ''));
         assert.ok(w <= cols, `${spec.kind}: ${w} > ${cols}: ${JSON.stringify(line)}`);

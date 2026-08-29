@@ -992,6 +992,14 @@ export class CommandRouter {
         const m = this.sm.manager.modelFor(role);
         this.out(m === active ? 'info' : 'dim', `  ${role.padEnd(10)} ${m}`);
       }
+      // The automatic half of routing, made visible for the same reason: a run
+      // that quietly answered on three different models is unexplainable
+      // afterwards unless the policy is somewhere the user can read it.
+      this.out('heading', 'By job size');
+      for (const t of ['light', 'standard', 'heavy'] as const) {
+        this.out('dim', `  ${t.padEnd(10)} ${this.sm.manager.modelFor('solve', undefined, t)}`);
+      }
+      this.out('dim', '  (chosen per job from its type, files and context; a pin or a role entry wins)');
       if (this.sm.cfg.providers.pinned) this.out('dim', '  (pinned — every call uses this model)');
       this.out('dim', 'Switch with /model <model_id>. Move one role with /config set providers.roles.<role> <model_id>.');
       // The list is the answer when nobody is watching; when someone is, the

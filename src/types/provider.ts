@@ -138,6 +138,13 @@ export type LlmRole = (typeof LLM_ROLES)[number];
  *  model. Providers that cannot vary effort ignore it. */
 export type LlmEffort = 'low' | 'medium' | 'high';
 
+/** How much model one job is worth, resolved per call from what the job
+ *  actually looks like rather than fixed for the whole run. 'standard' is
+ *  whatever `providers.default` names; 'light' and 'heavy' are the cheapest and
+ *  strongest models on that same vendor. Orthogonal to effort: this picks the
+ *  weights, effort picks how long they think. */
+export type LlmTier = 'light' | 'standard' | 'heavy';
+
 /** A role's routing entry. A bare string is the model id at default effort —
  *  the common case, and what configs written before effort existed contain. */
 export type RoleRouting = string | { model?: string; effort?: LlmEffort };
