@@ -9,7 +9,7 @@ import { Header } from './components/Header.js';
 import { MessageList } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
 import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView } from './util/parser.js';
-import { BLUE_HI, BLUE_DIM, MUTED, BRAILLE } from './themes/blue.js';
+import { BLUE, BLUE_HI, BLUE_DIM, MUTED, BRAILLE, VERBS } from './themes/blue.js';
 
 import { bus } from './events/bus.js';
 import { cancelActive } from './util/cancel.js';
@@ -23,6 +23,7 @@ const require_ = createRequire(import.meta.url);
 const VERSION = (require_('../package.json') as { version: string }).version;
 const AC_COMMANDS: Cmd[] = COMMANDS.map((c) => ({ cmd: c.cmd, desc: c.desc }));
 
+process.env.CODEMASTER_TUI = '1';
 const daemon = new Daemon();
 const sm = daemon.sm;
 const router = daemon.router;
@@ -99,6 +100,7 @@ function computeStatus(): SessionStatusView | null {
     taskTotal: tasks.length,
     tokens: tok.total,
     tokenBudget: sm.cfg.token_budget.session_default,
+    cost: tok.cost,
     provider: s.current_provider?.model_id ?? sm.cfg.providers.default,
     lastCheckpoint: s.latest_checkpoint?.slice(0, 12),
   };
@@ -106,22 +108,33 @@ function computeStatus(): SessionStatusView | null {
 
 // ── Mini components ───────────────────────────────────────────────────────────
 /** One line that updates in place, replacing the repeated "still working — 15s
- *  elapsed" lines that used to accumulate one per poll. */
-function Spinner({ label, since }: { label: string; since: number }) {
+ *  elapsed" lines that used to accumulate one per poll.
+ *
+ *  The word changes as well as the frame. A single frozen label for three
+ *  minutes reads as a hang; a spinner that is visibly thinking about something
+ *  reads as work. Tokens tick up beside it, so the cost of waiting is legible
+ *  while you are waiting rather than only afterwards. */
+function Spinner({ label, since, tokens }: { label: string; since: number; tokens: number }) {
   const [f, setF] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setF((i) => (i + 1) % BRAILLE.length), 80);
+    const t = setInterval(() => setF((i) => i + 1), 90);
     return () => clearInterval(t);
   }, []);
   const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+  const verb = VERBS[Math.floor(f / 44) % VERBS.length];
+  const tok = tokens > 0 ? ` · ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : '';
   return (
-    <Box marginLeft={2} marginTop={1}>
-      <Text color={BLUE_HI} bold>{BRAILLE[f]} {label}</Text>
-      <Text color={MUTED}>  {secs}s · esc to stop</Text>
+    <Box marginTop={1}>
+      <Text color={BLUE_HI} bold>{' '}{BRAILLE[f % BRAILLE.length]}{'  '}</Text>
+      <Text color={BLUE_HI}>{label === 'working' ? verb : label}…</Text>
+      <Text color={MUTED}>{`  ${secs}s${tok} · esc to interrupt`}</Text>
     </Box>
   );
 }
 
+/** A framed prompt, the way every terminal agent draws one. The old input was
+ *  a rule above and a rule below a bare line, which read as two separators with
+ *  something trapped between them rather than as a box you type into. */
 function InputArea({
   value, onChange, onSubmit, active, placeholder,
 }: {
@@ -132,27 +145,57 @@ function InputArea({
   placeholder?: string;
 }) {
   return (
-    <Box borderStyle="single" borderTop borderBottom borderLeft={false} borderRight={false} borderColor={BLUE_DIM} paddingX={1}>
-      <Text bold color={active ? BLUE_HI : MUTED}>❯ </Text>
+    <Box borderStyle="round" borderColor={active ? BLUE : BLUE_DIM} paddingX={1}>
+      <Text bold color={active ? BLUE_HI : BLUE_DIM}>{'❯ '}</Text>
       {active ? (
         <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus showCursor placeholder={placeholder} />
       ) : (
-        <Text color={MUTED}>{placeholder ?? ''}</Text>
+        <Text color={BLUE_DIM}>{placeholder ?? ''}</Text>
       )}
     </Box>
   );
 }
 
-function StatusBar({ running, status }: { running: boolean; status: SessionStatusView | null }) {
-  const left = running
-    ? '►► working  ·  please wait'
-    : status
-      ? `${status.status}  ·  task ${status.taskN}/${status.taskTotal}  ·  ${status.provider}`
-      : 'ready  ·  /new <objective>';
+const SHORTCUTS: Array<[string, string]> = [
+  ['enter', 'send'],
+  ['tab', 'complete'],
+  ['↑ ↓', 'history'],
+  ['esc', 'interrupt'],
+  ['ctrl+r', 'expand reasoning'],
+  ['ctrl+l', 'clear'],
+  ['ctrl+q', 'quit'],
+];
+
+function Shortcuts() {
+  return (
+    <Box flexDirection="column" paddingX={2} marginTop={1}>
+      {SHORTCUTS.map(([k, d]) => (
+        <Box key={k}>
+          <Text color={BLUE_HI}>{k.padEnd(8)}</Text>
+          <Text color={MUTED}>{d}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+/** One dim line under the prompt. It used to repeat the provider and task count
+ *  that the header already shows, and spend the rest of its width listing two
+ *  keybindings; the hint now changes with what you can actually do next. */
+function StatusBar({ running, status, expanded, help }: {
+  running: boolean; status: SessionStatusView | null; expanded: boolean; help: boolean;
+}) {
+  const hint = help
+    ? 'esc to close'
+    : running
+      ? 'esc to interrupt'
+      : status
+        ? `${status.status} · ? for shortcuts`
+        : '? for shortcuts · /help for commands';
   return (
     <Box justifyContent="space-between" paddingX={1}>
-      <Text color={MUTED} dimColor>{left}  ·  Ctrl+Q quit  ·  Ctrl+L clear</Text>
-      <Text color={MUTED} dimColor>codemaster v{VERSION}</Text>
+      <Text color={BLUE_DIM}>{hint}</Text>
+      <Text color={BLUE_DIM}>{expanded ? 'reasoning shown · ' : ''}v{VERSION}</Text>
     </Box>
   );
 }
@@ -175,6 +218,8 @@ function App() {
   // <Static> lines are already in the terminal's scrollback, so emptying the
   // log state alone leaves them on screen — /clear would look broken. Clear the
   // screen and the scrollback too, which is what the command means.
+  const [expanded, setExpanded] = useState(false);
+  const [help, setHelp] = useState(false);
   const { stdout } = useStdout();
   useEffect(() => {
     if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
@@ -226,6 +271,14 @@ function App() {
   useInput((c, key) => {
     if (key.ctrl && c === 'q') exit();
     if (key.ctrl && c === 'l') dispatch({ type: 'clear' });
+    // Reasoning is folded away by default and this unfolds it, everywhere at
+    // once — a settled line cannot expand on its own, so the whole transcript
+    // repaints.
+    if (key.ctrl && c === 'r') { setExpanded((v) => !v); return; }
+    // `?` on an empty prompt is a question about the prompt itself; typed into
+    // a sentence it is just a question mark.
+    if (c === '?' && !input && !running) { setHelp((v) => !v); return; }
+    if (key.escape && help) { setHelp(false); return; }
     // Ctrl-C stops the running task and keeps the session; with nothing
     // running there is nothing to stop, so it leaves.
     if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
@@ -315,11 +368,12 @@ function App() {
   return (
     <Box flexDirection="column" width="100%">
       <Header shortCwd={shortCwd} version={VERSION} session={status} />
-      <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} />
-      {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} />}
+      <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} expanded={expanded} />
+      {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
+      {help && <Shortcuts />}
       {!running && acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
       <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} active={!running} placeholder="/new <objective> or /help" />
-      <StatusBar running={running} status={status} />
+      <StatusBar running={running} status={status} expanded={expanded} help={help} />
     </Box>
   );
 }

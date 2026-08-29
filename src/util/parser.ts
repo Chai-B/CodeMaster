@@ -9,6 +9,8 @@ export type LogType =
   | 'error'
   | 'warn'
   | 'dim'
+  | 'result'
+  | 'md'
   | 'heading'
   | 'sep'
   | 'user'
@@ -23,6 +25,8 @@ export interface LogEntry {
   type: LogType;
   text: string;
   phase?: Phase;
+  /** Long-form body kept out of the way until the reader asks for it. */
+  detail?: string;
 }
 
 /** The phase a line belongs to, from the text the router and workers already
@@ -49,6 +53,7 @@ export interface SessionStatusView {
   taskTotal: number;
   tokens: number;
   tokenBudget: number;
+  cost: number;
   provider: string;
   lastCheckpoint?: string;
 }
@@ -59,26 +64,31 @@ export function eventToLog(ev: CodeMasterEvent): Omit<LogEntry, 'id'> | null {
     case 'log': {
       const map: Record<string, LogType> = {
         info: 'plain', warn: 'warn', error: 'error', success: 'success',
-        debug: 'dim', dim: 'dim', heading: 'heading', sep: 'sep',
+        debug: 'dim', dim: 'dim', heading: 'heading', sep: 'sep', md: 'md',
       };
       return { type: map[ev.level] ?? 'plain', text: ev.message };
     }
+    // The glyph in the gutter already points; a second arrow in the text was
+    // one arrow too many.
     case 'worker.started':
-      return { type: 'tool', text: `→ Worker: ${ev.worker}${ev.detail ? ` — ${ev.detail}` : ''}` };
+      return { type: 'tool', text: `${ev.worker}${ev.detail ? ` — ${ev.detail}` : ''}` };
     case 'worker.finished':
-      return { type: 'dim', text: `← Worker: ${ev.worker}${ev.detail ? ` — ${ev.detail}` : ''}` };
+      return { type: 'result', text: ev.detail ?? ev.worker };
     case 'task.started':
-      return { type: 'sep', text: '' };
+      return { type: 'sep', text: ev.title };
     case 'task.completed':
       return { type: 'success', text: `Task completed (${(ev.ms / 1000).toFixed(1)}s, ${ev.tokens.toLocaleString()} tokens)` };
     case 'task.failed':
       return { type: 'error', text: `Task failed: ${ev.reason}` };
+    // The summary is the line; the detail hangs behind ctrl+r. This used to
+    // read "decision recorded" and discard the decision.
     case 'reasoning.new':
-      return { type: 'reasoning', text: `${ev.reasoning_type} recorded` };
+      return { type: 'reasoning', text: `${ev.reasoning_type}  ${ev.summary}`, detail: ev.detail };
+    // Both of these restated what the worker line beside them already said,
+    // and the header's budget bar now counts tokens live.
     case 'provider.invoked':
-      return { type: 'tool', text: `Provider: ${ev.provider_id} invoked` };
     case 'provider.response':
-      return { type: 'dim', text: `Provider: response (${ev.tokens.toLocaleString()} tokens)` };
+      return null;
     case 'provider.switched':
       return { type: 'warn', text: `Provider switched: ${ev.from} → ${ev.to}` };
     case 'provider.error':

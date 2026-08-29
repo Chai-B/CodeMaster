@@ -44,7 +44,7 @@ import type { Config } from '../config.js';
 
 registerCoreWorkers();
 
-type Out = (level: 'info' | 'warn' | 'error' | 'success' | 'heading' | 'sep' | 'dim', msg: string) => void;
+type Out = (level: 'info' | 'warn' | 'error' | 'success' | 'heading' | 'sep' | 'dim' | 'md', msg: string) => void;
 
 export class CommandRouter {
   verbose = false;
@@ -165,7 +165,7 @@ export class CommandRouter {
     const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
     const { text: answer, tokens } = await answerQuestion(text, repo, this.sm.manager, this.sm.cfg);
     this.out('heading', 'Answer');
-    for (const line of answer.split('\n')) this.out('info', line);
+    for (const line of answer.split('\n')) this.out('md', line);
     this.out('dim', `${fmtTokens(tokens)} tokens · nothing was written. /new <objective> to act on this.`);
   }
 

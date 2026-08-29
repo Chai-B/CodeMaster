@@ -42,7 +42,7 @@ export async function processIR(
       Reasoning.insert(r);
       task.reasoning_refs.push(r.id);
       if (r.type === 'decision') session.decisions.push(r.id);
-      bus.emit({ type: 'reasoning.new', id: r.id, reasoning_type: r.type });
+      bus.emit({ type: 'reasoning.new', id: r.id, reasoning_type: r.type, summary: r.summary, detail: r.detail });
       stored += 1;
     }
   }

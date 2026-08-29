@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Text, useStdout } from 'ink';
-import { BLUE, BLUE_HI, BLUE_DIM, MUTED } from '../themes/blue';
+import { BLUE, BLUE_HI, BLUE_DIM, MUTED, GREEN, AMBER, RED, LOGO } from '../themes/blue';
 import type { SessionStatusView } from '../util/parser';
 
 interface HeaderProps {
@@ -15,12 +15,30 @@ function fmt(n: number): string {
   return String(n);
 }
 
+/** Eight cells of budget, filled proportionally, coloured by how much is left.
+ *  A bare `152.0k/500.0k` makes you do the division yourself; the bar is the
+ *  one thing in the header you can read without reading it. */
+function Budget({ used, total }: { used: number; total: number }) {
+  const cells = 8;
+  const frac = total > 0 ? Math.min(1, used / total) : 0;
+  const on = Math.round(frac * cells);
+  const color = frac > 0.9 ? RED : frac > 0.7 ? AMBER : GREEN;
+  return (
+    <Text>
+      <Text color={color}>{'━'.repeat(on)}</Text>
+      <Text color={BLUE_DIM}>{'━'.repeat(cells - on)}</Text>
+      <Text color={MUTED}> {fmt(used)}</Text>
+    </Text>
+  );
+}
+
 /**
- * One line during a session, a short orientation block when idle.
+ * One line during a session, the wordmark and the C at rest.
  *
- * The old header was a seven-row bordered box holding an ASCII logo, a divider
- * column and three label rows that repeated what the status bar already said —
- * six permanently occupied rows on every terminal, however small.
+ * The banner this replaced was a seven-row bordered box whose right half
+ * repeated what the status bar already said. The logo stays — it is the only
+ * part anyone was attached to — and everything beside it is now information
+ * that changes.
  */
 export function Header({ shortCwd, version, session }: HeaderProps) {
   const { stdout } = useStdout();
@@ -31,27 +49,30 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
     // shattered this line into two on a narrow terminal. Fields are dropped
     // least-useful-first instead: the budget is what you watch during a run,
     // the path is what you already know.
-    const fields: Array<[string, string]> = [
-      ['CodeMaster', BLUE_HI],
+    const cost = session.cost > 0 ? `$${session.cost.toFixed(2)}` : '';
+    const fields: Array<[string, string, React.ReactNode?]> = [
       [shortCwd, MUTED],
       [session.provider, BLUE],
-      [`task ${session.taskN}/${session.taskTotal}`, MUTED],
-      [`${fmt(session.tokens)}/${fmt(session.tokenBudget)}`, MUTED],
+      [`${session.taskN}/${session.taskTotal}`, MUTED],
+      ['', MUTED, <Budget key="b" used={session.tokens} total={session.tokenBudget} />],
+      [cost, MUTED],
     ];
-    const drop = [1, 0, 2, 3]; // cwd, name, provider, tasks
-    const width = (f: typeof fields) => f.reduce((n, [t]) => n + t.length, 0) + (f.length - 1) * 3;
+    const live = fields.filter(([t, , node]) => t || node);
+    const drop = [0, 4, 1, 2]; // cwd, cost, provider, task count
+    const len = (f: typeof live) => f.reduce((n, [t, , node]) => n + (node ? 9 + fmt(session.tokens).length : t.length), 0) + (f.length - 1) * 3;
     const gone = new Set<number>();
     for (const i of drop) {
-      if (width(fields.filter((_, j) => !gone.has(j))) <= cols - 2) break;
+      if (len(live.filter((_, j) => !gone.has(j))) <= cols - 4) break;
       gone.add(i);
     }
-    const shown = fields.filter((_, j) => !gone.has(j));
+    const shown = live.filter((_, j) => !gone.has(j));
     return (
       <Box paddingX={1}>
         <Text wrap="truncate-end">
-          {shown.map(([text, color], i) => (
-            <Text key={text} color={color} bold={text === 'CodeMaster'}>
-              {i > 0 ? ' · ' : ''}{text}
+          {shown.map(([text, color, node], i) => (
+            <Text key={text || 'budget'}>
+              {i > 0 ? <Text color={BLUE_DIM}> · </Text> : ''}
+              {node ?? <Text color={color}>{text}</Text>}
             </Text>
           ))}
         </Text>
@@ -59,15 +80,23 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
     );
   }
 
+  // Narrow terminals get the wordmark without the C rather than a wrapped C.
+  const art = cols >= 70;
   return (
-    <Box flexDirection="column" paddingX={1} marginTop={1}>
-      <Box gap={1}>
-        <Text bold color={BLUE_HI}>CodeMaster</Text>
-        <Text color={MUTED}>{version}</Text>
-        <Text color={BLUE_DIM}>·</Text>
+    <Box alignSelf="flex-start" borderStyle="round" borderColor={BLUE_DIM} paddingX={2} paddingY={art ? 0 : 1} marginX={1} marginTop={1} marginBottom={1}>
+      {art && (
+        <Box flexDirection="column" flexShrink={0} marginRight={2}>
+          {LOGO.map((l, i) => <Text key={i} color={BLUE_HI} bold>{l}</Text>)}
+        </Box>
+      )}
+      <Box flexDirection="column">
+        <Box>
+          <Text bold color={BLUE_HI}>CodeMaster</Text>
+          <Text color={MUTED}>  v{version}</Text>
+        </Box>
         <Text color={MUTED}>{shortCwd}</Text>
+        <Text color={BLUE_DIM}>Describe what you want done, or /help for commands.</Text>
       </Box>
-      <Text color={MUTED}>Type what you want done. /help for commands.</Text>
     </Box>
   );
 }

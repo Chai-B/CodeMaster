@@ -33,7 +33,7 @@ export type WikiEvent =
   | { type: 'wiki.conflict'; key: string };
 
 export type ReasoningEvent =
-  | { type: 'reasoning.new'; id: string; reasoning_type: ReasoningType }
+  | { type: 'reasoning.new'; id: string; reasoning_type: ReasoningType; summary: string; detail?: string }
   | { type: 'reasoning.merged'; from: string; into: string };
 
 export type ProviderEvent =
@@ -56,7 +56,7 @@ export type WorkerEvent =
   | { type: 'worker.started'; worker: string; detail?: string }
   | { type: 'worker.finished'; worker: string; detail?: string };
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'success' | 'heading' | 'sep' | 'dim';
+export type LogLevel = 'info' | 'warn' | 'error' | 'debug' | 'success' | 'heading' | 'sep' | 'dim' | 'md';
 
 export type LogEvent = {
   type: 'log';

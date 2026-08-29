@@ -40,8 +40,10 @@ export function runCli(
 
     // A vendor call routinely runs for minutes with nothing on stdout. Saying
     // how long it has been waiting is the difference between "working" and
-    // "hung" for whoever is watching.
+    // "hung" for whoever is watching — but the TUI spinner already counts the
+    // seconds in place, so emitting it there only stacked up a line per poll.
     const heartbeat = setInterval(() => {
+      if (process.env.CODEMASTER_TUI) return;
       bus.emit({ type: 'log', level: 'info', message: `${cmd} still working — ${Math.round((Date.now() - started) / 1000)}s elapsed.` });
     }, HEARTBEAT_MS);
 
