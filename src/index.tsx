@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Box, render, Text, useApp, useInput, useStdin, useStdout } from 'ink';
+import { Box, render, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
@@ -222,10 +222,12 @@ function InputArea({
 const SHORTCUTS: Array<[string, string]> = [
   ['enter', 'send'],
   ['tab', 'complete'],
-  ['↑ ↓', 'history'],
+  ['↑ ↓', 'scroll transcript · history when there is none'],
+  ['ctrl+p/n', 'history'],
   ['esc', 'interrupt'],
   ['wheel', 'scroll transcript'],
-  ['shift+↑↓', 'scroll a line'],
+  ['drag', 'select and copy, with the terminal'],
+  ['shift+↑↓', 'scroll three lines'],
   ['pgup pgdn', 'scroll a page'],
   ['ctrl+r', 'expand reasoning'],
   ['ctrl+l', 'clear'],
@@ -322,36 +324,26 @@ function App() {
   // every line CodeMaster prints joins the shell's scroll region and drags the
   // prompt along with it.
   //
-  // That page having no scrollback is also why the wheel has to be read here:
-  // the terminal has nothing of its own to scroll, so a wheel event would
-  // simply do nothing. SGR mouse reporting is the encoding that still works
-  // past column 223. It is left on only for as long as the frame is, and torn
-  // down on process exit as well as unmount — a terminal left in reporting mode
-  // spits escape sequences at whatever runs next.
-  const { stdin } = useStdin();
-  const maxScrollRef = useRef(0);
+  // That page having no scrollback is also why the wheel needs handling at all:
+  // the terminal has nothing of its own to scroll. The app used to claim the
+  // mouse for that (SGR reporting, `?1000h` + `?1006h`), and the cost was the
+  // thing a terminal is for — with the mouse claimed, dragging selects nothing
+  // and there is no way to copy a line of output. Alternate scroll (`?1007h`)
+  // buys the wheel back without taking the mouse: the terminal itself turns a
+  // wheel notch into cursor keys while the alternate screen is up, so selection
+  // and copy keep working and the wheel arrives as ↑/↓ below.
   useEffect(() => {
     if (!stdout?.isTTY) return;
-    stdout.write('\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H');
-    const onData = (d: Buffer | string) => {
-      let delta = 0;
-      for (const [, button] of String(d).matchAll(MOUSE)) {
-        if (button === '64') delta += WHEEL_ROWS;
-        else if (button === '65') delta -= WHEEL_ROWS;
-      }
-      if (delta !== 0) setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
-    };
-    stdin?.on('data', onData);
+    stdout.write('\x1b[?1049h\x1b[?1007h\x1b[H');
     const leave = () => {
-      try { stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); } catch { /* stream already gone */ }
+      try { stdout.write('\x1b[?1007l\x1b[?1049l'); } catch { /* stream already gone */ }
     };
     process.once('exit', leave);
     return () => {
-      stdin?.off('data', onData);
       process.off('exit', leave);
       leave();
     };
-  }, [stdin, stdout]);
+  }, [stdout]);
 
   useEffect(() => {
     if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
@@ -408,6 +400,20 @@ function App() {
   }, [log]);
 
   useInput((c, key) => {
+    const prevHistory = () => {
+      const hist = inputHistoryRef.current;
+      if (!hist.length) return;
+      const next = Math.min(historyIdxRef.current + 1, hist.length - 1);
+      historyIdxRef.current = next;
+      setInput(hist[hist.length - 1 - next] ?? '');
+    };
+    const nextHistory = () => {
+      if (historyIdxRef.current <= 0) { historyIdxRef.current = -1; setInput(''); return; }
+      historyIdxRef.current -= 1;
+      const hist = inputHistoryRef.current;
+      setInput(hist[hist.length - 1 - historyIdxRef.current] ?? '');
+    };
+
     if (key.ctrl && c === 'q') exit();
     if (key.ctrl && c === 'l') dispatch({ type: 'clear' });
     // Reasoning is folded away by default and this unfolds it, everywhere at
@@ -419,9 +425,15 @@ function App() {
     if (c === '?' && !input && !running) { setHelp((v) => !v); return; }
     if (key.escape && help) { setHelp(false); return; }
 
-    // The transcript is a viewport now, so it needs its own scroll. Plain
-    // arrows still belong to history and the completion list; shift and the
-    // page keys move the window behind them.
+    // History has keys of its own because the arrows now belong to the wheel:
+    // alternate scroll delivers a notch as ↑/↓, so those cannot also be recall
+    // once anything has scrolled off the top.
+    if (key.ctrl && c === 'p') { prevHistory(); return; }
+    if (key.ctrl && c === 'n') { nextHistory(); return; }
+
+    // The transcript is a viewport, so it needs its own scroll. Shift and the
+    // page keys move the window; bare arrows do too, below, when there is
+    // anything to move.
     const page = Math.max(1, viewportRows - 1);
     if (key.pageUp) { setScroll((v) => Math.min(maxScroll, v + page)); return; }
     if (key.pageDown) { setScroll((v) => Math.max(0, v - page)); return; }
@@ -444,20 +456,15 @@ function App() {
         if (sel) { setInput(sel.cmd + ' '); setAcOptions([]); }
       }
       if (key.escape) setAcOptions([]);
+    } else if (maxScroll > 0) {
+      // One row per press: a wheel notch is several arrows already, and this is
+      // also the keyboard's line-at-a-time scroll.
+      if (key.upArrow) { setScroll((v) => Math.min(maxScroll, v + 1)); return; }
+      if (key.downArrow) { setScroll((v) => Math.max(0, v - 1)); return; }
     } else {
-      if (key.upArrow) {
-        const hist = inputHistoryRef.current;
-        if (!hist.length) return;
-        const next = Math.min(historyIdxRef.current + 1, hist.length - 1);
-        historyIdxRef.current = next;
-        setInput(hist[hist.length - 1 - next] ?? '');
-      }
-      if (key.downArrow) {
-        if (historyIdxRef.current <= 0) { historyIdxRef.current = -1; setInput(''); return; }
-        historyIdxRef.current -= 1;
-        const hist = inputHistoryRef.current;
-        setInput(hist[hist.length - 1 - historyIdxRef.current] ?? '');
-      }
+      // Nothing has scrolled off yet, so the arrows are free to be recall.
+      if (key.upArrow) prevHistory();
+      if (key.downArrow) nextHistory();
     }
   });
 
@@ -552,7 +559,6 @@ function App() {
   // Content arriving while scrolled back must not push the view past its own
   // top, and a window resize can shrink the range under a scroll already set.
   const clamped = Math.min(scroll, maxScroll);
-  maxScrollRef.current = maxScroll;
 
   // Scroll counts rows up from the bottom, so a line arriving while the reader
   // is scrolled back would slide the passage they are reading off the top.
