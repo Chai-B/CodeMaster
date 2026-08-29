@@ -1,5 +1,10 @@
 // Output format specification injected into every prompt (spec §10.5).
 
+/** Separates a diff-format response from its reasoning block. Deliberately not
+ *  a bare `---`: that is a legal context line inside a diff of any file with
+ *  YAML front matter, and splitting on it would truncate the patch. */
+export const REASONING_MARKER = '<<<REASONING>>>';
+
 export const OUTPUT_FORMAT = `## Output Format
 
 Respond using the following structure only. No prose outside of these tags.
@@ -98,9 +103,15 @@ For every file you create OR modify, put its COMPLETE final content in files_cre
 }`;
 
 // Native diff output spec (spec §15.1) — Codex returns raw unified diffs.
+//
+// The diffs alone gave this provider no way to contribute to the reasoning
+// layer: every decision it made died with the response, so a session that
+// switched to Codex stopped accumulating the thing the tool exists to keep.
+// The trailing block is optional to parse and cheap to emit — a few hundred
+// tokens buys the same persistence the XML and JSON formats already have.
 export const DIFF_OUTPUT_FORMAT = `## Output Format (OVERRIDE)
 
-Respond with ONLY unified diff patches (git diff format), no prose. For each changed file:
+Respond with unified diff patches (git diff format), no prose. For each changed file:
 
 diff --git a/relative/path b/relative/path
 --- a/relative/path
@@ -108,7 +119,21 @@ diff --git a/relative/path b/relative/path
 @@ ... @@
  context
 -removed
-+added`;
++added
+
+After the last diff, and only there, emit this marker on its own line followed by
+a single JSON object recording what you decided. It is persisted and replayed to
+future sessions, so record the reasoning a later reader could not re-derive from
+the diff itself. Omit any key you have nothing for.
+
+${REASONING_MARKER}
+{
+  "summary": "one sentence",
+  "decisions": [{ "question": "", "answer": "", "detail": "", "confidence": 0.9, "reversibility": "easy|medium|hard|irreversible" }],
+  "risks": [{ "description": "", "likelihood": "low|medium|high", "impact": "low|medium|high|critical", "mitigation": "" }],
+  "observations": [{ "summary": "", "detail": "", "confidence": 0.8 }],
+  "assumptions": [{ "summary": "", "confidence": 0.6 }]
+}`;
 
 export const SYSTEM_PROMPT = `You are the execution engine of CodeMaster, a persistent reasoning layer for software engineering.
 

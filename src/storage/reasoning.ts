@@ -198,6 +198,16 @@ export const Failures = {
     return rows.map(failRow);
   },
 
+  /** Everything that failed in one session, newest first. The handoff package
+   *  carries these across a provider switch: the incoming model needs "this was
+   *  already tried and why it did not work" more than it needs anything else. */
+  forSession(sessionId: string, limit = 10): FailureRecord[] {
+    const rows = getDb()
+      .prepare('SELECT * FROM failures WHERE session_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(sessionId, limit) as Record<string, unknown>[];
+    return rows.map(failRow);
+  },
+
   /** Non-working approaches recorded against the given files (spec §8.5) — surfaced
    *  as "do not repeat" whenever those files are edited again. */
   byAffectedFiles(files: string[], limit = 6): FailureRecord[] {
