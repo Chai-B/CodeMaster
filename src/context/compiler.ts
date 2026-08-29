@@ -29,6 +29,10 @@ export interface CompileOptions {
    *  store or apply, so the contract that makes a result machine-readable only
    *  makes the answer unreadable. */
   prose?: boolean;
+  /** What has happened in the session this prompt belongs to. The ask path
+   *  compiles against an ephemeral session, so without this the model sees the
+   *  repository but not the work in progress. */
+  sessionState?: string;
 }
 
 export async function compileContext(
@@ -95,6 +99,10 @@ export async function compileContext(
     });
     add(C.EXECUTION_PLAN, 'Execution Plan', planYaml);
   }
+
+  // SESSION SO FAR — supplied by callers that compile against an ephemeral
+  // session (the ask path) and would otherwise carry no record of the run.
+  add(C.SESSION_STATE, 'Session So Far', opts.sessionState ?? '');
 
   // PROVIDER HANDOFF (spec §13.6) — injected once for the task after a switch.
   const handoff = (session.metadata as Record<string, unknown> | undefined)?.pending_handoff;
@@ -288,7 +296,7 @@ export async function compileContext(
 // prefix; the parts that change every iteration are pushed to the tail.
 const ORDER: ContextComponent[] = [
   C.CONVENTIONS, C.ARCHITECTURE, C.REPOSITORY_MAP, C.WIKI_SECTIONS, C.CONSTRAINTS,
-  C.OBJECTIVE, C.EXECUTION_PLAN, C.PRIOR_REASONING, C.KNOWN_FAILURES,
+  C.OBJECTIVE, C.EXECUTION_PLAN, C.SESSION_STATE, C.PRIOR_REASONING, C.KNOWN_FAILURES,
   C.PROVIDER_HANDOFF, C.OPEN_QUESTIONS, C.RELEVANT_FILES, C.CURRENT_TASK,
   C.RECENT_CHANGES, C.INSTRUCTIONS,
 ];
@@ -328,7 +336,7 @@ function truncateToTokens(text: string, budgetTokens: number): string {
 const REDUCE_ORDER: ContextComponent[] = [
   C.OPEN_QUESTIONS, C.REPOSITORY_MAP, C.RECENT_CHANGES, C.RELEVANT_FILES,
   C.PROVIDER_HANDOFF, C.EXECUTION_PLAN, C.CONSTRAINTS, C.WIKI_SECTIONS,
-  C.ARCHITECTURE, C.CONVENTIONS, C.PRIOR_REASONING, C.KNOWN_FAILURES,
+  C.ARCHITECTURE, C.CONVENTIONS, C.PRIOR_REASONING, C.SESSION_STATE, C.KNOWN_FAILURES,
 ];
 // Never dropped outright — the task cannot be done without these. RELEVANT_FILES
 // stays here because a patch needs something to patch, but it is now first in

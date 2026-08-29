@@ -162,8 +162,9 @@ export class CommandRouter {
   private async ask(text: string): Promise<void> {
     if (!text) return this.out('warn', 'Usage: /ask <question about this repository>');
     if (!this.sm.manager.hasAnyProvider()) return this.out('warn', 'No provider credentials. Run /doctor.');
-    const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
-    const { text: answer, tokens } = await answerQuestion(text, repo, this.sm.manager, this.sm.cfg);
+    const live = this.sm.getCurrent();
+    const repo = live?.repository.path ?? activeRepoPath();
+    const { text: answer, tokens } = await answerQuestion(text, repo, this.sm.manager, this.sm.cfg, live);
     this.out('heading', 'Answer');
     for (const line of answer.split('\n')) this.out('md', line);
     this.out('dim', `${fmtTokens(tokens)} tokens · nothing was written. /new <objective> to act on this.`);

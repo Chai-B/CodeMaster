@@ -7,6 +7,8 @@
 // one call. Nothing is written: no session, no task, no checkpoint, no wiki.
 
 import { compileContext } from '../context/compiler.js';
+import { Tasks } from '../storage/sessions.js';
+import { Reasoning } from '../storage/reasoning.js';
 import { callLlm } from './llm.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { namedFiles } from '../context/fileSelector.js';
@@ -95,11 +97,35 @@ function ephemeral(question: string, repoPath: string, commit: string): { sessio
   return { session, task };
 }
 
+/** What has happened in the session the question was asked inside. Ask compiles
+ *  against an ephemeral session, so the model saw the repository but never the
+ *  run: "summarise this session" was unanswerable from inside the tool that was
+ *  doing the work, and it said so. Titles, counts and decisions only — the diff
+ *  and the file bodies are components of their own. */
+export function sessionState(live: Session): string {
+  const tasks = Tasks.forSession(live.id).slice(0, 20);
+  const decisions = Reasoning.forSession(live.id)
+    .filter((r) => r.type === 'decision')
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, 8);
+  const open = live.open_questions.filter((q) => q.status === 'open');
+  const parts = [
+    `Objective: ${live.objective}`,
+    `Status: ${live.status} — ${live.progress.completed}/${live.progress.total} tasks completed, ${live.progress.failed} failed`,
+  ];
+  if (tasks.length) parts.push(`Tasks:\n${tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n')}`);
+  if (decisions.length) parts.push(`Decisions recorded:\n${decisions.map((r) => `- ${r.summary}`).join('\n')}`);
+  if (open.length) parts.push(`Open questions:\n${open.map((q) => `- ${q.text}`).join('\n')}`);
+  return parts.join('\n\n');
+}
+
 export async function answerQuestion(
   question: string,
   repoPath: string,
   manager: ProviderManager,
   cfg: Config,
+  /** The session the question was asked inside, when there is one. */
+  live?: Session | null,
 ): Promise<{ text: string; tokens: number; model: string }> {
   const api = staticAnalysis(repoPath);
   const commit = (await api.git.isRepo()) ? await api.git.headCommit() : 'no-git';
@@ -123,6 +149,7 @@ export async function answerQuestion(
     taskInstructions: ASK_INSTRUCTIONS,
     // The answer is read by a person, not applied by a patcher.
     prose: true,
+    sessionState: live ? sessionState(live) : undefined,
   });
 
   // The answer IS the deliverable here, so it goes to the solve model rather

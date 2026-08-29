@@ -16,7 +16,7 @@ const { PromptCache, promptHash } = await import('../../src/storage/promptCache.
 // Imported after CODEMASTER_DATA_DIR is set, like everything else here: a
 // static import of the provider manager binds the real user database at load.
 const { costOfUsage } = await import('../../src/providers/manager.js');
-const { looksLikeQuestion } = await import('../../src/workers/asker.js');
+const { looksLikeQuestion, sessionState } = await import('../../src/workers/asker.js');
 
 test('the first attempt gets the smallest rung, not the whole window', () => {
   assert.equal(budgetForTier(200_000, 0), 24_000);
@@ -198,4 +198,57 @@ test('an explicit refusal of writes is a question, not an objective', () => {
   assert.equal(looksLikeQuestion('add a read-only flag to the config'), false);
   assert.equal(looksLikeQuestion('refactor the solver without changing behaviour'), false);
   assert.equal(looksLikeQuestion('give me a login button'), false);
+});
+
+// `/ask` compiles against an ephemeral session, so a question about the run
+// itself — "what have we done so far" — used to be answered with "I have no
+// session record to summarize" by the tool that was doing the work.
+test('the ask path can see the session it was asked inside', async () => {
+  const { Sessions, Tasks } = await import('../../src/storage/sessions.js');
+  const { Reasoning } = await import('../../src/storage/reasoning.js');
+  const { id, now } = await import('../../src/util/id.js');
+
+  const sid = id('session');
+  const live = {
+    id: sid, created_at: now(), updated_at: now(), status: 'active',
+    objective: 'ship the parser', repository: { path: process.cwd(), commit: 'x' },
+    progress: { total: 2, completed: 1, failed: 0 },
+    constraints: [], open_questions: [{ text: 'unicode identifiers?', status: 'open' }],
+    working_files: [], decisions: [], provider_history: [], checkpoints: [],
+    token_usage: { total_input: 0, total_output: 0, total: 0, by_provider: {}, cost_usd: 0 },
+    metadata: {},
+  };
+  Sessions.insert(live as never);
+  const task = (title: string, status: string) => ({
+    id: id('task'), session_id: sid, title, description: title, type: 'implement', status,
+    input_files: [], output_files: [], dependencies: [], blocking: [],
+    reasoning_refs: [], decision_refs: [], estimated_tokens: 0, order: 0,
+  });
+  Tasks.insert(task('Write the lexer', 'completed') as never);
+  Tasks.insert(task('Write the parser', 'in_progress') as never);
+  Reasoning.insert({
+    id: id('reasoning'), type: 'decision', session_id: sid, task_id: 't',
+    summary: 'recursive descent over a table-driven parser', detail: '', evidence: [],
+    confidence: 0.9, produced_by: { provider_id: 'x', model_id: 'y' }, produced_at: now(),
+    affected_files: [], affected_modules: [], tags: [],
+    permanent: false, wiki_keys: [], reference_count: 0, importance: 0.8,
+  } as never);
+
+  const block = sessionState(live as never);
+
+  assert.match(block, /ship the parser/);
+  assert.match(block, /1\/2 tasks completed/);
+  assert.match(block, /\[completed\] Write the lexer/);
+  assert.match(block, /\[in_progress\] Write the parser/);
+  assert.match(block, /recursive descent/);
+  assert.match(block, /unicode identifiers\?/);
+
+  // A session with nothing recorded yet still states what it is working on
+  // rather than emitting an empty component.
+  const bare = sessionState({
+    ...live, id: id('session'), objective: 'start something',
+    progress: { total: 0, completed: 0, failed: 0 }, open_questions: [],
+  } as never);
+  assert.match(bare, /start something/);
+  assert.ok(!/Tasks:/.test(bare));
 });

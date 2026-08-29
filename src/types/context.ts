@@ -7,6 +7,7 @@ export enum ContextComponent {
   OBJECTIVE = 'objective',
   EXECUTION_PLAN = 'execution_plan',
   CURRENT_TASK = 'current_task',
+  SESSION_STATE = 'session_state',
   ARCHITECTURE = 'architecture',
   REPOSITORY_MAP = 'repository_map',
   RELEVANT_FILES = 'relevant_files',
