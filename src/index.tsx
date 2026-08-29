@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Box, render, Text, useApp, useInput, useStdout } from 'ink';
+import { Box, render, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
@@ -224,12 +224,20 @@ const SHORTCUTS: Array<[string, string]> = [
   ['tab', 'complete'],
   ['↑ ↓', 'history'],
   ['esc', 'interrupt'],
-  ['shift+↑↓', 'scroll transcript'],
+  ['wheel', 'scroll transcript'],
+  ['shift+↑↓', 'scroll a line'],
   ['pgup pgdn', 'scroll a page'],
   ['ctrl+r', 'expand reasoning'],
   ['ctrl+l', 'clear'],
   ['ctrl+q', 'quit'],
 ];
+
+/** An SGR mouse report: ESC [ < button ; col ; row M|m. Ink strips the ESC
+ *  before it reaches a text field, so the pattern must not require it. */
+const MOUSE = /\x1b?\[<(\d+);\d+;\d+[Mm]/g;
+
+/** Rows per wheel notch. Three is what terminals send for their own scrolling. */
+const WHEEL_ROWS = 3;
 
 const KEY_COL = 11;
 
@@ -308,18 +316,42 @@ function App() {
   const rows = useRows();
   const cols = useCols();
 
-  // The alternate screen buffer is what makes the header and the composer
-  // stay put: the interface gets its own page, with no scrollback of its own,
-  // so the only thing that can move is what this frame chooses to redraw.
-  // Without it every line CodeMaster prints joins the shell's scroll region
-  // and the prompt is dragged along with it.
+  // The alternate screen buffer is what makes the header and the composer stay
+  // put: the interface gets its own page, with no scrollback of its own, so the
+  // only thing that can move is what this frame chooses to redraw. Without it
+  // every line CodeMaster prints joins the shell's scroll region and drags the
+  // prompt along with it.
+  //
+  // That page having no scrollback is also why the wheel has to be read here:
+  // the terminal has nothing of its own to scroll, so a wheel event would
+  // simply do nothing. SGR mouse reporting is the encoding that still works
+  // past column 223. It is left on only for as long as the frame is, and torn
+  // down on process exit as well as unmount — a terminal left in reporting mode
+  // spits escape sequences at whatever runs next.
+  const { stdin } = useStdin();
+  const maxScrollRef = useRef(0);
   useEffect(() => {
     if (!stdout?.isTTY) return;
-    stdout.write('\x1b[?1049h\x1b[H');
-    const leave = () => { try { stdout.write('\x1b[?1049l'); } catch { /* stream already gone */ } };
+    stdout.write('\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H');
+    const onData = (d: Buffer | string) => {
+      let delta = 0;
+      for (const [, button] of String(d).matchAll(MOUSE)) {
+        if (button === '64') delta += WHEEL_ROWS;
+        else if (button === '65') delta -= WHEEL_ROWS;
+      }
+      if (delta !== 0) setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
+    };
+    stdin?.on('data', onData);
+    const leave = () => {
+      try { stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); } catch { /* stream already gone */ }
+    };
     process.once('exit', leave);
-    return () => { process.off('exit', leave); leave(); };
-  }, [stdout]);
+    return () => {
+      stdin?.off('data', onData);
+      process.off('exit', leave);
+      leave();
+    };
+  }, [stdin, stdout]);
 
   useEffect(() => {
     if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
@@ -391,8 +423,10 @@ function App() {
     // arrows still belong to history and the completion list; shift and the
     // page keys move the window behind them.
     const page = Math.max(1, viewportRows - 1);
-    if ((key.shift && key.upArrow) || key.pageUp) { setScroll((v) => Math.min(maxScroll, v + page)); return; }
-    if ((key.shift && key.downArrow) || key.pageDown) { setScroll((v) => Math.max(0, v - page)); return; }
+    if (key.pageUp) { setScroll((v) => Math.min(maxScroll, v + page)); return; }
+    if (key.pageDown) { setScroll((v) => Math.max(0, v - page)); return; }
+    if (key.shift && key.upArrow) { setScroll((v) => Math.min(maxScroll, v + WHEEL_ROWS)); return; }
+    if (key.shift && key.downArrow) { setScroll((v) => Math.max(0, v - WHEEL_ROWS)); return; }
     // Ctrl-C stops the running task and keeps the session; with nothing
     // running there is nothing to stop, so it leaves.
     if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
@@ -429,6 +463,9 @@ function App() {
 
   function handleChange(val: string) {
     historyIdxRef.current = -1;
+    // Ink hands an unrecognised escape sequence to the focused field as text,
+    // so a wheel event would otherwise type `[<64;33;12M` into the prompt.
+    val = val.replace(MOUSE, '');
     setInput(val);
     if (val.startsWith('/')) {
       const m = val.toLowerCase();
@@ -515,6 +552,17 @@ function App() {
   // Content arriving while scrolled back must not push the view past its own
   // top, and a window resize can shrink the range under a scroll already set.
   const clamped = Math.min(scroll, maxScroll);
+  maxScrollRef.current = maxScroll;
+
+  // Scroll counts rows up from the bottom, so a line arriving while the reader
+  // is scrolled back would slide the passage they are reading off the top.
+  // Growth is added to the offset instead, which holds the view where it is.
+  const totalRef = useRef(0);
+  useEffect(() => {
+    const grown = maxScroll - totalRef.current;
+    totalRef.current = maxScroll;
+    if (grown > 0) setScroll((v) => (v > 0 ? v + grown : 0));
+  }, [maxScroll]);
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
