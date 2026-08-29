@@ -45,6 +45,19 @@ export function Header({ shortCwd, version, session, usage }: HeaderProps) {
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
+  // The card is part of the header, not the first thing in the transcript: it
+  // used to be logged as an entry and so scrolled away, taking the only
+  // statement of what this tool is with it. Pinned instead — but only while
+  // nothing is running and only when the window can spare the rows.
+  if (!session && headerRows(cols, stdout?.rows ?? 24, false) > 1) {
+    return (
+      <Box flexDirection="column">
+        <Banner shortCwd={shortCwd} version={version} />
+        <StatusLine shortCwd={shortCwd} usage={usage} cols={cols} />
+      </Box>
+    );
+  }
+
   if (session) {
     // A flex row of separate <Text> nodes wraps each field independently, which
     // shattered this line into two on a narrow terminal. Fields are dropped
@@ -82,12 +95,27 @@ export function Header({ shortCwd, version, session, usage }: HeaderProps) {
     );
   }
 
-  // At rest the same line still has to answer "what will this cost me and can I
-  // even run it right now" — which used to require two slash commands.
+  return <StatusLine shortCwd={shortCwd} usage={usage} cols={cols} />;
+}
+
+/** The card costs five rows and the C needs the width; a small window needs
+ *  both for output more than it needs the wordmark. Kept beside the component
+ *  it measures so the two cannot drift. */
+export function headerRows(cols: number, rows: number, session: boolean): number {
+  return !session && cols >= 70 && rows >= 22 ? BANNER_ROWS + 1 : 1;
+}
+
+/** Border 1 each side plus the three rows of the C. */
+const BANNER_ROWS = 5;
+
+/** At rest the one line still has to answer "what will this cost me and can I
+ *  even run it right now" — which used to require two slash commands. */
+function StatusLine({ shortCwd, usage, cols }: { shortCwd: string; usage: UsageView; cols: number }) {
   const parts: Array<[string, string]> = [[shortCwd, MUTED], [usage.model, BLUE]];
   if (usage.blockedMs > 0) parts.push([`rate limited ${mins(usage.blockedMs)}`, RED]);
   else if (usage.windowTokens > 0) parts.push([`${fmt(usage.windowTokens)} this window`, MUTED]);
   if (usage.spend > 0) parts.push([`$${usage.spend.toFixed(2)} total`, MUTED]);
+  void cols;
   return (
     <Box paddingX={1}>
       <Text wrap="truncate-end">
@@ -109,21 +137,16 @@ function mins(ms: number): string {
 
 const TAGLINE = 'Describe what you want done, or /help for commands.';
 
-/** The startup card: the C, the wordmark, where you are. Printed once into the
- *  transcript rather than held in the live region, so it scrolls away with
- *  everything else instead of following the prompt down the screen. */
+/** The startup card: the C, the wordmark, where you are. Part of the pinned
+ *  header rather than the first line of the transcript — logged as an entry it
+ *  scrolled away, taking the only statement of what the tool is with it.
+ *  Drawn only above 70 columns, which is what makes it exactly BANNER_ROWS. */
 export function Banner({ shortCwd, version }: { shortCwd: string; version: string }) {
-  const { stdout } = useStdout();
-  // Border 2 + padding 4 + the tagline is 58; below that the C is dropped
-  // rather than squeezed into a blank column or wrapped.
-  const art = (stdout?.columns ?? 80) >= 70;
   return (
-    <Box alignSelf="flex-start" borderStyle="round" borderColor={BLUE_DIM} paddingX={2} paddingY={art ? 0 : 1} marginX={1} marginTop={1} marginBottom={1}>
-      {art && (
-        <Box flexDirection="column" flexShrink={0} marginRight={2}>
-          {LOGO.map((l, i) => <Text key={i} color={BLUE_HI} bold>{l}</Text>)}
-        </Box>
-      )}
+    <Box alignSelf="flex-start" borderStyle="round" borderColor={BLUE_DIM} paddingX={2} marginX={1}>
+      <Box flexDirection="column" flexShrink={0} marginRight={2}>
+        {LOGO.map((l, i) => <Text key={i} color={BLUE_HI} bold>{l}</Text>)}
+      </Box>
       <Box flexDirection="column">
         <Box>
           <Text bold color={BLUE_HI}>CodeMaster</Text>

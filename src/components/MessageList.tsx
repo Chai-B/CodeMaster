@@ -1,36 +1,112 @@
 import React from 'react';
-import { Box, Static, Text, useStdout } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import { LogEntry, LogType } from '../util/parser';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED, GREEN, RED, AMBER, VIOLET, GLYPH } from '../themes/blue';
-import { Banner } from './Header';
 
 /**
- * Settled lines are written once and scroll natively; only the live region
- * repaints.
+ * A fixed-height viewport onto the transcript, not a stream of it.
  *
- * Every log line used to re-render on every bus event, and once output passed
- * the terminal height Ink's frame diffing tore visibly — the flicker. `<Static>`
- * hands a settled line to the terminal exactly once, so a long run costs one
- * write per line instead of one per line per event.
+ * Settled lines used to go through Ink's `<Static>`, which writes each one into
+ * the terminal's own scrollback permanently. That is what made the composer
+ * unpinnable: the transcript, the header and the prompt all belonged to the
+ * same scroll region, so scrolling the window moved all three. The whole
+ * interface is now a single frame exactly as tall as the window, and the
+ * transcript is a window into the middle of it — the header and the composer
+ * are simply other rows of that frame, and rows cannot scroll away from
+ * themselves.
+ *
+ * The price is that the viewport must know how tall an entry is before it is
+ * drawn, in order to choose how many of them fit. That is `estimateRows`.
+ * Overflow is clipped at the top rather than the bottom (`justifyContent`
+ * anchors the content to the last row), so when the estimate is a row short the
+ * oldest line is cut, never the newest.
  */
 export function MessageList({
-  settled, live, clearGen, expanded,
-}: { settled: LogEntry[]; live: LogEntry[]; clearGen: number; expanded: boolean }) {
+  settled, live, expanded, height, scroll,
+}: { settled: LogEntry[]; live: LogEntry[]; expanded: boolean; height: number; scroll: number }) {
+  const cols = useCols();
+  const all = [...settled, ...live];
+  const h = Math.max(1, height);
+  const rows = all.map((e) => estimateRows(e, cols, expanded));
+
+  // Scrolling back drops whole entries off the bottom rather than splitting one
+  // across the edge: half of a rendered box is worse to look at than a line of
+  // slack, and an entry is never more than a few rows tall.
+  let end = all.length;
+  for (let dropped = 0; end > 1 && dropped < scroll; ) dropped += rows[--end]!;
+
+  const fill = (budget: number) => {
+    let i = end;
+    for (let used = 0; i > 0 && used + rows[i - 1]! <= budget; ) used += rows[--i]!;
+    return i === end && end > 0 ? end - 1 : i;
+  };
+  // When anything is hidden above, the row that says so has to come out of the
+  // budget — added on top of a full window it would be the first thing clipped,
+  // which is the one row that must not be.
+  let start = fill(h);
+  if (start > 0) start = fill(h - 1);
+
   return (
-    <>
-      {/* Expanding is a repaint: <Static> writes an item once and never revisits
-          it, so the whole settled region has to remount to show detail that was
-          folded away when it first scrolled past. */}
-      <Static key={`${clearGen}:${expanded}`} items={settled}>
-        {(e) => <LogLine key={e.id} entry={e} expanded={expanded} />}
-      </Static>
-      {live.length > 0 && (
-        <Box flexDirection="column">
-          {live.map((e) => <LogLine key={e.id} entry={e} expanded={expanded} />)}
-        </Box>
+    <Box flexDirection="column" height={h} flexShrink={0} overflow="hidden" justifyContent="flex-end">
+      {start > 0 && (
+        <Text color={BLUE_DIM}>{`  ↑ ${start} earlier line${start === 1 ? '' : 's'}${scroll > 0 ? ' · shift+↓ or esc to return' : ''}`}</Text>
       )}
-    </>
+      <Transcript entries={all.slice(start, end)} expanded={expanded} />
+    </Box>
   );
+}
+
+/** The lines themselves, at their natural height. Separate from the viewport so
+ *  that what `estimateRows` claims can be measured against what Ink draws
+ *  without the viewport's own padding standing in the way. */
+export function Transcript({ entries, expanded }: { entries: LogEntry[]; expanded: boolean }) {
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {entries.map((e) => <LogLine key={e.id} entry={e} expanded={expanded} />)}
+    </Box>
+  );
+}
+
+/** Total rendered height of the transcript, so the caller can clamp how far
+ *  back it is allowed to scroll. */
+export function totalRows(entries: LogEntry[], cols: number, expanded: boolean): number {
+  let n = 0;
+  for (const e of entries) n += estimateRows(e, cols, expanded);
+  return n;
+}
+
+/** How many terminal rows a settled entry occupies once rendered. Kept beside
+ *  the components it mirrors so the two stay in step. */
+export function estimateRows(e: LogEntry, cols: number, expanded: boolean): number {
+  const w = Math.max(28, cols);
+  if (e.type === 'sep') return 2;
+  if (e.type === 'md') {
+    if (!e.text.trim()) return 1;
+    if (/^#{1,6}\s/.test(e.text)) return 2;
+    // The bold and code markers are consumed by Inline, so they take no columns.
+    return wrapRows(e.text.replace(/\*\*|`/g, ''), w - 4);
+  }
+  let n = e.type === 'heading' || e.type === 'user' ? 2 : 1;
+  if (e.detail && expanded) for (const d of e.detail.split('\n')) n += wrapRows(d, w - 7);
+  return n;
+}
+
+/** Rows a string takes once word-wrapped to `avail` columns. Dividing the length
+ *  by the width undercounts: a word that does not fit is moved down whole, so
+ *  every line ends early by however much of the next word did not fit. */
+function wrapRows(s: string, avail: number): number {
+  const w = Math.max(8, avail);
+  let rows = 1;
+  let col = 0;
+  for (const word of s.split(' ')) {
+    const len = word.length;
+    if (col > 0 && col + 1 + len <= w) { col += 1 + len; continue; }
+    if (col > 0) rows += 1;
+    if (len === 0) { col = 0; continue; }
+    rows += Math.floor((len - 1) / w);
+    col = ((len - 1) % w) + 1;
+  }
+  return rows;
 }
 
 /** The terminal width, floored so a very narrow window degrades instead of
@@ -145,13 +221,11 @@ const STYLE: Record<LogType, { glyph: string; mark: string; color?: string; bold
   plain: { glyph: ' ', mark: MUTED, color: undefined },
   sep: { glyph: ' ', mark: MUTED, color: undefined },
   md: { glyph: ' ', mark: MUTED, color: undefined },
-  banner: { glyph: ' ', mark: MUTED, color: undefined },
 };
 
 function LogLine({ entry, expanded }: { entry: LogEntry; expanded: boolean }) {
   const { type, text, detail } = entry;
   const cols = useCols();
-  if (type === 'banner') return <Banner shortCwd={text} version={detail ?? ''} />;
   if (type === 'sep') return <Rule title={text} />;
   if (type === 'md') return <Markdown text={text} />;
   if (type === 'plain' && !text.trim()) return <Text> </Text>;

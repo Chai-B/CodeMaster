@@ -5,8 +5,8 @@ import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
 
-import { Header } from './components/Header.js';
-import { MessageList } from './components/MessageList.js';
+import { Header, headerRows } from './components/Header.js';
+import { MessageList, totalRows } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
 import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView, type UsageView } from './util/parser.js';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED, AMBER, BRAILLE, VERBS } from './themes/blue.js';
@@ -30,11 +30,10 @@ const sm = daemon.sm;
 const router = daemon.router;
 
 // ── Log state ───────────────────────────────────────────────────────────────
-// Two regions, not one list. `settled` is written to the terminal exactly once
-// via <Static>; `live` is the phase currently running and is the only thing
-// that repaints. When a phase ends it collapses to a single result line and
-// moves across, so a finished run reads as a few lines rather than every line
-// the workers emitted.
+// Two regions, not one list. `settled` is the transcript proper; `live` is the
+// phase currently running. When a phase ends it collapses to a single result
+// line and moves across, so a finished run reads as a few lines rather than
+// every line the workers emitted.
 interface LogState {
   settled: LogEntry[];
   live: LogEntry[];
@@ -52,7 +51,7 @@ let _id = 0;
  *  These never enter the live region, so a phase ending can never take them
  *  with it — the answer, the reasoning and the verdict stay on screen while
  *  "FileSelector — 7 files" does not. */
-const KEEP = new Set<LogType>(['md', 'reasoning', 'heading', 'success', 'error', 'warn', 'sep', 'banner', 'user']);
+const KEEP = new Set<LogType>(['md', 'reasoning', 'heading', 'success', 'error', 'warn', 'sep', 'user']);
 
 /** What a finished phase leaves behind: how long it took and how many steps it
  *  took to get there. Only progress lines are ever in `live`, so this discards
@@ -151,6 +150,18 @@ function useCols(): number {
   return Math.max(28, stdout?.columns ?? 80);
 }
 
+/** Rows the frame may occupy: one fewer than the window has.
+ *
+ *  Ink terminates every frame with a newline, so a frame as tall as the window
+ *  writes one line past the last row and the terminal scrolls by one. In the
+ *  alternate screen there is no scrollback to scroll into, so the top row is
+ *  simply lost — and it comes back on the next repaint, which reads as the
+ *  whole interface twitching. One row of slack costs nothing and removes it. */
+function useRows(): number {
+  const { stdout } = useStdout();
+  return Math.max(8, (stdout?.rows ?? 24) - 1);
+}
+
 function Spinner({ label, since, tokens }: { label: string; since: number; tokens: number }) {
   const [f, setF] = useState(0);
   useEffect(() => {
@@ -213,19 +224,23 @@ const SHORTCUTS: Array<[string, string]> = [
   ['tab', 'complete'],
   ['↑ ↓', 'history'],
   ['esc', 'interrupt'],
+  ['shift+↑↓', 'scroll transcript'],
+  ['pgup pgdn', 'scroll a page'],
   ['ctrl+r', 'expand reasoning'],
   ['ctrl+l', 'clear'],
   ['ctrl+q', 'quit'],
 ];
 
+const KEY_COL = 11;
+
 function Shortcuts() {
   const cols = useCols();
-  const desc = Math.max(6, cols - 4 - 8);
+  const desc = Math.max(6, cols - 4 - KEY_COL);
   return (
     <Box flexDirection="column" paddingX={2} marginTop={1}>
       {SHORTCUTS.map(([k, d]) => (
         <Box key={k} width={cols - 4}>
-          <Text color={BLUE_HI}>{k.padEnd(8)}</Text>
+          <Text color={BLUE_HI}>{k.padEnd(KEY_COL)}</Text>
           <Box width={desc}><Text color={MUTED} wrap="truncate-end">{d}</Text></Box>
         </Box>
       ))}
@@ -284,12 +299,28 @@ function firstRunHere(repoPath: string): boolean {
 function App() {
   const { exit } = useApp();
   const [logs, dispatch] = useReducer(logReducer, EMPTY_LOGS);
-  // <Static> lines are already in the terminal's scrollback, so emptying the
-  // log state alone leaves them on screen — /clear would look broken. Clear the
-  // screen and the scrollback too, which is what the command means.
+  // Clearing the log state is not enough on its own: the alternate screen
+  // still holds the last frame until something repaints over it.
   const [expanded, setExpanded] = useState(false);
   const [help, setHelp] = useState(false);
+  const [scroll, setScroll] = useState(0);
   const { stdout } = useStdout();
+  const rows = useRows();
+  const cols = useCols();
+
+  // The alternate screen buffer is what makes the header and the composer
+  // stay put: the interface gets its own page, with no scrollback of its own,
+  // so the only thing that can move is what this frame chooses to redraw.
+  // Without it every line CodeMaster prints joins the shell's scroll region
+  // and the prompt is dragged along with it.
+  useEffect(() => {
+    if (!stdout?.isTTY) return;
+    stdout.write('\x1b[?1049h\x1b[H');
+    const leave = () => { try { stdout.write('\x1b[?1049l'); } catch { /* stream already gone */ } };
+    process.once('exit', leave);
+    return () => { process.off('exit', leave); leave(); };
+  }, [stdout]);
+
   useEffect(() => {
     if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
   }, [logs.clearGen, stdout]);
@@ -318,7 +349,6 @@ function App() {
     setUsage(computeUsage());
       setUsage(computeUsage());
     });
-    dispatch({ type: 'add', entry: { type: 'banner', text: shortCwd, detail: VERSION } });
     if (firstRunHere(cwd)) {
       // Nothing has been indexed and nothing has been run here, so the generic
       // one-liner would leave a new user with no idea what order to do things
@@ -356,12 +386,21 @@ function App() {
     // a sentence it is just a question mark.
     if (c === '?' && !input && !running) { setHelp((v) => !v); return; }
     if (key.escape && help) { setHelp(false); return; }
+
+    // The transcript is a viewport now, so it needs its own scroll. Plain
+    // arrows still belong to history and the completion list; shift and the
+    // page keys move the window behind them.
+    const page = Math.max(1, viewportRows - 1);
+    if ((key.shift && key.upArrow) || key.pageUp) { setScroll((v) => Math.min(maxScroll, v + page)); return; }
+    if ((key.shift && key.downArrow) || key.pageDown) { setScroll((v) => Math.max(0, v - page)); return; }
     // Ctrl-C stops the running task and keeps the session; with nothing
     // running there is nothing to stop, so it leaves.
     if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
     // Esc is what people reach for to stop a running thing. It stops the task,
-    // not the process — the session and everything on disk survive.
+    // not the process — the session and everything on disk survive. Interrupting
+    // outranks returning to the bottom, which has the page keys as its own way out.
     if (key.escape && running) { cancelActive(); return; }
+    if (key.escape && scroll > 0) { setScroll(0); return; }
 
     if (acOptions.length > 0) {
       if (key.upArrow) setAcIndex((i) => (i <= 0 ? acOptions.length - 1 : i - 1));
@@ -455,19 +494,32 @@ function App() {
   const submitRef = useRef<((s: string) => Promise<void>) | null>(null);
   submitRef.current = handleSubmit;
 
-  // The composer follows the last line of output rather than being pinned to
-  // the last row of the window. Pinning meant padding the live region with the
-  // rows the transcript had not used yet, and that padding changed height on
-  // every event — so Ink erased and repainted the whole bottom of the screen
-  // continuously, which is the drift you see as the bar "moving".
   const ghost = acOptions.length === 1 && acOptions[0]!.cmd.startsWith(input)
     ? acOptions[0]!.cmd.slice(input.length)
     : '';
 
+  // Everything below the transcript is drawn at a height that can be counted
+  // ahead of time, and the transcript is given whatever is left. This is the
+  // whole of the pinning: the frame is exactly as tall as the window, so there
+  // is no row for the composer to be pushed onto.
+  const chrome =
+    headerRows(cols, rows, !!status) +
+    (running ? 2 : 0) + // spinner, with its top margin
+    (help ? 1 + SHORTCUTS.length : 0) +
+    (acOptions.length > 0 ? Math.min(acOptions.length, 8) + (acOptions.length > 8 ? 1 : 0) : 0) +
+    (queued > 0 ? 1 : 0) +
+    3 + // the framed prompt
+    1; // status bar
+  const viewportRows = Math.max(1, rows - chrome);
+  const maxScroll = Math.max(0, totalRows([...logs.settled, ...logs.live], cols, expanded) - viewportRows);
+  // Content arriving while scrolled back must not push the view past its own
+  // top, and a window resize can shrink the range under a scroll already set.
+  const clamped = Math.min(scroll, maxScroll);
+
   return (
-    <Box flexDirection="column" width="100%">
-      <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} expanded={expanded} />
+    <Box flexDirection="column" width={cols} height={rows}>
       <Header shortCwd={shortCwd} version={VERSION} session={status} usage={usage} />
+      <MessageList settled={logs.settled} live={logs.live} expanded={expanded} height={viewportRows} scroll={clamped} />
       {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
       {help && <Shortcuts />}
       {acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
