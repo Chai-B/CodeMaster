@@ -14,6 +14,7 @@ export const COMMANDS: CommandDef[] = [
   { cmd: '/ask', desc: 'Answer a question about the repository, read-only', group: 'Session', usage: '/ask <question>' },
   { cmd: '/new', desc: 'Create a session with an objective', group: 'Session', usage: '/new <objective>' },
   { cmd: '/resume', desc: 'Resume a paused/crashed session', group: 'Session', usage: '/resume [session_id]' },
+  { cmd: '/setup', desc: 'Guided first-time setup: credentials, model, index', group: 'Session' },
   { cmd: '/recover', desc: 'Recover incomplete sessions after a crash', group: 'Session' },
   { cmd: '/pause', desc: 'Pause current session (checkpoint)', group: 'Session' },
   { cmd: '/complete', desc: 'Complete current session', group: 'Session' },

@@ -38,6 +38,7 @@ import { fmtTokens } from '../util/tokens.js';
 import { COMMANDS } from './catalog.js';
 import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
 import { activeRepoPath, listProjects, loadConfig, saveConfig, CONFIG_PATH } from '../config.js';
+import { select, confirm, form, interactive } from '../ui/prompt.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session, LlmRole } from '../types/index.js';
 import type { Config } from '../config.js';
@@ -132,6 +133,7 @@ export class CommandRouter {
       case '/replay': return this.replay(arg);
       case '/profile': return this.profile(arg);
       case '/verbose': this.verbose = arg !== 'off'; this.out('success', `Verbose ${this.verbose ? 'on' : 'off'}`); return;
+      case '/setup': return this.setup();
       case '/recover': return this.recover();
       case '/plugins': return this.plugins();
       case '/help': return this.help(arg);
@@ -191,7 +193,23 @@ export class CommandRouter {
   }
 
   private async resume(arg: string): Promise<void> {
-    const s = this.sm.resume(arg || undefined);
+    // Resuming without an id takes the most recent active session, which is
+    // right when there is one and a guess when there are several. Offer the
+    // list instead of guessing, newest first.
+    let target = arg;
+    if (!target && interactive()) {
+      const recent = Sessions.list(9, activeRepoPath()).filter((x) => x.status !== 'completed');
+      if (recent.length > 1) {
+        const pick = await select('Resume which session?', recent.map((x) => ({
+          value: x.id,
+          label: x.objective.slice(0, 60),
+          hint: `${x.status} · ${x.progress.completed}/${x.progress.total} · ${x.updated_at.slice(0, 16).replace('T', ' ')}`,
+        })));
+        if (!pick) return;
+        target = pick;
+      }
+    }
+    const s = this.sm.resume(target || undefined);
     if (!s) {
       this.out('warn', 'No session to resume.');
       return;
@@ -300,10 +318,11 @@ export class CommandRouter {
     tasks.forEach((t, i) => this.out('info', `${icon[t.status] ?? '·'} ${i + 1}. [${t.type}] ${t.title}`));
   }
 
-  private taskDetail(arg: string): void {
+  private async taskDetail(arg: string): Promise<void> {
     const s = this.requireSession();
     if (!s) return;
     const tasks = Tasks.forSession(s.id);
+    if (!arg) arg = (await this.pickTask('Which task?', tasks)) ?? '';
     const idx = Number(arg) - 1;
     const t = tasks[idx] ?? tasks.find((x) => x.id === arg);
     if (!t) return this.out('warn', 'Task not found (use index or id)');
@@ -338,15 +357,20 @@ export class CommandRouter {
     }
   }
 
-  private skip(arg: string): void {
+  private async skip(arg: string): Promise<void> {
     const s = this.requireSession();
     if (!s) return;
     const tasks = Tasks.forSession(s.id);
+    if (!arg) arg = (await this.pickTask('Skip which task?', tasks.filter((x) => x.status === 'pending'))) ?? '';
     const t = tasks[Number(arg) - 1] ?? tasks.find((x) => x.id === arg);
     if (!t) return this.out('warn', 'Task not found');
     t.status = 'skipped';
     Tasks.update(t);
     this.out('success', `Skipped: ${t.title}`);
+  }
+
+  private pickTask(title: string, tasks: Array<{ id: string; title: string; status: string; type: string }>): Promise<string | null> {
+    return select(title, tasks.map((t) => ({ value: t.id, label: t.title, hint: `${t.type} · ${t.status}` })));
   }
 
   // ── Provider ──────────────────────────────────────────────
@@ -375,23 +399,32 @@ export class CommandRouter {
    * The key goes on the command line — the TUI drops this one line from history
    * and masks its echo, so the secret does not survive the call.
    */
-  private account(args: string[] = []): void {
-    if (args[0] === 'add' && args[1] && args[2]) {
-      const key = args[3] ?? process.env.CODEMASTER_NEW_KEY;
-      if (!key) return this.out('warn', 'Usage: /account add <provider> <alias> <key>  (or set CODEMASTER_NEW_KEY)');
-      const acct = this.sm.manager.addAccount(args[1], args[2], key);
-      if (!acct) return this.out('error', `Unknown provider ${args[1]}. Known: ${this.sm.manager.listProviders().join(', ')}`);
-      this.out('success', `Added account ${args[2]} (${args[1]})`);
-      return this.out('dim', `Routing can now reach ${args[1]}. /account use ${args[2]} makes it the one that answers.`);
+  private async account(args: string[] = []): Promise<void> {
+    if (args[0] === 'add') {
+      if (args[1] && args[2]) return this.addAccount(args[1], args[2], args[3] ?? process.env.CODEMASTER_NEW_KEY);
+      // Three positional arguments in the right order, one of them a secret, is
+      // the worst thing to ask anyone to type. Asked field by field instead,
+      // with the vendor picked from a list and the key never echoed.
+      const answers = await form('Add an account', [
+        { name: 'provider', label: 'Vendor', choices: this.sm.manager.listProviders().map((id) => ({ value: id, label: id })) },
+        { name: 'alias', label: 'Name it (yours, for /account use)', placeholder: 'work' },
+        { name: 'key', label: 'API key', secret: true, placeholder: 'never echoed, never in history' },
+      ]);
+      if (!answers) return this.out('warn', 'Usage: /account add <provider> <alias> <key>  (or set CODEMASTER_NEW_KEY)');
+      return this.addAccount(answers.provider!, answers.alias!, answers.key);
     }
-    if (args[0] === 'use' && args[1]) {
-      const chose = this.sm.manager.useAccount(args[1]);
-      if (!chose) return this.out('warn', `No account named ${args[1]}. Run /account to list them.`);
-      return this.out('success', `${args[1]} now answers first, for any model on its provider.`);
+    if (args[0] === 'use') {
+      const alias = args[1] ?? (await this.pickAccount('Which account answers first?'));
+      if (!alias) return this.out('warn', 'Usage: /account use <alias>');
+      const chose = this.sm.manager.useAccount(alias);
+      if (!chose) return this.out('warn', `No account named ${alias}. Run /account to list them.`);
+      return this.out('success', `${alias} now answers first, for any model on its provider.`);
     }
-    if (args[0] === 'remove' && args[1]) {
-      const removed = this.sm.manager.removeAccount(args[1]);
-      return this.out(removed ? 'success' : 'warn', `Account ${args[1]} ${removed ? 'removed' : 'not found'}`);
+    if (args[0] === 'remove') {
+      const alias = args[1] ?? (await this.pickAccount('Remove which account?'));
+      if (!alias) return this.out('warn', 'Usage: /account remove <alias>');
+      const removed = this.sm.manager.removeAccount(alias);
+      return this.out(removed ? 'success' : 'warn', `Account ${alias} ${removed ? 'removed' : 'not found'}`);
     }
     this.out('heading', 'Accounts');
     const active = this.sm.manager.activeAccount();
@@ -406,6 +439,33 @@ export class CommandRouter {
       );
     }
     this.out('dim', '/account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
+
+    const action = await select('Accounts', [
+      { value: 'add', label: 'Add an account', hint: 'a vendor key' },
+      { value: 'use', label: 'Choose which answers first' },
+      { value: 'remove', label: 'Remove a stored account' },
+    ]);
+    if (action) return this.account([action]);
+  }
+
+  private addAccount(provider: string, alias: string, key: string | undefined): void {
+    if (!key) return this.out('warn', 'No key given. /account add <provider> <alias> <key>, or set CODEMASTER_NEW_KEY.');
+    const acct = this.sm.manager.addAccount(provider, alias, key);
+    if (!acct) return this.out('error', `Unknown provider ${provider}. Known: ${this.sm.manager.listProviders().join(', ')}`);
+    this.out('success', `Added account ${alias} (${provider})`);
+    this.out('dim', `Routing can now reach ${provider}. /account use ${alias} makes it the one that answers.`);
+  }
+
+  private async pickAccount(title: string): Promise<string | null> {
+    const active = this.sm.manager.activeAccount();
+    return select(
+      title,
+      this.sm.manager.listAccounts().map((a) => ({
+        value: a.alias,
+        label: `${a.alias === active ? '● ' : '  '}${a.alias}`,
+        hint: `${a.provider_id}${this.sm.manager.accountResolves(a) ? '' : ' — no credential'}`,
+      })),
+    );
   }
 
   /** What this repository has taught the tool — observations only. */
@@ -623,6 +683,55 @@ export class CommandRouter {
   }
 
   // ── Repository ────────────────────────────────────────────
+  /**
+   * Everything a fresh install needs, asked in order, with nothing to type that
+   * can be picked from a list.
+   *
+   * The three things that used to have to be discovered separately — a
+   * credential, which model answers, and an index for this repository — are one
+   * pass here, and each step can be skipped.
+   */
+  private async setup(): Promise<void> {
+    this.out('heading', 'Setup');
+    if (!interactive()) return this.out('dim', 'Run /setup from the interface — it asks questions. From a script: /account add, /model, /reindex.');
+
+    // 1. A credential, if none of them resolve.
+    if (this.sm.manager.hasAnyProvider()) {
+      const active = this.sm.manager.activeAccount();
+      this.out('success', `Credentials found${active ? ` — ${active} answers first` : ''}.`);
+    } else {
+      const how = await select('No provider credentials yet. How do you want to sign in?', [
+        ...(claudeCliAvailable() ? [{ value: 'claude', label: 'Claude Code subscription', hint: 'run `claude setup-token` in a shell' }] : []),
+        ...(codexCliAvailable() ? [{ value: 'codex', label: 'Codex CLI login', hint: 'run `codex login` in a shell' }] : []),
+        { value: 'key', label: 'Paste an API key', hint: 'stored in the system keychain' },
+        { value: 'skip', label: 'Skip for now', hint: 'deterministic commands still work' },
+      ]);
+      if (how === 'claude') this.out('info', 'Run `claude setup-token` in a shell, then come back and run /setup again.');
+      if (how === 'codex') this.out('info', 'Run `codex login` in a shell, then come back and run /setup again.');
+      if (how === 'key') await this.account(['add']);
+    }
+
+    // 2. Which model answers by default.
+    const models = this.sm.manager.listModels();
+    const current = this.sm.cfg.providers.default;
+    const pick = await select(`Default model (now: ${current})`, models.map((m) => ({
+      value: m.id,
+      label: `${m.id === current ? '● ' : '  '}${m.id}`,
+      hint: `ctx ${fmtTokens(m.context_size)} · $${m.cost_per_1m_input}/1M in`,
+    })));
+    if (pick && pick !== current) await this.model(pick);
+
+    // 3. The index, which every retrieval reads and nothing builds on its own.
+    const api = staticAnalysis(activeRepoPath());
+    if (api.stats()) {
+      this.out('dim', 'This repository is already indexed.');
+    } else if (await confirm('Index this repository now?', { detail: 'Reads the tree once so retrieval has symbols to select from.' })) {
+      await this.reindex();
+    }
+
+    this.out('success', 'Ready. /new <objective> starts a session; type / to browse every command.');
+  }
+
   private async reindex(): Promise<void> {
     this.out('heading', 'Reindex');
     const api = staticAnalysis(process.cwd());
@@ -688,19 +797,31 @@ export class CommandRouter {
 
   private async checkpoints(args: string[]): Promise<void> {
     if (args[0] === 'diff' && args[1]) return this.checkpointDiff(args[1]);
-    if (args[0] === 'restore' && args[1]) {
-      const s = restoreCheckpoint(args[1]);
-      if (!s) return this.out('warn', 'Checkpoint not found');
-      this.sm.setCurrent(s);
-      this.out('success', `Restored checkpoint ${args[1]} → session ${s.id}`);
-      return;
-    }
+    if (args[0] === 'restore' && args[1]) return this.restore(args[1]);
     const s = this.requireSession();
     if (!s) return;
     this.out('heading', 'Checkpoints');
     const cps = Checkpoints.forSession(s.id);
     if (!cps.length) return this.out('dim', 'None.');
     for (const c of cps) this.out('info', `${c.id}  ${c.trigger}  ${c.created_at}`);
+    const pick = await select('Restore a checkpoint?', cps.map((c) => ({
+      value: c.id,
+      label: c.id,
+      hint: `${c.trigger} · ${c.created_at.slice(0, 16).replace('T', ' ')}`,
+    })));
+    if (pick) await this.restore(pick);
+  }
+
+  private async restore(id: string): Promise<void> {
+    const ok = await confirm(`Restore checkpoint ${id}?`, {
+      detail: 'The working tree is rewound to the state recorded there.',
+      danger: true,
+    });
+    if (ok === false) return this.out('dim', 'Left as it is.');
+    const s = restoreCheckpoint(id);
+    if (!s) return this.out('warn', 'Checkpoint not found');
+    this.sm.setCurrent(s);
+    this.out('success', `Restored checkpoint ${id} → session ${s.id}`);
   }
 
   // ── Diagnostic ────────────────────────────────────────────
@@ -853,7 +974,7 @@ export class CommandRouter {
 
   /** The active model, and switching it. `/provider` lists every vendor; this is
    *  the one-word form for the only provider decision most runs need. */
-  private model(arg: string): void {
+  private async model(arg: string): Promise<void> {
     const s = this.sm.getCurrent();
     if (!arg) {
       const active = s?.current_provider?.model_id ?? this.sm.cfg.providers.default;
@@ -873,7 +994,16 @@ export class CommandRouter {
       }
       if (this.sm.cfg.providers.pinned) this.out('dim', '  (pinned — every call uses this model)');
       this.out('dim', 'Switch with /model <model_id>. Move one role with /config set providers.roles.<role> <model_id>.');
-      return;
+      // The list is the answer when nobody is watching; when someone is, the
+      // list is also the picker, so switching costs an arrow key instead of a
+      // model id typed correctly from memory.
+      const pick = await select('Switch model', this.sm.manager.listModels().map((m) => ({
+        value: m.id,
+        label: `${m.id === active ? '● ' : '  '}${m.id}`,
+        hint: `ctx ${fmtTokens(m.context_size)} · $${m.cost_per_1m_input}/1M in`,
+      })));
+      if (!pick || pick === active) return;
+      arg = pick;
     }
     if (!this.sm.manager.modelSpec(arg)) return this.out('warn', `Unknown model: ${arg}. Run /model to see what is available.`);
     const providerId = this.sm.manager.providerOf(arg);
@@ -956,7 +1086,7 @@ export class CommandRouter {
   }
 
   /** Read and change settings without leaving the tool or hand-editing YAML. */
-  private config(args: string[]): void {
+  private async config(args: string[]): Promise<void> {
     const cfg = loadConfig();
     const flat = flatten(cfg as unknown as Record<string, unknown>);
     if (!args.length) {
@@ -964,7 +1094,22 @@ export class CommandRouter {
       this.out('dim', CONFIG_PATH);
       for (const [k, v] of flat) this.out('info', `${k.padEnd(40)} ${v}`);
       this.out('dim', 'Change one with /config set <key> <value>. Role routing lives under providers.roles.<role>, and providers.pinned locks every role to the default.');
-      return;
+      // Settings were readable here and editable only by typing a dotted key
+      // back correctly. Pick the row instead; the value is asked for next, with
+      // what it is now shown in the field.
+      const key = await select('Change a setting', [
+        ...flat.map(([k, v]) => ({ value: k, label: k, hint: String(v) })),
+        { value: 'providers.pinned', label: 'providers.pinned', hint: `${cfg.providers.pinned ?? false} — lock every role to the default model` },
+        ...LLM_ROLES.map((r) => ({
+          value: `providers.roles.${r}`,
+          label: `providers.roles.${r}`,
+          hint: this.sm.manager.modelFor(r),
+        })),
+      ]);
+      if (!key) return;
+      const answers = await form(key, [{ name: 'value', label: 'New value', placeholder: String(flat.find(([k]) => k === key)?.[1] ?? '') }]);
+      if (!answers?.value) return;
+      return this.config(['set', key, answers.value]);
     }
     if (args[0] !== 'set' || args.length < 3) return this.usage('/config');
     const key = args[1]!;
@@ -998,7 +1143,7 @@ export class CommandRouter {
 
   /** Take back what the last run wrote. Restores the exact prior bytes of the
    *  files it touched, so unrelated edits in the same tree survive. */
-  private undo(arg: string): void {
+  private async undo(arg: string): Promise<void> {
     const repo = this.sm.getCurrent()?.repository.path ?? activeRepoPath();
     if (arg === 'list') {
       const all = Undo.list(repo);
@@ -1009,6 +1154,13 @@ export class CommandRouter {
     }
     const rec = Undo.latest(repo);
     if (!rec) return this.out('warn', 'Nothing to undo — no patch has been applied to this repository.');
+    // Undo rewrites files on disk. Everything else here is reversible by
+    // running it again; this is the one command that is not.
+    const ok = await confirm('Undo the last applied change?', {
+      detail: `${rec.entries.length} file(s): ${rec.entries.map((e) => e.path).join(', ').slice(0, 80)}`,
+      danger: true,
+    });
+    if (ok === false) return this.out('dim', 'Left as it is.');
     const r = revert(repo, rec);
     Undo.drop(rec.id);
     if (r.restored.length) this.out('success', `Reverted ${r.restored.length} file(s): ${r.restored.join(', ')}`);

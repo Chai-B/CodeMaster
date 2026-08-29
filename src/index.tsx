@@ -8,6 +8,7 @@ import { createRequire } from 'module';
 import { Header, headerRows } from './components/Header.js';
 import { MessageList, totalRows } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
+import { Prompt, promptRows } from './components/Prompt.js';
 import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView, type UsageView } from './util/parser.js';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED, AMBER, BRAILLE, VERBS } from './themes/blue.js';
 
@@ -19,6 +20,7 @@ import { Sessions, Tasks } from './storage/sessions.js';
 import { staticAnalysis } from './analysis/api.js';
 import { Tokens } from './storage/tokens.js';
 import { QuotaLedger } from './providers/quotaLedger.js';
+import { setPrompter, type PromptSpec, type PromptResult } from './ui/prompt.js';
 
 const require_ = createRequire(import.meta.url);
 const VERSION = (require_('../package.json') as { version: string }).version;
@@ -189,7 +191,7 @@ function Spinner({ label, since, tokens }: { label: string; since: number; token
  *  a rule above and a rule below a bare line, which read as two separators with
  *  something trapped between them rather than as a box you type into. */
 function InputArea({
-  value, onChange, onSubmit, running, ghost, queued, placeholder,
+  value, onChange, onSubmit, running, ghost, queued, focus, placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -197,6 +199,9 @@ function InputArea({
   running: boolean;
   ghost: string;
   queued: number;
+  /** Off while a command is asking something: two focused fields would both
+   *  take the keystroke. */
+  focus: boolean;
   placeholder?: string;
 }) {
   return (
@@ -210,7 +215,7 @@ function InputArea({
           the run is visible at the place you are already looking. */}
       <Box borderStyle="round" borderColor={running ? AMBER : BLUE} paddingX={1}>
         <Text bold color={running ? AMBER : BLUE_HI}>{'❯ '}</Text>
-        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus showCursor placeholder={placeholder} />
+        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus={focus} showCursor placeholder={placeholder} />
         {/* The rest of the only command that still matches, greyed in place —
             tab takes it. Guessing at a name and reading /help are both slower. */}
         {ghost ? <Text color={BLUE_DIM}>{ghost}</Text> : null}
@@ -354,6 +359,9 @@ function App() {
   const [status, setStatus] = useState<SessionStatusView | null>(null);
   const [usage, setUsage] = useState<UsageView>(computeUsage);
   const [acOptions, setAcOptions] = useState<Cmd[]>([]);
+  // A question a command is waiting on. Nothing else has the keyboard while one
+  // is up: the composer loses focus and the global bindings stand down.
+  const [prompt, setPrompt] = useState<{ spec: PromptSpec; resolve: (r: PromptResult | null) => void } | null>(null);
   const [acIndex, setAcIndex] = useState(0);
   const queueRef = useRef<string[]>([]);
   const [queued, setQueued] = useState(0);
@@ -377,15 +385,13 @@ function App() {
       // Nothing has been indexed and nothing has been run here, so the generic
       // one-liner would leave a new user with no idea what order to do things
       // in. Three lines, in the order they actually need to happen.
-      log('dim', 'First run in this repository. Three steps to get going:');
-      log('dim', '  1. /doctor      — check Node, git, providers and tooling');
-      log('dim', '  2. /reindex     — build this repository’s symbol index');
-      log('dim', '  3. /new <objective> — start a session; /help lists every command');
+      log('dim', 'First run in this repository. Run /setup — it asks three questions and does the rest.');
+      log('dim', 'Or type / to browse every command, arrows to pick, tab to take it.');
     } else {
       log('dim', 'Persistent reasoning OS. /new <objective> to begin, /help for commands.');
     }
     if (!sm.manager.hasAnyProvider())
-      log('warn', 'No provider credentials — set an API key or run `claude setup-token` for account login. Deterministic commands still work.');
+      log('warn', 'No provider credentials — run /setup to add one. Deterministic commands still work.');
     void daemon.start().then(({ incomplete, reaped, plugins }) => {
       if (plugins > 0) log('dim', `${plugins} plugin(s) loaded.`);
       if (reaped > 0) log('dim', `${reaped} abandoned session(s) closed.`);
@@ -398,6 +404,14 @@ function App() {
       off();
     };
   }, [log]);
+
+  // Commands ask through a module-level hook rather than a channel: the router
+  // runs in this process. Headless and MCP runs never install one, so every
+  // command keeps the non-interactive path it had.
+  useEffect(() => {
+    setPrompter((spec) => new Promise((resolve) => setPrompt({ spec, resolve })));
+    return () => setPrompter(null);
+  }, []);
 
   useInput((c, key) => {
     const prevHistory = () => {
@@ -466,7 +480,7 @@ function App() {
       if (key.upArrow) prevHistory();
       if (key.downArrow) nextHistory();
     }
-  });
+  }, { isActive: !prompt });
 
   function handleChange(val: string) {
     historyIdxRef.current = -1;
@@ -550,7 +564,8 @@ function App() {
     headerRows(cols, rows, !!status) +
     (running ? 2 : 0) + // spinner, with its top margin
     (help ? 1 + SHORTCUTS.length : 0) +
-    (acOptions.length > 0 ? Math.min(acOptions.length, 8) + (acOptions.length > 8 ? 1 : 0) : 0) +
+    (acOptions.length > 0 && !prompt ? Math.min(acOptions.length, 8) + (acOptions.length > 8 ? 1 : 0) : 0) +
+    (prompt ? promptRows(prompt.spec) : 0) +
     (queued > 0 ? 1 : 0) +
     3 + // the framed prompt
     1; // status bar
@@ -574,10 +589,16 @@ function App() {
     <Box flexDirection="column" width={cols} height={rows}>
       <Header shortCwd={shortCwd} version={VERSION} session={status} usage={usage} />
       <MessageList settled={logs.settled} live={logs.live} expanded={expanded} height={viewportRows} scroll={clamped} />
-      {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
+      {running && !prompt && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
       {help && <Shortcuts />}
-      {acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
-      <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} placeholder="/new <objective> or /help" />
+      {acOptions.length > 0 && !prompt && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
+      {prompt && (
+        <Prompt
+          spec={prompt.spec}
+          onDone={(r) => { setPrompt(null); prompt.resolve(r); }}
+        />
+      )}
+      <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} focus={!prompt} placeholder="/new <objective> or /help" />
       <StatusBar running={running} status={status} expanded={expanded} help={help} since={startedAt} />
     </Box>
   );
