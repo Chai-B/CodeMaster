@@ -80,8 +80,20 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
     );
   }
 
-  // Narrow terminals get the wordmark without the C rather than a wrapped C.
-  const art = cols >= 70;
+  return null;
+}
+
+/** Shared with the row estimator, which has to know whether it wraps. */
+export const TAGLINE = 'Describe what you want done, or /help for commands.';
+
+/** The startup card: the C, the wordmark, where you are. Printed once into the
+ *  transcript rather than held in the live region, so it scrolls away with
+ *  everything else instead of following the prompt down the screen. */
+export function Banner({ shortCwd, version }: { shortCwd: string; version: string }) {
+  const { stdout } = useStdout();
+  // Border 2 + padding 4 + the tagline is 58; below that the C is dropped
+  // rather than squeezed into a blank column or wrapped.
+  const art = (stdout?.columns ?? 80) >= 70;
   return (
     <Box alignSelf="flex-start" borderStyle="round" borderColor={BLUE_DIM} paddingX={2} paddingY={art ? 0 : 1} marginX={1} marginTop={1} marginBottom={1}>
       {art && (
@@ -95,7 +107,7 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
           <Text color={MUTED}>  v{version}</Text>
         </Box>
         <Text color={MUTED}>{shortCwd}</Text>
-        <Text color={BLUE_DIM}>Describe what you want done, or /help for commands.</Text>
+        <Text color={BLUE_DIM}>{TAGLINE}</Text>
       </Box>
     </Box>
   );

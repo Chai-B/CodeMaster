@@ -6,10 +6,10 @@ import os from 'os';
 import { createRequire } from 'module';
 
 import { Header } from './components/Header.js';
-import { MessageList } from './components/MessageList.js';
+import { MessageList, estimateRows } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
 import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView } from './util/parser.js';
-import { BLUE, BLUE_HI, BLUE_DIM, MUTED, BRAILLE, VERBS } from './themes/blue.js';
+import { BLUE, BLUE_HI, BLUE_DIM, MUTED, AMBER, BRAILLE, VERBS } from './themes/blue.js';
 
 import { bus } from './events/bus.js';
 import { cancelActive } from './util/cancel.js';
@@ -114,6 +114,11 @@ function computeStatus(): SessionStatusView | null {
  *  minutes reads as a hang; a spinner that is visibly thinking about something
  *  reads as work. Tokens tick up beside it, so the cost of waiting is legible
  *  while you are waiting rather than only afterwards. */
+function useCols(): number {
+  const { stdout } = useStdout();
+  return Math.max(28, stdout?.columns ?? 80);
+}
+
 function Spinner({ label, since, tokens }: { label: string; since: number; tokens: number }) {
   const [f, setF] = useState(0);
   useEffect(() => {
@@ -123,11 +128,16 @@ function Spinner({ label, since, tokens }: { label: string; since: number; token
   const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
   const verb = VERBS[Math.floor(f / 44) % VERBS.length];
   const tok = tokens > 0 ? ` · ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : '';
+  const cols = useCols();
   return (
-    <Box marginTop={1}>
+    <Box marginTop={1} width={cols}>
       <Text color={BLUE_HI} bold>{' '}{BRAILLE[f % BRAILLE.length]}{'  '}</Text>
-      <Text color={BLUE_HI}>{label === 'working' ? verb : label}…</Text>
-      <Text color={MUTED}>{`  ${secs}s${tok} · esc to interrupt`}</Text>
+      <Box width={cols - 4}>
+        <Text wrap="truncate-end">
+          <Text color={BLUE_HI}>{label === 'working' ? verb : label}…</Text>
+          <Text color={MUTED}>{`  ${secs}s${tok} · esc to interrupt`}</Text>
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -136,22 +146,32 @@ function Spinner({ label, since, tokens }: { label: string; since: number; token
  *  a rule above and a rule below a bare line, which read as two separators with
  *  something trapped between them rather than as a box you type into. */
 function InputArea({
-  value, onChange, onSubmit, active, placeholder,
+  value, onChange, onSubmit, running, ghost, queued, placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: (v: string) => void;
-  active: boolean;
+  running: boolean;
+  ghost: string;
+  queued: number;
   placeholder?: string;
 }) {
   return (
-    <Box borderStyle="round" borderColor={active ? BLUE : BLUE_DIM} paddingX={1}>
-      <Text bold color={active ? BLUE_HI : BLUE_DIM}>{'❯ '}</Text>
-      {active ? (
-        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus showCursor placeholder={placeholder} />
-      ) : (
-        <Text color={BLUE_DIM}>{placeholder ?? ''}</Text>
+    <Box flexDirection="column">
+      {queued > 0 && (
+        <Box paddingX={1}>
+          <Text color={AMBER}>{`  ${queued} line${queued > 1 ? 's' : ''} waiting`}</Text>
+        </Box>
       )}
+      {/* The frame changes colour with what the tool is doing, so the state of
+          the run is visible at the place you are already looking. */}
+      <Box borderStyle="round" borderColor={running ? AMBER : BLUE} paddingX={1}>
+        <Text bold color={running ? AMBER : BLUE_HI}>{'❯ '}</Text>
+        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus showCursor placeholder={placeholder} />
+        {/* The rest of the only command that still matches, greyed in place —
+            tab takes it. Guessing at a name and reading /help are both slower. */}
+        {ghost ? <Text color={BLUE_DIM}>{ghost}</Text> : null}
+      </Box>
     </Box>
   );
 }
@@ -167,12 +187,14 @@ const SHORTCUTS: Array<[string, string]> = [
 ];
 
 function Shortcuts() {
+  const cols = useCols();
+  const desc = Math.max(6, cols - 4 - 8);
   return (
     <Box flexDirection="column" paddingX={2} marginTop={1}>
       {SHORTCUTS.map(([k, d]) => (
-        <Box key={k}>
+        <Box key={k} width={cols - 4}>
           <Text color={BLUE_HI}>{k.padEnd(8)}</Text>
-          <Text color={MUTED}>{d}</Text>
+          <Box width={desc}><Text color={MUTED} wrap="truncate-end">{d}</Text></Box>
         </Box>
       ))}
     </Box>
@@ -182,20 +204,35 @@ function Shortcuts() {
 /** One dim line under the prompt. It used to repeat the provider and task count
  *  that the header already shows, and spend the rest of its width listing two
  *  keybindings; the hint now changes with what you can actually do next. */
-function StatusBar({ running, status, expanded, help }: {
-  running: boolean; status: SessionStatusView | null; expanded: boolean; help: boolean;
+function StatusBar({ running, status, expanded, help, since }: {
+  running: boolean; status: SessionStatusView | null; expanded: boolean; help: boolean; since: number;
 }) {
+  // Re-rendered once a second while running so the elapsed time is live rather
+  // than frozen at whatever it was when the last event happened to arrive.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
   const hint = help
     ? 'esc to close'
     : running
-      ? 'esc to interrupt'
+      ? `running ${Math.round((Date.now() - since) / 1000)}s · type to queue · esc to interrupt`
       : status
         ? `${status.status} · ? for shortcuts`
         : '? for shortcuts · /help for commands';
+  const cols = useCols();
+  const right = `${expanded ? 'reasoning shown · ' : ''}v${VERSION}`;
+  // The version is dropped rather than wrapped when the hint needs the room;
+  // a status bar that becomes two rows unpins everything above it.
+  const room = cols - 2 - right.length >= 12;
   return (
-    <Box justifyContent="space-between" paddingX={1}>
-      <Text color={BLUE_DIM}>{hint}</Text>
-      <Text color={BLUE_DIM}>{expanded ? 'reasoning shown · ' : ''}v{VERSION}</Text>
+    <Box paddingX={1} width={cols}>
+      <Box width={room ? cols - 2 - right.length : cols - 2}>
+        <Text color={BLUE_DIM} wrap="truncate-end">{hint}</Text>
+      </Box>
+      {room && <Text color={BLUE_DIM}>{right}</Text>}
     </Box>
   );
 }
@@ -230,9 +267,12 @@ function App() {
   const [status, setStatus] = useState<SessionStatusView | null>(null);
   const [acOptions, setAcOptions] = useState<Cmd[]>([]);
   const [acIndex, setAcIndex] = useState(0);
+  const queueRef = useRef<string[]>([]);
+  const [queued, setQueued] = useState(0);
   const inputHistoryRef = useRef<string[]>([]);
   const historyIdxRef = useRef(-1);
   const cwd = process.cwd();
+  const shortCwd = cwd.startsWith(os.homedir()) ? '~' + cwd.slice(os.homedir().length) : cwd;
 
   const log = useCallback((type: LogType, text: string) => dispatch({ type: 'add', entry: { type, text } }), []);
 
@@ -243,6 +283,7 @@ function App() {
       if (entry && (entry.type !== 'plain' || entry.text)) dispatch({ type: 'add', entry });
       setStatus(computeStatus());
     });
+    dispatch({ type: 'add', entry: { type: 'banner', text: shortCwd, detail: VERSION } });
     if (firstRunHere(cwd)) {
       // Nothing has been indexed and nothing has been run here, so the generic
       // one-liner would leave a new user with no idea what order to do things
@@ -294,7 +335,7 @@ function App() {
         if (sel) { setInput(sel.cmd + ' '); setAcOptions([]); }
       }
       if (key.escape) setAcOptions([]);
-    } else if (!running) {
+    } else {
       if (key.upArrow) {
         const hist = inputHistoryRef.current;
         if (!hist.length) return;
@@ -330,10 +371,16 @@ function App() {
         if (sel) { setInput(sel.cmd + ' '); setAcOptions([]); }
         return;
       }
-      if (running) return;
       const text = raw.trim();
       setInput('');
       if (!text) return;
+      // A run in progress does not block the prompt; the line waits its turn
+      // and the count of waiting lines is shown above the composer.
+      if (running) {
+        queueRef.current.push(text);
+        setQueued(queueRef.current.length);
+        return;
+      }
 
       // `/account add <provider> <alias> <key>` is the one line that carries a
       // secret. Up-arrow would replay it and the transcript would keep it, so
@@ -356,24 +403,50 @@ function App() {
       } catch (e) {
         log('error', String(e));
       } finally {
-        setRunning(false);
         setStatus(computeStatus());
+        const next = queueRef.current.shift();
+        setQueued(queueRef.current.length);
+        setRunning(false);
+        if (next) void submitRef.current?.(next);
       }
     },
     [acOptions, acIndex, running, exit, log],
   );
+  // The queue drains by re-entering the same handler, which cannot reference
+  // itself directly in its own dependency list.
+  const submitRef = useRef<((s: string) => Promise<void>) | null>(null);
+  submitRef.current = handleSubmit;
 
-  const shortCwd = cwd.startsWith(os.homedir()) ? '~' + cwd.slice(os.homedir().length) : cwd;
+  const cols = stdout?.columns ?? 80;
+  const rows = stdout?.rows ?? 24;
+  // <Static> lines are already on the terminal, so the live frame only has to
+  // make up the difference to reach the last row. Once the transcript is longer
+  // than the window the terminal scrolls on its own and no padding is wanted.
+  const used = logs.settled.reduce((n, e) => n + estimateRows(e, cols, expanded), 0);
+  const liveRows =
+    logs.live.reduce((n, e) => n + estimateRows(e, cols, expanded), 0) +
+    (status ? 1 : 0) +
+    (running ? 2 : 0) +
+    (help ? SHORTCUTS.length + 1 : 0) +
+    (acOptions.length ? Math.min(8, acOptions.length) + (acOptions.length > 8 ? 1 : 0) : 0) +
+    (queued > 0 ? 1 : 0) + 3 + 1;
+  // One row of slack: sitting a line short of the bottom is invisible, whereas
+  // overshooting scrolls the terminal and eats the top of the transcript.
+  const pad = Math.max(0, rows - used - liveRows - 1);
+  const ghost = acOptions.length === 1 && acOptions[0]!.cmd.startsWith(input)
+    ? acOptions[0]!.cmd.slice(input.length)
+    : '';
 
   return (
     <Box flexDirection="column" width="100%">
-      <Header shortCwd={shortCwd} version={VERSION} session={status} />
       <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} expanded={expanded} />
+      {pad > 0 && <Box height={pad} />}
+      {status && <Header shortCwd={shortCwd} version={VERSION} session={status} />}
       {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
       {help && <Shortcuts />}
-      {!running && acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
-      <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} active={!running} placeholder="/new <objective> or /help" />
-      <StatusBar running={running} status={status} expanded={expanded} help={help} />
+      {acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
+      <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} placeholder="/new <objective> or /help" />
+      <StatusBar running={running} status={status} expanded={expanded} help={help} since={startedAt} />
     </Box>
   );
 }

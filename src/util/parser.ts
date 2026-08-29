@@ -14,7 +14,7 @@ export type LogType =
   | 'heading'
   | 'sep'
   | 'user'
-  | 'reasoning';
+  | 'reasoning' | 'banner';
 
 /** Which stage of a run a line belongs to. Settled stages collapse to a single
  *  result line so a finished run reads as four lines, not four hundred. */
