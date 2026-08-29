@@ -153,7 +153,7 @@ export async function runProxy(repoPath: string, port: number): Promise<http.Ser
           account_id: sel.account.id,
           model_id: sel.model,
           usage: response.usage,
-          cost_usd: manager.costOf(sel.spec, response.usage.input_tokens, response.usage.output_tokens),
+          cost_usd: manager.costOf(sel.spec, response.usage),
           components: prompt.included,
         });
 

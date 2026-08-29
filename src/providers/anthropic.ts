@@ -93,14 +93,21 @@ export class AnthropicAdapter implements ProviderAdapter {
       cache_read_input_tokens?: number | null;
       cache_creation_input_tokens?: number | null;
     };
+    // The API reports cache reads and writes *beside* `input_tokens`; the CLI
+    // reports them inside it. Everything downstream — the ledger, the budget
+    // bar, the cost — treats `input_tokens` as the whole billed input, so the
+    // API shape is folded to match rather than leaving two conventions live.
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+    const input = usage.input_tokens + cacheRead + cacheWrite;
     return {
       text,
       usage: {
-        input_tokens: usage.input_tokens,
+        input_tokens: input,
         output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_input_tokens ?? undefined,
-        cache_write_tokens: usage.cache_creation_input_tokens ?? undefined,
-        total_tokens: usage.input_tokens + usage.output_tokens,
+        cache_read_tokens: cacheRead || undefined,
+        cache_write_tokens: cacheWrite || undefined,
+        total_tokens: input + usage.output_tokens,
       },
       model: request.model,
       latency_ms: latency,

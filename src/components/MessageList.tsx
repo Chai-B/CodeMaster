@@ -1,8 +1,8 @@
 import React from 'react';
 import { Box, Static, Text, useStdout } from 'ink';
 import { LogEntry, LogType } from '../util/parser';
-import { BLUE, BLUE_HI, BLUE_DIM, MUTED, GREEN, RED, AMBER, VIOLET, GLYPH, LOGO } from '../themes/blue';
-import { Banner, TAGLINE } from './Header';
+import { BLUE, BLUE_HI, BLUE_DIM, MUTED, GREEN, RED, AMBER, VIOLET, GLYPH } from '../themes/blue';
+import { Banner } from './Header';
 
 /**
  * Settled lines are written once and scroll natively; only the live region
@@ -184,51 +184,4 @@ function LogLine({ entry, expanded }: { entry: LogEntry; expanded: boolean }) {
       ))}
     </Box>
   );
-}
-
-/** How many terminal rows a settled entry occupies once rendered. It feeds only
- *  the bottom-padding calculation that keeps the composer on the last line, so
- *  being a row out costs a row of whitespace and nothing else. Kept beside the
- *  components it mirrors so the two stay in step. */
-export function estimateRows(e: LogEntry, cols: number, expanded: boolean): number {
-  const w = Math.max(28, cols);
-  if (e.type === 'banner') {
-    const art = w >= 70;
-    // margin 1 each side, border 1 each side, padding 2 each side, and the
-    // logo column plus its gutter when it is drawn at all.
-    const inner = Math.max(8, w - 2 - 2 - 4 - (art ? LOGO[0]!.length + 2 : 0));
-    const text = 1 + wrapRows(e.text, inner) + wrapRows(TAGLINE, inner);
-    return 1 + 2 + (art ? 0 : 2) + Math.max(art ? LOGO.length : 0, text) + 1;
-  }
-  if (e.type === 'sep') return 2;
-  if (e.type === 'md') {
-    if (!e.text.trim()) return 1;
-    if (/^#{1,6}\s/.test(e.text)) return 2;
-    // The bold and code markers are consumed by Inline, so they take no columns.
-    return wrapRows(e.text.replace(/\*\*|`/g, ''), w - 4);
-  }
-  let n = e.type === 'heading' || e.type === 'user' ? 2 : 1;
-  if (e.detail && expanded) for (const d of e.detail.split('\n')) n += wrapRows(d, w - 7);
-  return n;
-}
-
-/** Rows a string takes once word-wrapped to `avail` columns. Dividing the length
- *  by the width undercounts: a word that does not fit is moved down whole, so
- *  every line ends early by however much of the next word did not fit. */
-function wrapRows(s: string, avail: number): number {
-  const w = Math.max(8, avail);
-  let rows = 1;
-  let col = 0;
-  for (const word of s.split(' ')) {
-    const len = word.length;
-    if (col > 0 && col + 1 + len <= w) {
-      col += 1 + len;
-      continue;
-    }
-    if (col > 0) rows += 1;
-    if (len === 0) { col = 0; continue; }
-    rows += Math.floor((len - 1) / w);
-    col = ((len - 1) % w) + 1;
-  }
-  return rows;
 }

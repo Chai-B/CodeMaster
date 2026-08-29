@@ -32,11 +32,22 @@ Do not propose edits, do not emit a patch, and do not plan work. This is a quest
 const INTERROGATIVE = /^(what|why|how|where|when|which|who|whose|does|do|did|is|are|was|can|could|should|would|explain|describe|summarise|summarize|tell)\b/i;
 const IMPERATIVE = /^(fix|add|implement|refactor|write|create|remove|delete|rename|update|migrate|build|make|port|optimi[sz]e|test)\b/i;
 
+/** An explicit refusal of writes, wherever it appears in the sentence. Someone
+ *  who says "no writes" has told you exactly what they want and it is not a
+ *  session — but only once the opening verb has been ruled out, so that
+ *  "refactor X without changing behaviour" stays the instruction it is. */
+const READ_ONLY = /\b(no writes?|only read|read[- ]only|don'?t (change|modify|write|edit)|without (chang|modify|writ|edit)ing|do not (change|modify|write|edit))\b/i;
+
+/** Asking to be shown something rather than asking for it to be built. "Give me
+ *  a summary" is a question; "give me a login button" is not, so the object has
+ *  to be informational for this to fire. */
+const ASK_FOR_INFO = /^(give|show|tell|walk)\b[^.?!]{0,48}\b(summary|summari[sz]e|overview|rundown|breakdown|tour|explanation|structure|architecture|layout)\b/i;
+
 export function looksLikeQuestion(text: string): boolean {
   const t = text.trim();
   if (!t || t.startsWith('/')) return false;
   if (IMPERATIVE.test(t)) return false;
-  return t.endsWith('?') || INTERROGATIVE.test(t);
+  return t.endsWith('?') || INTERROGATIVE.test(t) || READ_ONLY.test(t) || ASK_FOR_INFO.test(t);
 }
 
 /** Session and Task shaped for the compiler, never handed to storage. The

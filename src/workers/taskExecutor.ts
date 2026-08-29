@@ -179,7 +179,7 @@ export async function executeTask(
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
   bus.emit({ type: 'provider.response', provider_id: sel.adapter.provider_id, tokens: response.usage.total_tokens });
 
-  const cost = manager.costOf(sel.spec, response.usage.input_tokens, response.usage.output_tokens);
+  const cost = manager.costOf(sel.spec, response.usage);
   Tokens.record({
     session_id: session.id,
     task_id: task.id,
@@ -212,7 +212,7 @@ export async function executeTask(
         account_id: sel.account.id, model_id: sel.model, usage: retry.usage,
         // A retry costs real money. Recording it as free understated the run's
         // own cost by a full call — measured, one such retry was 74,602 tokens.
-        cost_usd: manager.costOf(sel.spec, retry.usage.input_tokens, retry.usage.output_tokens),
+        cost_usd: manager.costOf(sel.spec, retry.usage),
         components: compiled.included,
       });
       retryTokens = retry.usage.total_tokens;

@@ -5,7 +5,7 @@ import { render } from 'ink';
 import { Writable } from 'node:stream';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { MessageList, estimateRows } from '../../src/components/MessageList.js';
+import { MessageList } from '../../src/components/MessageList.js';
 import type { LogEntry } from '../../src/util/parser.js';
 
 class Fake extends Writable {
@@ -24,7 +24,6 @@ class Fake extends Writable {
 }
 
 const END = '\u00a7END';
-const ANCHOR: LogEntry = { id: 900, type: 'tool', text: 'anchor' };
 
 async function draw(entries: LogEntry[], cols: number, expanded: boolean): Promise<string[]> {
   const out = new Fake(cols);
@@ -46,22 +45,6 @@ async function draw(entries: LogEntry[], cols: number, expanded: boolean): Promi
   const end = lines.findIndex((l) => l.includes(END));
   assert.ok(end >= 0, 'sentinel row missing from rendered output');
   return lines.slice(0, end);
-}
-
-/** Rows one entry adds to the transcript. Measured as a delta rather than in
- *  isolation: Ink discards a static frame that is entirely whitespace, so a
- *  blank line rendered alone vanishes even though it holds a row among
- *  neighbours — which is the only way it ever appears. */
-const baseRows = new Map<string, number>();
-
-async function rowsOf(entry: LogEntry, cols: number, expanded: boolean): Promise<number> {
-  const key = `${cols}:${expanded}`;
-  let base = baseRows.get(key);
-  if (base === undefined) {
-    base = (await draw([ANCHOR], cols, expanded)).length;
-    baseRows.set(key, base);
-  }
-  return (await draw([ANCHOR, entry], cols, expanded)).length - base;
 }
 
 const CASES: Array<[string, LogEntry]> = [
@@ -87,37 +70,6 @@ const REASONING: LogEntry = {
   text: 'decision  Serve statically; no build step exists in this stack',
   detail: 'script.js is a self-invoking function loaded by a plain <script> tag.\nNo package.json, no bundler, no import/export statements anywhere.',
 };
-
-const WIDTHS = [40, 60, 80, 120];
-
-// The composer is pinned to the last row by padding the live region with
-// exactly the rows the transcript did not use. If the estimate drifts from what
-// Ink actually draws, the prompt creeps off the bottom of the window.
-test('estimateRows matches the rendered height of every log type', async () => {
-  for (const cols of WIDTHS) {
-    for (const [name, entry] of CASES) {
-      const drawn = await rowsOf(entry, cols, false);
-      assert.equal(
-        estimateRows(entry, cols, false),
-        drawn,
-        `${name} at ${cols} cols: estimated ${estimateRows(entry, cols, false)}, drew ${drawn}`,
-      );
-    }
-  }
-});
-
-test('estimateRows matches folded and expanded reasoning', async () => {
-  for (const cols of WIDTHS) {
-    for (const expanded of [false, true]) {
-      const drawn = await rowsOf(REASONING, cols, expanded);
-      assert.equal(
-        estimateRows(REASONING, cols, expanded),
-        drawn,
-        `reasoning at ${cols} cols, expanded=${expanded}`,
-      );
-    }
-  }
-});
 
 test('no rendered line exceeds the terminal width', async () => {
   const all = [...CASES.map(([, e]) => e), REASONING];

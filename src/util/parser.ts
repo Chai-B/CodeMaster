@@ -46,6 +46,20 @@ export function phaseOf(entry: Omit<LogEntry, 'id'>, current: Phase | null): Pha
   return current;
 }
 
+/** What is true of the tool regardless of whether a session is running: which
+ *  model answers, what the vendor has counted against the current window, and
+ *  what this repository has cost so far. Shown at all times, because the moment
+ *  you need it is the moment before you start something expensive. */
+export interface UsageView {
+  model: string;
+  /** Tokens the vendor has counted in the account's current rate-limit window. */
+  windowTokens: number;
+  /** Milliseconds until a rate-limited account is usable again; 0 when it is. */
+  blockedMs: number;
+  /** Spend recorded against this repository, all sessions. */
+  spend: number;
+}
+
 export interface SessionStatusView {
   id: string;
   status: string;

@@ -99,7 +99,7 @@ export async function callLlm(
     account_id: sel.account.id,
     model_id: sel.model,
     usage: response.usage,
-    cost_usd: manager.costOf(sel.spec, response.usage.input_tokens, response.usage.output_tokens),
+    cost_usd: manager.costOf(sel.spec, response.usage),
     components: ['worker'],
   });
   bus.emit({ type: 'provider.response', provider_id: sel.adapter.provider_id, tokens: response.usage.total_tokens });

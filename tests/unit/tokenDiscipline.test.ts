@@ -6,12 +6,17 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import type { ModelSpec, TokenUsage } from '../../src/types/index.js';
 
 process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-td-'));
 
 const { resolveBudget, budgetForTier } = await import('../../src/context/budget.js');
 const { Tokens } = await import('../../src/storage/tokens.js');
 const { PromptCache, promptHash } = await import('../../src/storage/promptCache.js');
+// Imported after CODEMASTER_DATA_DIR is set, like everything else here: a
+// static import of the provider manager binds the real user database at load.
+const { costOfUsage } = await import('../../src/providers/manager.js');
+const { looksLikeQuestion } = await import('../../src/workers/asker.js');
 
 test('the first attempt gets the smallest rung, not the whole window', () => {
   assert.equal(budgetForTier(200_000, 0), 24_000);
@@ -149,4 +154,48 @@ test('file content is shed as whole files, never a truncated tail of every file'
   assert.ok(!kept.content.includes('### c.ts'));
   // and it is never dropped outright
   assert.ok(components.some((c) => c.component === C.RELEVANT_FILES));
+});
+
+// Cached input is not fresh input. Charging the whole billed input at the fresh
+// rate priced a resumed conversation at up to 1.76x what the vendor took, and
+// every savings figure is computed against that baseline.
+test('a cache read costs a tenth of a fresh token, and a cache write a quarter more', () => {
+  const spec: ModelSpec = { id: 'm', context_size: 200_000, cost_per_1m_input: 10, cost_per_1m_output: 50 };
+  const usage: TokenUsage = {
+    input_tokens: 100_000, output_tokens: 0,
+    cache_read_tokens: 80_000, cache_write_tokens: 10_000, total_tokens: 100_000,
+  };
+  // 10k fresh at 10 + 80k at 1 + 10k at 12.5, per million.
+  const expected = (10_000 * 10 + 80_000 * 1 + 10_000 * 12.5) / 1_000_000;
+  assert.ok(Math.abs(costOfUsage(spec, usage) - expected) < 1e-12);
+  // The old model charged the whole input fresh; the gap is the overcharge.
+  assert.ok(costOfUsage(spec, usage) < (100_000 / 1_000_000) * 10);
+});
+
+test('a call with no cache is priced exactly as before', () => {
+  const spec: ModelSpec = { id: 'm', context_size: 200_000, cost_per_1m_input: 10, cost_per_1m_output: 50 };
+  const usage: TokenUsage = { input_tokens: 1000, output_tokens: 200, total_tokens: 1200 };
+  assert.ok(Math.abs(costOfUsage(spec, usage) - ((1000 / 1_000_000) * 10 + (200 / 1_000_000) * 50)) < 1e-12);
+});
+
+// A provider reporting cache counts outside its input total would otherwise
+// drive the fresh figure negative and refund the call.
+test('cache counts larger than the input total never produce a negative charge', () => {
+  const spec: ModelSpec = { id: 'm', context_size: 200_000, cost_per_1m_input: 10, cost_per_1m_output: 50 };
+  const usage: TokenUsage = {
+    input_tokens: 10, output_tokens: 0, cache_read_tokens: 5000, cache_write_tokens: 0, total_tokens: 10,
+  };
+  assert.ok(costOfUsage(spec, usage) > 0);
+  assert.ok(Math.abs(costOfUsage(spec, usage) - (5000 / 1_000_000) * 1) < 1e-12);
+});
+
+// The user's phrasing that started a full session instead of answering.
+test('an explicit refusal of writes is a question, not an objective', () => {
+  assert.equal(looksLikeQuestion('give me a quick summary of this project, no writes, only read'), true);
+  assert.equal(looksLikeQuestion('walk me through the architecture'), true);
+  assert.equal(looksLikeQuestion('explain the auth flow'), true);
+  // The opening verb still wins: these ask for work, whatever qualifies them.
+  assert.equal(looksLikeQuestion('add a read-only flag to the config'), false);
+  assert.equal(looksLikeQuestion('refactor the solver without changing behaviour'), false);
+  assert.equal(looksLikeQuestion('give me a login button'), false);
 });

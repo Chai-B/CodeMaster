@@ -48,7 +48,7 @@ export const COMMANDS: CommandDef[] = [
   // Diagnostic
   { cmd: '/tokens', desc: 'Token usage statistics', group: 'Diagnostic', usage: '/tokens | /tokens by-provider' },
   { cmd: '/context', desc: 'Show compiled context (no LLM)', group: 'Diagnostic' },
-  { cmd: '/stats', desc: 'Overall runtime statistics', group: 'Diagnostic' },
+  { cmd: '/stats', desc: 'Tokens, cost, context window and quality — and what was saved', group: 'Diagnostic' },
   { cmd: '/doctor', desc: 'Check that everything is set up correctly', group: 'Diagnostic' },
   { cmd: '/health', desc: 'Provider account health', group: 'Diagnostic' },
   { cmd: '/cost', desc: 'Subscription windows spent and blocked', group: 'Diagnostic' },

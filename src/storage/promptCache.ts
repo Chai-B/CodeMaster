@@ -80,6 +80,21 @@ export const PromptCache = {
     const m = getDb().prepare("SELECT COALESCE(n,0) n FROM cache_stat WHERE k='miss'").get() as { n: number } | undefined;
     return { hits: r.h, tokens: r.t, misses: m?.n ?? 0 };
   },
+
+  /** The same reuse, split by the model that would otherwise have been asked.
+   *  A saving in tokens is one number, but a saving in money is not: the same
+   *  reused answer is worth fifteen times more against opus than against haiku,
+   *  so it can only be priced against the model it was cached for. */
+  savedByModel(): Array<{ model_id: string; tokens: number; hits: number }> {
+    return getDb()
+      .prepare(
+        `SELECT model_id, COALESCE(SUM(hits),0) hits, COALESCE(SUM(hits*tokens),0) tokens FROM (
+           SELECT model_id, hits, tokens FROM prompt_cache
+           UNION ALL SELECT model_id, hits, tokens FROM text_cache)
+         WHERE hits > 0 GROUP BY model_id`,
+      )
+      .all() as Array<{ model_id: string; tokens: number; hits: number }>;
+  },
 };
 
 function miss(): void {

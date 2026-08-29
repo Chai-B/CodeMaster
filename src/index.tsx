@@ -6,9 +6,9 @@ import os from 'os';
 import { createRequire } from 'module';
 
 import { Header } from './components/Header.js';
-import { MessageList, estimateRows } from './components/MessageList.js';
+import { MessageList } from './components/MessageList.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
-import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView } from './util/parser.js';
+import { eventToLog, phaseOf, type LogEntry, type LogType, type Phase, type SessionStatusView, type UsageView } from './util/parser.js';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED, AMBER, BRAILLE, VERBS } from './themes/blue.js';
 
 import { bus } from './events/bus.js';
@@ -18,6 +18,7 @@ import { COMMANDS } from './commands/catalog.js';
 import { Sessions, Tasks } from './storage/sessions.js';
 import { staticAnalysis } from './analysis/api.js';
 import { Tokens } from './storage/tokens.js';
+import { QuotaLedger } from './providers/quotaLedger.js';
 
 const require_ = createRequire(import.meta.url);
 const VERSION = (require_('../package.json') as { version: string }).version;
@@ -47,15 +48,20 @@ const EMPTY_LOGS: LogState = { settled: [], live: [], phase: null, phaseStart: 0
 
 let _id = 0;
 
-/** One line standing in for a phase's whole output: what it was, and what it
- *  cost in wall time. The detail is gone from the screen, not from the run. */
+/** Lines that are the run's output rather than a note about its progress.
+ *  These never enter the live region, so a phase ending can never take them
+ *  with it — the answer, the reasoning and the verdict stay on screen while
+ *  "FileSelector — 7 files" does not. */
+const KEEP = new Set<LogType>(['md', 'reasoning', 'heading', 'success', 'error', 'warn', 'sep', 'banner', 'user']);
+
+/** What a finished phase leaves behind: how long it took and how many steps it
+ *  took to get there. Only progress lines are ever in `live`, so this discards
+ *  nothing a reader would want back. */
 function collapse(state: LogState): LogEntry[] {
-  if (!state.phase || state.live.length === 0) return state.live;
+  const n = state.live.length;
+  if (!state.phase || n === 0) return [];
   const secs = Math.max(0, Math.round((Date.now() - state.phaseStart) / 1000));
-  const result =
-    [...state.live].reverse().find((e) => e.type === 'success' || e.type === 'error')?.text ??
-    `${state.live.length} step${state.live.length === 1 ? '' : 's'}`;
-  return [{ id: ++_id, type: 'dim', text: `${state.phase.padEnd(11)}${result} · ${secs}s` }];
+  return [{ id: ++_id, type: 'dim', text: `${state.phase} · ${n} step${n === 1 ? '' : 's'} · ${secs}s` }];
 }
 
 function logReducer(
@@ -71,20 +77,46 @@ function logReducer(
   const phase = phaseOf(action.entry, state.phase);
   const entry: LogEntry = { ...action.entry, phase: phase ?? undefined, id: ++_id };
 
-  // Nothing collapses in verbose mode: every line goes straight to the
-  // permanent region, which is what /verbose is for.
-  if (state.verbose) {
-    return { ...state, phase, settled: [...state.settled, entry].slice(-2000), live: [] };
-  }
-  if (phase === state.phase) {
-    return { ...state, live: [...state.live, entry].slice(-40) };
-  }
+  // A phase boundary settles whatever the outgoing phase left running.
+  const turned = phase !== state.phase;
+  const flushed = turned ? collapse(state) : [];
+  const live = turned ? [] : state.live;
+
+  // Verbose settles everything, which is what /verbose is for. Otherwise a line
+  // settles if it is output and stays live if it is progress.
+  const settle = state.verbose || !phase || KEEP.has(entry.type);
+  const settled = settle
+    ? [...state.settled, ...flushed, entry]
+    : [...state.settled, ...flushed];
   return {
     ...state,
     phase,
-    phaseStart: Date.now(),
-    settled: [...state.settled, ...collapse(state), ...(phase ? [] : [entry])].slice(-2000),
-    live: phase ? [entry] : [],
+    phaseStart: turned ? Date.now() : state.phaseStart,
+    settled: settled.slice(-2000),
+    live: settle ? live : [...live, entry].slice(-40),
+  };
+}
+
+function computeUsage(): UsageView {
+  let windowTokens = 0;
+  let blockedMs = 0;
+  try {
+    for (const q of QuotaLedger.all()) {
+      windowTokens += q.tokens_used;
+      const until = Math.max(
+        q.rate_limited_until ? Date.parse(q.rate_limited_until) : 0,
+        q.cooldown_until ? Date.parse(q.cooldown_until) : 0,
+      );
+      blockedMs = Math.max(blockedMs, until - Date.now());
+    }
+  } catch {
+    /* an unreadable quota table must not stop the interface from drawing */
+  }
+  return {
+    model: sm.getCurrent()?.current_provider?.model_id ?? sm.cfg.providers.default,
+    windowTokens,
+    blockedMs: Math.max(0, blockedMs),
+    spend: Tokens.grandTotal().cost,
   };
 }
 
@@ -265,6 +297,7 @@ function App() {
   const [running, setRunning] = useState(false);
   const [startedAt, setStartedAt] = useState(Date.now());
   const [status, setStatus] = useState<SessionStatusView | null>(null);
+  const [usage, setUsage] = useState<UsageView>(computeUsage);
   const [acOptions, setAcOptions] = useState<Cmd[]>([]);
   const [acIndex, setAcIndex] = useState(0);
   const queueRef = useRef<string[]>([]);
@@ -282,6 +315,8 @@ function App() {
       const entry = eventToLog(ev);
       if (entry && (entry.type !== 'plain' || entry.text)) dispatch({ type: 'add', entry });
       setStatus(computeStatus());
+    setUsage(computeUsage());
+      setUsage(computeUsage());
     });
     dispatch({ type: 'add', entry: { type: 'banner', text: shortCwd, detail: VERSION } });
     if (firstRunHere(cwd)) {
@@ -303,6 +338,7 @@ function App() {
       if (incomplete > 0) log('warn', `${incomplete} incomplete session(s) detected — run /recover to restore.`);
     });
     setStatus(computeStatus());
+    setUsage(computeUsage());
     return () => {
       void daemon.stop();
       off();
@@ -404,6 +440,8 @@ function App() {
         log('error', String(e));
       } finally {
         setStatus(computeStatus());
+    setUsage(computeUsage());
+      setUsage(computeUsage());
         const next = queueRef.current.shift();
         setQueued(queueRef.current.length);
         setRunning(false);
@@ -417,22 +455,11 @@ function App() {
   const submitRef = useRef<((s: string) => Promise<void>) | null>(null);
   submitRef.current = handleSubmit;
 
-  const cols = stdout?.columns ?? 80;
-  const rows = stdout?.rows ?? 24;
-  // <Static> lines are already on the terminal, so the live frame only has to
-  // make up the difference to reach the last row. Once the transcript is longer
-  // than the window the terminal scrolls on its own and no padding is wanted.
-  const used = logs.settled.reduce((n, e) => n + estimateRows(e, cols, expanded), 0);
-  const liveRows =
-    logs.live.reduce((n, e) => n + estimateRows(e, cols, expanded), 0) +
-    (status ? 1 : 0) +
-    (running ? 2 : 0) +
-    (help ? SHORTCUTS.length + 1 : 0) +
-    (acOptions.length ? Math.min(8, acOptions.length) + (acOptions.length > 8 ? 1 : 0) : 0) +
-    (queued > 0 ? 1 : 0) + 3 + 1;
-  // One row of slack: sitting a line short of the bottom is invisible, whereas
-  // overshooting scrolls the terminal and eats the top of the transcript.
-  const pad = Math.max(0, rows - used - liveRows - 1);
+  // The composer follows the last line of output rather than being pinned to
+  // the last row of the window. Pinning meant padding the live region with the
+  // rows the transcript had not used yet, and that padding changed height on
+  // every event — so Ink erased and repainted the whole bottom of the screen
+  // continuously, which is the drift you see as the bar "moving".
   const ghost = acOptions.length === 1 && acOptions[0]!.cmd.startsWith(input)
     ? acOptions[0]!.cmd.slice(input.length)
     : '';
@@ -440,8 +467,7 @@ function App() {
   return (
     <Box flexDirection="column" width="100%">
       <MessageList settled={logs.settled} live={logs.live} clearGen={logs.clearGen} expanded={expanded} />
-      {pad > 0 && <Box height={pad} />}
-      {status && <Header shortCwd={shortCwd} version={VERSION} session={status} />}
+      <Header shortCwd={shortCwd} version={VERSION} session={status} usage={usage} />
       {running && <Spinner label={logs.phase ?? 'working'} since={startedAt} tokens={status?.tokens ?? 0} />}
       {help && <Shortcuts />}
       {acOptions.length > 0 && <Autocomplete options={acOptions} selectedIndex={acIndex} />}

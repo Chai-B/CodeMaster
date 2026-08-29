@@ -25,6 +25,12 @@ export interface ModelSpec {
   context_size: number;
   cost_per_1m_input: number;
   cost_per_1m_output: number;
+  /** Fraction of the input price charged for a token served from the vendor's
+   *  prefix cache. Omitted means the Anthropic-style default (a tenth). */
+  cache_read_multiplier?: number;
+  /** Fraction of the input price charged to write a token into that cache.
+   *  Omitted means the Anthropic-style default (a quarter more than fresh). */
+  cache_write_multiplier?: number;
 }
 
 export interface AccountQuota {

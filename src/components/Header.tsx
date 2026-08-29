@@ -1,12 +1,13 @@
 import React from 'react';
 import { Box, Text, useStdout } from 'ink';
 import { BLUE, BLUE_HI, BLUE_DIM, MUTED, GREEN, AMBER, RED, LOGO } from '../themes/blue';
-import type { SessionStatusView } from '../util/parser';
+import type { SessionStatusView, UsageView } from '../util/parser';
 
 interface HeaderProps {
   shortCwd: string;
   version: string;
   session: SessionStatusView | null;
+  usage: UsageView;
 }
 
 function fmt(n: number): string {
@@ -40,7 +41,7 @@ function Budget({ used, total }: { used: number; total: number }) {
  * part anyone was attached to — and everything beside it is now information
  * that changes.
  */
-export function Header({ shortCwd, version, session }: HeaderProps) {
+export function Header({ shortCwd, version, session, usage }: HeaderProps) {
   const { stdout } = useStdout();
   const cols = stdout?.columns ?? 80;
 
@@ -56,9 +57,10 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
       [`${session.taskN}/${session.taskTotal}`, MUTED],
       ['', MUTED, <Budget key="b" used={session.tokens} total={session.tokenBudget} />],
       [cost, MUTED],
+      [usage.blockedMs > 0 ? `limited ${mins(usage.blockedMs)}` : '', RED],
     ];
     const live = fields.filter(([t, , node]) => t || node);
-    const drop = [0, 4, 1, 2]; // cwd, cost, provider, task count
+    const drop = [0, 4, 1, 2]; // cwd, cost, provider, task count — the limit warning never drops
     const len = (f: typeof live) => f.reduce((n, [t, , node]) => n + (node ? 9 + fmt(session.tokens).length : t.length), 0) + (f.length - 1) * 3;
     const gone = new Set<number>();
     for (const i of drop) {
@@ -80,11 +82,32 @@ export function Header({ shortCwd, version, session }: HeaderProps) {
     );
   }
 
-  return null;
+  // At rest the same line still has to answer "what will this cost me and can I
+  // even run it right now" — which used to require two slash commands.
+  const parts: Array<[string, string]> = [[shortCwd, MUTED], [usage.model, BLUE]];
+  if (usage.blockedMs > 0) parts.push([`rate limited ${mins(usage.blockedMs)}`, RED]);
+  else if (usage.windowTokens > 0) parts.push([`${fmt(usage.windowTokens)} this window`, MUTED]);
+  if (usage.spend > 0) parts.push([`$${usage.spend.toFixed(2)} total`, MUTED]);
+  return (
+    <Box paddingX={1}>
+      <Text wrap="truncate-end">
+        {parts.map(([t, c], i) => (
+          <Text key={t}>
+            {i > 0 ? <Text color={BLUE_DIM}> · </Text> : ''}
+            <Text color={c}>{t}</Text>
+          </Text>
+        ))}
+      </Text>
+    </Box>
+  );
 }
 
-/** Shared with the row estimator, which has to know whether it wraps. */
-export const TAGLINE = 'Describe what you want done, or /help for commands.';
+function mins(ms: number): string {
+  const m = Math.ceil(ms / 60_000);
+  return m >= 60 ? `${Math.ceil(m / 60)}h` : `${m}m`;
+}
+
+const TAGLINE = 'Describe what you want done, or /help for commands.';
 
 /** The startup card: the C, the wordmark, where you are. Printed once into the
  *  transcript rather than held in the live region, so it scrolls away with

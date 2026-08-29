@@ -405,3 +405,42 @@ export function applyPrimarySchema(db: DatabaseSync): void {
     }
   }
 }
+
+/**
+ * Re-price ledger rows written before cached input was billed as cached input.
+ *
+ * Every historical row reports `input_tokens` inclusive of its cache counts —
+ * checked across the ledger, 222 such rows, none exclusive — so subtracting
+ * them recovers the fresh count exactly. Without this, `/cost` and `/stats`
+ * keep reporting a run at up to 1.76x what the vendor actually charged, and no
+ * savings figure computed against that baseline means anything.
+ *
+ * Runs once; the marker lives in the same table the cache counters use.
+ */
+export function repriceLegacyCost(
+  db: DatabaseSync,
+  price: (modelId: string) => { input: number; output: number; read: number; write: number } | null,
+): void {
+  const done = db.prepare("SELECT n FROM cache_stat WHERE k='repriced_v1'").get() as { n: number } | undefined;
+  if (done) return;
+  const rows = db
+    .prepare(
+      `SELECT id, model_id, input_tokens i, output_tokens o,
+              COALESCE(cache_read_tokens,0) r, COALESCE(cache_write_tokens,0) w
+       FROM token_usage`,
+    )
+    .all() as Array<{ id: string; model_id: string; i: number; o: number; r: number; w: number }>;
+  const upd = db.prepare('UPDATE token_usage SET cost_usd=? WHERE id=?');
+  for (const row of rows) {
+    const p = price(row.model_id);
+    if (!p) continue;
+    const fresh = Math.max(0, row.i - row.r - row.w);
+    const cost =
+      (fresh / 1_000_000) * p.input +
+      (row.r / 1_000_000) * p.input * p.read +
+      (row.w / 1_000_000) * p.input * p.write +
+      (row.o / 1_000_000) * p.output;
+    upd.run(cost, row.id);
+  }
+  db.prepare("INSERT INTO cache_stat (k, n) VALUES ('repriced_v1', 1) ON CONFLICT(k) DO UPDATE SET n=1").run();
+}

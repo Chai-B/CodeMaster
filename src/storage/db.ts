@@ -3,8 +3,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
-import { activeRepoPath, dbPath, ensureDirs, ensureRepoDirs } from '../config.js';
-import { applyPrimarySchema, REPO_INDEX_SCHEMA } from './schema.js';
+import { activeRepoPath, dbPath, ensureDirs, ensureRepoDirs, loadConfig, allModels } from '../config.js';
+import { applyPrimarySchema, repriceLegacyCost, REPO_INDEX_SCHEMA } from './schema.js';
 import { migrateLegacy } from './migrate.js';
 
 // Bump when the repo-index schema columns change so stale disposable indexes
@@ -39,6 +39,21 @@ export function getDb(repoPath: string = activeRepoPath()): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   applyPrimarySchema(db);
+  try {
+    const models = allModels(loadConfig());
+    repriceLegacyCost(db, (id) => {
+      const m = models.find((x) => x.id === id);
+      if (!m) return null;
+      return {
+        input: m.cost_per_1m_input,
+        output: m.cost_per_1m_output,
+        read: m.cache_read_multiplier ?? 0.1,
+        write: m.cache_write_multiplier ?? 1.25,
+      };
+    });
+  } catch {
+    /* a stale cost column is not worth failing to open the database over */
+  }
   stateDbs.set(repoPath, db);
   return db;
 }

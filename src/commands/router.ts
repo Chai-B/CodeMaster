@@ -28,7 +28,7 @@ import { MemoryCompressorWorker } from '../workers/memoryCompressor.js';
 import { runWorker } from '../workers/base.js';
 import { applyDecay, findCompressionCandidates } from '../memory/lifecycle.js';
 import { recoverAll } from '../daemon/recovery.js';
-import { tokensByTaskType, providerEfficiency, profileTask } from '../analysis/tokenAnalytics.js';
+import { tokensByTaskType, providerEfficiency, profileTask, savingsReport } from '../analysis/tokenAnalytics.js';
 import { listPlugins, listCommandPlugins, getCommandPlugin, PLUGINS_DIR } from '../plugins/loader.js';
 import { answerQuestion, looksLikeQuestion } from '../workers/asker.js';
 import { bootstrapWiki } from '../wiki/bootstrap.js';
@@ -737,24 +737,60 @@ export class CommandRouter {
   }
 
   private stats(): void {
-    this.out('heading', 'Runtime statistics');
-    const g = Tokens.grandTotal();
-    const sessions = Sessions.list(1000);
-    this.out('info', `Sessions: ${sessions.length}`);
-    this.out('info', `Total tokens: ${fmtTokens(g.total)}  Total cost: $${g.cost.toFixed(2)}`);
-    const api = staticAnalysis(process.cwd());
-    const idx = api.stats();
-    if (idx) this.out('info', `Index: ${idx.files} files, ${idx.symbols} symbols`);
+    const r = savingsReport();
+    this.out('heading', 'Savings');
+    if (!r.calls) {
+      this.out('dim', 'No model calls recorded in this repository yet.');
+      return;
+    }
+
+    // Spend first. A savings figure with nothing to compare it against is a
+    // marketing number, and this one has to survive being checked.
+    const gross = r.usdSpent + r.usdSaved;
+    const pct = gross > 0 ? (r.usdSaved / gross) * 100 : 0;
+    this.out('info', `Spent   $${r.usdSpent.toFixed(2)} over ${r.calls} call${r.calls === 1 ? '' : 's'} · ${fmtTokens(r.tokensSpent)} tokens`);
+    this.out('info', `Saved   $${r.usdSaved.toFixed(2)} (${pct.toFixed(0)}% of $${gross.toFixed(2)} at list price)${r.tokensSaved ? ` · ${fmtTokens(r.tokensSaved)} tokens never sent` : ''}`);
+
+    for (const row of r.rows) {
+      this.out('info', `  ${row.label.padEnd(16)}$${row.usd.toFixed(2)}${row.tokens ? `  ${fmtTokens(row.tokens)} tok` : ''}`);
+      this.out('dim', `  ${' '.repeat(16)}${row.detail}`);
+    }
+
+    if (r.window) {
+      this.out('heading', 'Context window');
+      const w = r.window;
+      const filled = (w.peak / w.peakSize) * 100;
+      this.out('info', `Largest call ${fmtTokens(w.peak)} of ${fmtTokens(w.peakSize)} (${filled.toFixed(1)}%) on ${w.peakModel}`);
+      this.out('info', `Average call filled ${(w.avgFill * 100).toFixed(1)}% of the window`);
+      this.out('dim', 'Context is compiled to a budget rather than filled — the headroom is the saving.');
+    }
+    if (r.waste) {
+      this.out('dim', `Of the input sent, ${fmtTokens(r.waste.tokens)} (${(r.waste.ratio * 100).toFixed(1)}%) went to files the answers never referenced.`);
+    }
+
+    if (r.quality) {
+      this.out('heading', 'Quality');
+      const q = r.quality;
+      const rate = (n: number) => (q.tasks ? ((n / q.tasks) * 100).toFixed(0) : '0');
+      this.out('info', `${q.completed}/${q.tasks} tasks completed (${rate(q.completed)}%) · ${q.verified} verified by a test run (${rate(q.verified)}%)`);
+      this.out('info', `${q.failed} failed · ${q.retried} needed more than one solver attempt`);
+      this.out('dim', 'Verified means a real test framework ran and passed, not that a patch applied.');
+    }
+    // Where the tokens actually went. The savings above say what was avoided;
+    // this says what was bought, which is the other half of the question.
     const byType = tokensByTaskType();
     if (byType.length) {
-      this.out('heading', 'Tokens by task type');
-      for (const t of byType) this.out('info', `${(t.type ?? 'unknown').padEnd(10)} ${t.invocations}x  avg ${fmtTokens(t.avg_tokens)}  total ${fmtTokens(t.total_tokens)}`);
+      this.out('heading', 'Where the tokens went');
+      for (const t of byType.sort((a, b) => b.total_tokens - a.total_tokens)) {
+        this.out('info', `${(t.type ?? 'unknown').padEnd(12)}${String(t.invocations).padStart(3)} call${t.invocations === 1 ? ' ' : 's'}  ${fmtTokens(t.total_tokens).padStart(7)}  avg ${fmtTokens(t.avg_tokens)}`);
+      }
     }
     const eff = providerEfficiency();
-    if (eff.length) {
-      this.out('heading', 'Provider efficiency');
-      for (const e of eff) this.out('info', `${e.provider.padEnd(10)} ${e.invocations}x  total ${fmtTokens(e.total_tokens)}  avg out ${fmtTokens(e.avg_output)}`);
+    if (eff.length > 1) {
+      for (const e of eff) this.out('dim', `${e.provider.padEnd(12)}${String(e.invocations).padStart(3)} calls  ${fmtTokens(e.total_tokens)}`);
     }
+
+    this.out('dim', 'Cached answers cost nothing and are excluded from spend. /cost breaks spend down by role.');
   }
 
   private profile(arg: string): void {
@@ -1162,14 +1198,34 @@ export class CommandRouter {
       }
       return this.usage(arg.startsWith('/') ? arg : `/${arg}`);
     }
-    this.out('heading', 'Help');
+    // Forty-eight commands listed as eight group names and a count told a
+    // reader nothing about what to type. The dozen that cover almost every
+    // session come first, in the order you would actually reach for them.
+    this.out('heading', 'Start here');
+    for (const [cmd, what] of START_HERE) this.out('info', `${cmd.padEnd(22)}${what}`);
+    this.out('heading', 'Everything else');
     for (const g of groups) {
       const cmds = COMMANDS.filter((c) => c.group === g);
-      this.out('info', `${g.padEnd(12)} ${cmds.length} command(s): ${cmds.slice(0, 5).map((c) => c.cmd).join(' ')}${cmds.length > 5 ? ' …' : ''}`);
+      this.out('info', `${g.padEnd(12)}${cmds.map((c) => c.cmd).join(' ')}`);
     }
-    this.out('dim', '/help <group> lists a group · /<command> --help shows one command · /doctor checks the setup.');
+    this.out('dim', '/help <group> describes a group · /<command> --help shows one command · /doctor checks the setup.');
   }
 }
+
+/** The path through the tool, not an index of it: ask a question, start work,
+ *  watch it, check it, undo it. Everything here is also in COMMANDS — this is
+ *  an ordering, not a second catalogue. */
+const START_HERE: Array<[string, string]> = [
+  ['<just type it>', 'Describe a change and CodeMaster plans it and does it'],
+  ['<ask a question>', 'Anything read-only is answered without starting a session'],
+  ['/tasks', 'What the plan is and how far through it you are'],
+  ['/diff', 'Everything changed so far in this session'],
+  ['/stats', 'Tokens, cost, context window and what was saved'],
+  ['/undo', 'Reverse the last patch'],
+  ['/model', 'Show or switch the model'],
+  ['/account', 'Store credentials for each provider and switch between them'],
+  ['/doctor', 'Check that the setup actually works'],
+];
 
 /** Config as `a.b.c` → value pairs, skipping arrays of objects that have no
  *  useful single-line form. */

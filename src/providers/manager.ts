@@ -12,7 +12,33 @@ import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
 import { ConversationLost } from '../types/index.js';
-import type { Account, ProviderAdapter, ModelSpec, LlmRole, LlmEffort, CompiledPrompt, ProviderRequest, ProviderResponse } from '../types/index.js';
+import type { Account, ProviderAdapter, ModelSpec, LlmRole, LlmEffort, CompiledPrompt, ProviderRequest, ProviderResponse, TokenUsage } from '../types/index.js';
+
+/** Anthropic's published ratios, and the closest thing to a cross-vendor norm.
+ *  A spec that bills differently overrides them. */
+export const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+
+/**
+ * Cost of one call, with cached input priced as cached input.
+ *
+ * Exported because the savings report re-prices historical ledger rows and has
+ * to agree with what is charged going forward, to the cent.
+ */
+export function costOfUsage(spec: ModelSpec, usage: TokenUsage): number {
+  const read = usage.cache_read_tokens ?? 0;
+  const write = usage.cache_write_tokens ?? 0;
+  // Clamped because a provider that reports cache tokens *outside* its input
+  // count would otherwise drive the fresh figure negative and refund the call.
+  const fresh = Math.max(0, usage.input_tokens - read - write);
+  const inPrice = spec.cost_per_1m_input;
+  return (
+    (fresh / 1_000_000) * inPrice +
+    (read / 1_000_000) * inPrice * (spec.cache_read_multiplier ?? CACHE_READ_MULTIPLIER) +
+    (write / 1_000_000) * inPrice * (spec.cache_write_multiplier ?? CACHE_WRITE_MULTIPLIER) +
+    (usage.output_tokens / 1_000_000) * spec.cost_per_1m_output
+  );
+}
 
 export interface SelectedProvider {
   adapter: ProviderAdapter;
@@ -618,8 +644,19 @@ export class ProviderManager {
     account.health.last_checked_at = now();
   }
 
-  costOf(spec: ModelSpec, inputTokens: number, outputTokens: number): number {
-    return (inputTokens / 1_000_000) * spec.cost_per_1m_input + (outputTokens / 1_000_000) * spec.cost_per_1m_output;
+  /**
+   * What the vendor actually bills for one call.
+   *
+   * `input_tokens` is the whole billed input, cache included. Charging all of
+   * it at the fresh rate is what made a resumed conversation read as several
+   * times its real price: a prefix-cache read costs a tenth of a fresh token,
+   * and on a long conversation nearly every input token is a cache read.
+   *
+   * Answers served from our own cache never reach a provider and are never
+   * recorded, so they cost nothing here by construction.
+   */
+  costOf(spec: ModelSpec, usage: TokenUsage): number {
+    return costOfUsage(spec, usage);
   }
 }
 

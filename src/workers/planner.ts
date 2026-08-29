@@ -71,7 +71,7 @@ export async function generatePlan(
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
   manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
 
-  const cost = manager.costOf(sel.spec, response.usage.input_tokens, response.usage.output_tokens);
+  const cost = manager.costOf(sel.spec, response.usage);
   Tokens.record({
     session_id: session.id,
     task_id: planningTask.id,
