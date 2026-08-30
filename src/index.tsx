@@ -5,7 +5,7 @@ import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
 
-import { HeaderBar } from './components/Header.js';
+import { Header } from './components/Header.js';
 import { MessageList, totalRows } from './components/MessageList.js';
 import { Activity, StatusBar } from './components/Activity.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
@@ -552,7 +552,7 @@ function App() {
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>
-      <HeaderBar version={VERSION} shortCwd={shortCwd} title={taskTitle} cols={cols} />
+      <Header version={VERSION} shortCwd={shortCwd} title={taskTitle} cols={cols} rows={rows} />
 
       {/* The only part of the frame that scrolls. `flexGrow` hands it whatever
           the header and the footer below did not take, however tall those are

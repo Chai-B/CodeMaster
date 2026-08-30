@@ -6,7 +6,7 @@ import { Writable } from 'node:stream';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
 import { MessageList, Transcript, estimateRows } from '../../src/components/MessageList.js';
-import { HeaderBar } from '../../src/components/Header.js';
+import { Header } from '../../src/components/Header.js';
 import { Activity, StatusBar } from '../../src/components/Activity.js';
 import { EMPTY_LOGS, logReducer, type LogState } from '../../src/util/parser.js';
 import type { LogEntry } from '../../src/util/parser.js';
@@ -179,7 +179,7 @@ async function liveRows(cols: number, running: boolean): Promise<string[]> {
     React.createElement(
       React.Fragment,
       null,
-      React.createElement(HeaderBar, { shortCwd: '~/Codemaster', version: '1.0.0', title: running ? 'Fix configuration precedence between file and flags' : '', cols }),
+      React.createElement(Header, { shortCwd: '~/Codemaster', version: '1.0.0', title: running ? 'Fix configuration precedence between file and flags' : '', cols, rows: 40 }),
       running
         ? React.createElement(Activity, {
             phase: 'Solving' as const,
