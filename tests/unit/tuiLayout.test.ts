@@ -5,8 +5,10 @@ import { render } from 'ink';
 import { Writable } from 'node:stream';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { MessageList, Transcript, estimateRows } from '../../src/components/MessageList.js';
-import { Header, headerRows } from '../../src/components/Header.js';
+import { Transcript } from '../../src/components/MessageList.js';
+import { Banner } from '../../src/components/Header.js';
+import { Activity, StatusBar } from '../../src/components/Activity.js';
+import { EMPTY_LOGS, logReducer, type LogState } from '../../src/util/parser.js';
 import type { LogEntry } from '../../src/util/parser.js';
 
 class Fake extends Writable {
@@ -84,105 +86,76 @@ test('no rendered line exceeds the terminal width', async () => {
   }
 });
 
-/** Rows one entry adds to the transcript. Measured as a delta rather than in
- *  isolation: Ink discards a frame that is entirely whitespace, so a blank line
- *  rendered alone vanishes even though it holds a row among neighbours — which
- *  is the only way it ever appears. */
-const baseRows = new Map<string, number>();
-
-async function rowsOf(entry: LogEntry, cols: number, expanded: boolean): Promise<number> {
-  const key = `${cols}:${expanded}`;
-  let base = baseRows.get(key);
-  if (base === undefined) {
-    base = (await draw([ANCHOR], cols, expanded)).length;
-    baseRows.set(key, base);
-  }
-  return (await draw([ANCHOR, entry], cols, expanded)).length - base;
-}
-
-const WIDTHS = [40, 60, 80, 120];
-
-// The viewport chooses how many entries fit by asking estimateRows how tall
-// each one is. If the estimate drifts from what Ink actually draws, the frame
-// overruns the window and the terminal scrolls by a row — which is the exact
-// drift the pinning exists to remove.
-test('estimateRows matches the rendered height of every log type', async () => {
-  for (const cols of WIDTHS) {
-    for (const [name, entry] of CASES) {
-      const drawn = await rowsOf(entry, cols, false);
-      assert.equal(estimateRows(entry, cols, false), drawn, `${name} at ${cols} cols`);
-    }
-  }
-});
-
-test('estimateRows matches folded and expanded reasoning', async () => {
-  for (const cols of WIDTHS) {
-    for (const expanded of [false, true]) {
-      const drawn = await rowsOf(REASONING, cols, expanded);
-      assert.equal(estimateRows(REASONING, cols, expanded), drawn, `reasoning at ${cols}, expanded=${expanded}`);
-    }
-  }
-});
-
-/** Render just the viewport, with no sentinel: its whole contract is that it is
- *  exactly `height` rows tall whatever it is given. */
-async function viewport(entries: LogEntry[], cols: number, height: number, scroll: number): Promise<string[]> {
+/** Everything Ink still redraws every frame, at one width. A row wider than
+ *  the window wraps, and a wrapped live region tears as it repaints. */
+async function liveRows(cols: number, running: boolean): Promise<string[]> {
   const out = new Fake(cols);
+  const status = {
+    id: 's', status: 'running', taskN: 1, taskTotal: 4,
+    tokens: 152_000, tokenBudget: 200_000, cost: 0.31, provider: 'claude-opus-4-8',
+  };
+  const usage = { model: 'claude-opus-4-8', windowTokens: 152_000, blockedMs: 900_000, spend: 1.17 };
+  const steps: LogEntry[] = [
+    { id: 1, type: 'tool', text: 'FileSelector — 7 files · 2.1k tok', at: Date.now() - 3000 },
+    { id: 2, type: 'result', text: 'ContextCompiler  2,757 tokens from 7 files', at: Date.now() - 5000 },
+    { id: 3, type: 'tool', text: 'Solver — calling claude-opus-4-8', at: Date.now() - 12_000 },
+  ];
   const inst = render(
-    React.createElement(MessageList, { settled: entries, live: [], expanded: false, height, scroll }),
+    React.createElement(
+      React.Fragment,
+      null,
+      React.createElement(Banner, { shortCwd: '~/Codemaster', version: '1.0.0' }),
+      running
+        ? React.createElement(Activity, {
+            phase: 'Solving' as const,
+            phaseStart: Date.now() - 47_000,
+            phaseDone: { Planning: 12 },
+            steps,
+            status,
+            taskTitle: 'Fix configuration precedence between file and flags',
+          })
+        : null,
+      React.createElement(StatusBar, { shortCwd: '~/Codemaster', usage, status, running, since: Date.now() - 47_000 }),
+    ),
     { stdout: out as never, patchConsole: false },
   );
   await new Promise((r) => setTimeout(r, 50));
   inst.unmount();
-  const lines = stripAnsi(out.buf).split('\n');
-  // Ink terminates the frame with a newline; that is not a row of the frame.
-  if (lines.at(-1) === '') lines.pop();
-  return lines;
+  return stripAnsi(out.buf).split('\n');
 }
 
-test('the viewport is exactly its given height, empty or overfull', async () => {
-  const many: LogEntry[] = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, type: 'tool', text: `step ${i}` }));
-  for (const cols of [40, 80, 120]) {
-    for (const height of [3, 10, 24]) {
-      for (const [label, entries] of [['empty', []], ['one', [ANCHOR]], ['overfull', many]] as Array<[string, LogEntry[]]>) {
-        const lines = await viewport(entries, cols, height, 0);
-        assert.equal(lines.length, height, `${label} at ${cols}x${height}`);
+test('no live-region line exceeds the terminal width', async () => {
+  for (const cols of [30, 40, 60, 80, 120]) {
+    for (const running of [true, false]) {
+      for (const line of await liveRows(cols, running)) {
+        const w = stringWidth(line.replace(/\s+$/, ''));
+        assert.ok(w <= cols, `${w} > ${cols} (running=${running}): ${JSON.stringify(line)}`);
       }
     }
   }
 });
 
-test('the viewport keeps the newest line and scrolling reaches the oldest', async () => {
-  const many: LogEntry[] = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, type: 'tool', text: `step ${i}` }));
-  const bottom = await viewport(many, 80, 10, 0);
-  assert.ok(bottom.at(-1)!.includes('step 59'), `newest line missing: ${JSON.stringify(bottom.at(-1))}`);
-  const top = await viewport(many, 80, 10, 55);
-  assert.ok(top.join('\n').includes('step 0'), 'scrolling back never reaches the first line');
-  const mid = await viewport(many, 80, 10, 20);
-  assert.ok(mid.join('\n').includes('earlier line'), 'no indication that lines are hidden above');
-  assert.equal(mid.length, 10, 'the hidden-above notice must come out of the budget, not add to it');
+// `<Static>` prints each item once and never looks at it again, so the settled
+// array may only ever grow at the end. Trimming its front, or reusing an id,
+// makes Ink reprint the whole transcript from wherever the change landed —
+// silently, and only once a session has run long enough to hit the bound.
+test('settled lines are append-only and never reuse an id', async () => {
+  const TYPES: LogEntry['type'][] = ['md', 'tool', 'result', 'reasoning', 'success', 'dim', 'sep', 'heading'];
+  let state: LogState = EMPTY_LOGS;
+  const seen = new Set<number>();
+  let prev: LogEntry[] = [];
+  for (let i = 0; i < 3000; i++) {
+    state = logReducer(state, { type: 'add', entry: { type: TYPES[i % TYPES.length]!, text: `line ${i}` } });
+    assert.ok(state.settled.length >= prev.length, `settled shrank at ${i}`);
+    for (let j = 0; j < prev.length; j++) assert.equal(state.settled[j], prev[j], `settled[${j}] rewritten at ${i}`);
+    for (const e of state.settled.slice(prev.length)) {
+      assert.ok(!seen.has(e.id), `id ${e.id} reused at ${i}`);
+      seen.add(e.id);
+    }
+    prev = state.settled;
+  }
+  assert.ok(state.settled.length > 1000, `too few settled lines: ${state.settled.length}`);
+  // The live region is the only thing that is allowed to be bounded.
+  assert.ok(state.live.length <= 40, `live region unbounded: ${state.live.length}`);
 });
 
-/** The transcript is given whatever the pinned chrome does not take, so an
- *  undercount by even one row makes the frame taller than the window and the
- *  terminal scrolls — the exact drift pinning removes. The header is the only
- *  piece of that chrome whose height varies. */
-test('headerRows matches what the header draws, at every size and state', async () => {
-  const usage = { model: 'claude-opus-4-8', windowTokens: 1200, blockedMs: 0, spend: 1.17 };
-  const session = { id: 's', status: 'running', taskN: 1, taskTotal: 3, tokens: 1000, tokenBudget: 5000, cost: 0.3, provider: 'anthropic' };
-  for (const [cols, rows] of [[100, 30], [100, 20], [70, 22], [69, 40], [60, 40], [40, 30], [30, 24]] as Array<[number, number]>) {
-    for (const sess of [null, session]) {
-      const out = new Fake(cols);
-      out.rows = rows;
-      const inst = render(
-        React.createElement(Header, { shortCwd: '~/Codemaster', version: '1.0.0', session: sess, usage }),
-        { stdout: out as never, patchConsole: false },
-      );
-      await new Promise((r) => setTimeout(r, 40));
-      inst.unmount();
-      const lines = stripAnsi(out.buf).split('\n');
-      if (lines.at(-1) === '') lines.pop();
-      assert.equal(lines.length, headerRows(cols, rows, !!sess), `${cols}x${rows} session=${!!sess}`);
-    }
-  }
-});

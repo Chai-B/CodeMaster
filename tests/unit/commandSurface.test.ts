@@ -69,16 +69,17 @@ test('a task boundary is what ends planning', () => {
   assert.equal(phaseOf(sep!, 'Planning'), 'Solving');
 });
 
-// Claiming the mouse for wheel scrolling costs selection and copy: with SGR
-// reporting on, dragging across the transcript highlights nothing and there is
-// no way to get a line of output out of the terminal. Alternate scroll gets the
-// wheel back without taking the mouse, and the arrows carry the notches.
-test('the TUI never claims the mouse, so selection and copy stay the terminal\'s', () => {
+// Every attempt to rebuild scrolling inside this program cost something the
+// terminal already does for free: claiming the mouse (SGR `?1000h`) killed
+// drag-select, and alternate scroll (`?1007h`) made a wheel notch and an arrow
+// key the same bytes. Settled output now goes into the terminal's own
+// scrollback, so none of those sequences may come back.
+test('the TUI leaves scrolling, selection and copy to the terminal', () => {
   const tui = fs.readFileSync(path.join(process.cwd(), 'src/index.tsx'), 'utf8');
-  const enable = /stdout\.write\('([^']*\?1049h[^']*)'\)/.exec(tui)?.[1];
-  assert.ok(enable, 'the alternate-screen enable sequence moved');
-  assert.ok(!/\?100[026]h/.test(enable), `mouse reporting is back on: ${JSON.stringify(enable)}`);
-  assert.ok(enable.includes('?1007h'), 'alternate scroll is off, so the wheel does nothing');
-  // Recall has to live somewhere once the arrows are the wheel.
+  assert.ok(!/\?1049h/.test(tui), 'the alternate screen is back, and it has no scrollback');
+  assert.ok(!/\?100[026]h/.test(tui), 'mouse reporting is back on, which breaks selection');
+  assert.ok(!/\?1007h/.test(tui), 'alternate scroll is back, which makes the wheel and the arrows the same key');
+  assert.ok(/<Static\b/.test(tui), 'settled lines no longer go into the scrollback');
+  // Recall keeps its aliases even though the arrows are unambiguous again.
   assert.ok(tui.includes("c === 'p'") && tui.includes("c === 'n'"), 'history lost its keys');
 });

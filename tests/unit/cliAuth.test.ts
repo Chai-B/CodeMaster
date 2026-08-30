@@ -53,7 +53,16 @@ test('codex login status is read as a sentence, negation included', () => {
   assert.equal(parseCodexStatus('').signedIn, false);
 });
 
-test('every vendor has a state, and an unknown provider has none', () => {
+test('every vendor has a state, and an unknown provider has none', (t) => {
+  // Against an empty registry: the count is one state per vendor only when no
+  // extra accounts are registered, and the machine running the tests may have
+  // some of its own.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cli-'));
+  process.env.CODEMASTER_DATA_DIR = dir;
+  t.after(() => {
+    delete process.env.CODEMASTER_DATA_DIR;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   const states = allCliStates();
   assert.equal(states.length, CLI_VENDORS.length);
   for (const s of states) {

@@ -9,31 +9,13 @@ import type { Choice, Field, PromptSpec, PromptResult } from '../ui/prompt.js';
  * buttons, or a short form filled one field at a time.
  *
  * It draws where the autocomplete draws and takes the keyboard while it is up,
- * so the composer is not focused and the transcript does not scroll under it.
- * Its height is a pure function of the spec (`promptRows`) because the frame is
- * pinned to the window — a panel whose height the layout cannot predict pushes
- * the composer off the bottom row.
+ * so the composer is not focused and nothing else reads the keystroke.
  */
 
 const MAX_ROWS = 9;
 
 function fieldRows(f: Field): number {
   return f.choices ? Math.min(f.choices.length, MAX_ROWS) : 1;
-}
-
-/** Rows the panel occupies, including its top margin. */
-export function promptRows(spec: PromptSpec): number {
-  const chrome = 3; // top margin, title, key hints
-  switch (spec.kind) {
-    case 'select':
-      return chrome + Math.min(spec.choices.length, MAX_ROWS);
-    case 'confirm':
-      return chrome + 1 + (spec.detail ? 1 : 0);
-    case 'form':
-      // One field at a time, at the height of the tallest — a body that
-      // resized as you advanced would move everything above it.
-      return chrome + 1 + Math.max(...spec.fields.map(fieldRows));
-  }
 }
 
 function clip(s: string, w: number): string {

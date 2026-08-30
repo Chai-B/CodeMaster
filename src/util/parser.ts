@@ -25,6 +25,9 @@ export interface LogEntry {
   type: LogType;
   text: string;
   phase?: Phase;
+  /** When the line was created, so the live region can count a step's age up.
+   *  Only set by the reducer — a literal entry in a test does not need one. */
+  at?: number;
   /** Long-form body kept out of the way until the reader asks for it. */
   detail?: string;
 }
@@ -130,4 +133,81 @@ export function eventToLog(ev: CodeMasterEvent): Omit<LogEntry, 'id'> | null {
     default:
       return null;
   }
+}
+
+// ── Log state ───────────────────────────────────────────────────────────────
+// Two regions, not one list. `settled` is the transcript proper and goes into
+// the terminal's own scrollback through Ink's `<Static>`, one line at a time,
+// never to be repainted. `live` is the phase currently running and is the only
+// thing Ink redraws. When a phase ends it collapses to a single result line and
+// moves across, so a finished run reads as a few lines rather than every line
+// the workers emitted.
+export interface LogState {
+  settled: LogEntry[];
+  live: LogEntry[];
+  phase: Phase | null;
+  phaseStart: number;
+  /** Seconds each finished phase took, for the stepper. */
+  phaseDone: Partial<Record<Phase, number>>;
+  clearGen: number;
+  verbose: boolean;
+}
+
+export const EMPTY_LOGS: LogState = { settled: [], live: [], phase: null, phaseStart: 0, phaseDone: {}, clearGen: 0, verbose: false };
+
+let _id = 0;
+
+/** Lines that are the run's output rather than a note about its progress.
+ *  These never enter the live region, so a phase ending can never take them
+ *  with it — the answer, the reasoning and the verdict stay on screen while
+ *  "FileSelector — 7 files" does not. */
+const KEEP = new Set<LogType>(['md', 'reasoning', 'heading', 'success', 'error', 'warn', 'sep', 'user']);
+
+/** What a finished phase leaves behind: how long it took and how many steps it
+ *  took to get there. Only progress lines are ever in `live`, so this discards
+ *  nothing a reader would want back. */
+function collapse(state: LogState): LogEntry[] {
+  const n = state.live.length;
+  if (!state.phase || n === 0) return [];
+  const secs = Math.max(0, Math.round((Date.now() - state.phaseStart) / 1000));
+  return [{ id: ++_id, type: 'dim', text: `${state.phase} · ${n} step${n === 1 ? '' : 's'} · ${secs}s` }];
+}
+
+export function logReducer(
+  state: LogState,
+  action:
+    | { type: 'add'; entry: Omit<LogEntry, 'id'> }
+    | { type: 'clear' }
+    | { type: 'verbose'; on: boolean },
+): LogState {
+  if (action.type === 'clear') return { ...EMPTY_LOGS, clearGen: state.clearGen + 1, verbose: state.verbose };
+  if (action.type === 'verbose') return { ...state, verbose: action.on };
+
+  const phase = phaseOf(action.entry, state.phase);
+  const entry: LogEntry = { ...action.entry, phase: phase ?? undefined, at: Date.now(), id: ++_id };
+
+  // A phase boundary settles whatever the outgoing phase left running.
+  const turned = phase !== state.phase;
+  const flushed = turned ? collapse(state) : [];
+  const live = turned ? [] : state.live;
+
+  // Verbose settles everything, which is what /verbose is for. Otherwise a line
+  // settles if it is output and stays live if it is progress.
+  const settle = state.verbose || !phase || KEEP.has(entry.type);
+  const settled = settle
+    ? [...state.settled, ...flushed, entry]
+    : [...state.settled, ...flushed];
+  return {
+    ...state,
+    phase,
+    phaseStart: turned ? Date.now() : state.phaseStart,
+    // `<Static>` prints each item once and never revisits it, so this array may
+    // only ever be appended to — trimming the front would make Ink reprint the
+    // whole transcript from wherever the trim landed.
+    phaseDone: turned && state.phase
+      ? { ...state.phaseDone, [state.phase]: Math.max(0, Math.round((Date.now() - state.phaseStart) / 1000)) }
+      : state.phaseDone,
+    settled,
+    live: settle ? live : [...live, entry].slice(-40),
+  };
 }

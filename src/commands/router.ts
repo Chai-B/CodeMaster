@@ -303,6 +303,10 @@ export class CommandRouter {
     const why = tasks.find((t) => !t.evidence?.verified)?.evidence?.reason ?? failed[0]?.failure_reason;
     if (why && verified.length < tasks.length) this.out('dim', `Why      ${why.split('\n')[0]!.slice(0, 150)}`);
     this.out('dim', `Cost     ${tok.total.toLocaleString()} tokens · $${tok.cost.toFixed(4)} · ${elapsed}`);
+    // Reasoning is the most expensive thing the run produced and the easiest to
+    // forget it kept, so the summary says how much of it is there to read.
+    const reasoned = Reasoning.forSession(s.id).length;
+    if (reasoned) this.out('dim', `Reasoned ${reasoned} recorded · /reasoning to browse`);
     if (files.length) this.out('dim', `Undo     /undo`);
   }
 

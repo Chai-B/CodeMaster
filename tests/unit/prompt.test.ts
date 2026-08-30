@@ -5,7 +5,7 @@ import { render } from 'ink';
 import { PassThrough, Writable } from 'node:stream';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { Prompt, promptRows } from '../../src/components/Prompt.js';
+import { Prompt } from '../../src/components/Prompt.js';
 import { setPrompter, select, confirm, form, interactive, type PromptSpec, type PromptResult } from '../../src/ui/prompt.js';
 
 class Out extends Writable {
@@ -109,20 +109,6 @@ test('an installed prompter receives the spec and its answer comes back typed', 
   assert.equal(await form('fill', [{ name: 'x', label: 'x' }]), null);
   assert.deepEqual(seen.map((s) => s.kind), ['select', 'confirm', 'form']);
   setPrompter(null);
-});
-
-// The frame is pinned to the window: the transcript gets whatever the chrome
-// does not take. A panel one row taller than the layout was told pushes the
-// composer off the bottom of the screen.
-test('promptRows matches the height every prompt actually draws', async () => {
-  for (const cols of [40, 60, 80, 120]) {
-    for (const spec of SPECS) {
-      const { drawn } = await drive(spec, [], cols);
-      const lines = drawn.split('\n');
-      if (lines.at(-1) === '') lines.pop();
-      assert.equal(lines.length, promptRows(spec), `${spec.kind} at ${cols} cols`);
-    }
-  }
 });
 
 test('no prompt line exceeds the terminal width', async () => {
