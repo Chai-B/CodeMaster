@@ -33,15 +33,28 @@ export interface ModelSpec {
   cache_write_multiplier?: number;
 }
 
+/**
+ * What is actually known about one account's consumption. Every field here is
+ * either measured by this tool or reported by the vendor — the old shape
+ * carried a `daily_token_limit`, `rate_limit_rpm` and `rate_limit_tpm` that
+ * were the same invented numbers for every provider, and a caller could not
+ * tell them apart from a real one. A limit no vendor has stated is absent.
+ */
 export interface AccountQuota {
-  daily_token_limit: number;
-  tokens_used_today: number;
-  rate_limit_rpm: number;
-  rate_limit_tpm: number;
-  current_rpm: number;
-  current_tpm: number;
+  /** Spent inside the current usage window, restored from the ledger at
+   *  startup rather than restarting at zero each process. */
+  tokens_used: number;
+  requests: number;
+  cost_usd: number;
+  /** Total across every window since this account was first used. */
+  lifetime_tokens: number;
+  lifetime_cost_usd: number;
   context_size: number;
+  /** Start and end of the window the counters above cover. */
+  window_start: ISO8601;
   resets_at: ISO8601;
+  /** Present only while the vendor itself says this account is limited. */
+  rate_limited_until?: ISO8601;
 }
 
 export interface AccountHealth {

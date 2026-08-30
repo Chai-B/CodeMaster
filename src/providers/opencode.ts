@@ -105,6 +105,8 @@ export function foldOpencodeEvents(lines: Iterable<string>): OpencodeResult {
   let input = 0;
   let output = 0;
   let cached = 0;
+  let written = 0;
+  let thinking = 0;
   let error: string | undefined;
 
   for (const line of lines) {
@@ -128,7 +130,9 @@ export function foldOpencodeEvents(lines: Iterable<string>): OpencodeResult {
         input += t.input ?? 0;
         // Reasoning is billed as output and reported apart from it.
         output += (t.output ?? 0) + (t.reasoning ?? 0);
+        thinking += t.reasoning ?? 0;
         cached += t.cache?.read ?? 0;
+        written += t.cache?.write ?? 0;
         break;
       }
       case 'error':
@@ -144,6 +148,8 @@ export function foldOpencodeEvents(lines: Iterable<string>): OpencodeResult {
       input_tokens: input,
       output_tokens: output,
       cache_read_tokens: cached || undefined,
+      cache_write_tokens: written || undefined,
+      reasoning_tokens: thinking || undefined,
       total_tokens: input + output,
     },
     error,

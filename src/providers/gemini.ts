@@ -174,16 +174,19 @@ export function usageFromGeminiStats(stats: GeminiJson['stats']): TokenUsage {
   let input = 0;
   let output = 0;
   let cached = 0;
+  let thinking = 0;
   for (const m of Object.values(stats?.models ?? {})) {
     const t = m.tokens ?? {};
     input += t.prompt ?? t.input ?? 0;
     output += (t.candidates ?? 0) + (t.thoughts ?? 0);
+    thinking += t.thoughts ?? 0;
     cached += t.cached ?? 0;
   }
   return {
     input_tokens: input,
     output_tokens: output,
     cache_read_tokens: cached || undefined,
+    reasoning_tokens: thinking || undefined,
     total_tokens: input + output,
   };
 }

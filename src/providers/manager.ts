@@ -10,7 +10,7 @@ import { CodexAdapter } from './codex.js';
 import { OpencodeAdapter, opencodeCliAvailable } from './opencode.js';
 import { CredentialManager } from './credentials.js';
 import { DEFAULT_ACCOUNT, allCliStates, cliRef, cliState, parseCliRef, vendorFor } from './cliAuth.js';
-import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
+import { QuotaLedger, parseRetryAfterMs, resetsAt } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
 import { ConversationLost } from '../types/index.js';
@@ -225,6 +225,10 @@ export class ProviderManager {
 
   private makeAccount(providerId: string, alias: string, credRef: string): Account {
     const ctx = this.adapters.get(providerId)?.capabilities.max_context_tokens ?? 200_000;
+    // Seeded from the ledger, not from zero. Its counters are keyed by
+    // provider::alias, which survives a restart, so a window half spent before
+    // this process started reads as half spent rather than untouched.
+    const q = QuotaLedger.get(`${providerId}::${alias}`, providerId);
     return {
       id: id('acct'),
       provider_id: providerId,
@@ -232,23 +236,24 @@ export class ProviderManager {
       credential_ref: credRef,
       auth_type: 'api_key',
       quota: {
-        daily_token_limit: 50_000_000,
-        tokens_used_today: 0,
-        rate_limit_rpm: 50,
-        rate_limit_tpm: 200_000,
-        current_rpm: 0,
-        current_tpm: 0,
+        tokens_used: q.tokens_used,
+        requests: q.requests,
+        cost_usd: q.cost_usd,
+        lifetime_tokens: q.lifetime_tokens,
+        lifetime_cost_usd: q.lifetime_cost_usd,
         context_size: ctx,
-        resets_at: now(),
+        window_start: q.window_start,
+        resets_at: resetsAt(q),
+        rate_limited_until: q.rate_limited_until,
       },
       health: {
         status: 'healthy',
         last_latency_ms: 0,
-        avg_latency_ms: 0,
+        avg_latency_ms: q.lifetime_requests ? Math.round(q.latency_ms_total / q.lifetime_requests) : 0,
         error_rate_last_hour: 0,
         last_checked_at: now(),
       },
-      last_used_at: now(),
+      last_used_at: q.last_used_at ?? now(),
     };
   }
 
@@ -785,9 +790,7 @@ export class ProviderManager {
     await Promise.all(this.accounts.map((a) => this.ping(a).catch(() => undefined)));
   }
 
-  recordUsage(account: Account, totalTokens: number, latencyMs: number): void {
-    account.quota.tokens_used_today += totalTokens;
-    account.quota.current_rpm += 1;
+  recordUsage(account: Account, usage: TokenUsage, costUsd: number, latencyMs: number): void {
     account.last_used_at = now();
     account.health.last_latency_ms = latencyMs;
     account.health.avg_latency_ms = account.health.avg_latency_ms
@@ -796,11 +799,31 @@ export class ProviderManager {
     // Persisted so a subscription window's spend survives a restart. There is
     // no threshold warning here any more: the old one fired at 80% of an
     // invented 50M daily limit, a number no vendor has ever reported.
-    QuotaLedger.recordUsage(this.key(account), account.provider_id, totalTokens);
+    QuotaLedger.recordUsage(this.key(account), account.provider_id, {
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_read_tokens: usage.cache_read_tokens,
+      cache_write_tokens: usage.cache_write_tokens,
+      reasoning_tokens: usage.reasoning_tokens,
+      total_tokens: usage.total_tokens,
+      cost_usd: costUsd,
+      latency_ms: latencyMs,
+    });
+    // Read straight back rather than incremented in place, so the window
+    // rollover the ledger may have just applied is what the account reports.
+    const q = QuotaLedger.get(this.key(account), account.provider_id);
+    account.quota.tokens_used = q.tokens_used;
+    account.quota.requests = q.requests;
+    account.quota.cost_usd = q.cost_usd;
+    account.quota.lifetime_tokens = q.lifetime_tokens;
+    account.quota.lifetime_cost_usd = q.lifetime_cost_usd;
+    account.quota.window_start = q.window_start;
+    account.quota.resets_at = resetsAt(q);
   }
 
   markRateLimited(account: Account, retryAfterMs: number): void {
     account.health.status = 'degraded';
+    account.quota.rate_limited_until = new Date(Date.now() + retryAfterMs).toISOString();
     QuotaLedger.markRateLimited(this.key(account), account.provider_id, retryAfterMs);
     bus.emit({ type: 'provider.rate_limited', account_id: account.id, retry_after_ms: retryAfterMs });
   }

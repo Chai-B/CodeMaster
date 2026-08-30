@@ -20,7 +20,7 @@ import path from 'path';
 import { compileContext } from '../context/compiler.js';
 import { createCheckpoint, restoreCheckpoint, verifyCheckpointState } from '../workers/checkpointer.js';
 import { compileHandoffPackage, validateHandoffPackage, renderHandoffPackage } from '../workers/handoff.js';
-import { QuotaLedger } from '../providers/quotaLedger.js';
+import { QuotaLedger, resetsAt } from '../providers/quotaLedger.js';
 import { Learning } from '../learning/reflector.js';
 import { MemoryCompressorWorker } from '../workers/memoryCompressor.js';
 import { runWorker } from '../workers/base.js';
@@ -32,13 +32,25 @@ import { answerQuestion, looksLikeQuestion } from '../workers/asker.js';
 import { bootstrapWiki } from '../wiki/bootstrap.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { bus } from '../events/bus.js';
-import { fmtTokens } from '../util/tokens.js';
+import { fmtAgo, fmtCost, fmtDuration, fmtTokens } from '../util/tokens.js';
 import { COMMANDS } from './catalog.js';
 import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
 import { activeRepoPath, listProjects, loadConfig, saveConfig, CONFIG_PATH } from '../config.js';
 import { select, confirm, form, interactive } from '../ui/prompt.js';
 import { withTerminal } from '../ui/terminal.js';
-import { allCliStates, cliState, invalidateCliState, runOnTerminal, type CliState } from '../providers/cliAuth.js';
+import {
+  DEFAULT_ACCOUNT,
+  MAX_ACCOUNTS_PER_VENDOR,
+  accountEnv,
+  addCliAccount,
+  allCliStates,
+  cliAccounts,
+  cliState,
+  invalidateCliState,
+  removeCliAccount,
+  runOnTerminal,
+  type CliState,
+} from '../providers/cliAuth.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session, LlmRole } from '../types/index.js';
 import type { Config } from '../config.js';
@@ -405,8 +417,8 @@ export class CommandRouter {
    * and masks its echo, so the secret does not survive the call.
    */
   private async account(args: string[] = []): Promise<void> {
-    if (args[0] === 'login') return this.cliLogin(args[1]);
-    if (args[0] === 'logout') return this.cliLogout(args[1]);
+    if (args[0] === 'login') return this.cliLogin(args[1], args[2]);
+    if (args[0] === 'logout') return this.cliLogout(args[1], args[2]);
     if (args[0] === 'add') {
       if (args[1] && args[2]) return this.addAccount(args[1], args[2], args[3] ?? process.env.CODEMASTER_NEW_KEY);
       // Three positional arguments in the right order, one of them a secret, is
@@ -420,6 +432,8 @@ export class CommandRouter {
       if (!answers) return this.out('warn', 'Usage: /account add <provider> <alias> <key>  (or set CODEMASTER_NEW_KEY)');
       return this.addAccount(answers.provider!, answers.alias!, answers.key);
     }
+    if (args[0] === 'new') return this.newCliAccount(args[1], args[2]);
+    if (args[0] === 'drop') return this.dropCliAccount(args[1], args[2]);
     if (args[0] === 'use') {
       const alias = args[1] ?? (await this.pickAccount('Which account answers first?'));
       if (!alias) return this.out('warn', 'Usage: /account use <alias>');
@@ -434,13 +448,19 @@ export class CommandRouter {
       return this.out(removed ? 'success' : 'warn', `Account ${alias} ${removed ? 'removed' : 'not found'}`);
     }
     this.out('heading', 'Sign-ins');
+    let vendor = '';
     for (const c of allCliStates()) {
+      if (c.vendor.label !== vendor) {
+        vendor = c.vendor.label;
+        const n = cliAccounts(c.vendor.provider_id).length;
+        this.out('info', `${c.vendor.label} (${c.vendor.binary})  ${n}/${MAX_ACCOUNTS_PER_VENDOR} account${n === 1 ? '' : 's'}`);
+      }
       const line = !c.installed
         ? `not installed — ${c.vendor.install}`
         : c.signedIn
           ? `signed in${c.identity ? ` · ${c.identity}` : ''}`
-          : `installed, signed out — /account login ${c.vendor.binary}`;
-      this.out(c.signedIn ? 'info' : 'dim', `${c.signedIn ? '✓' : ' '} ${c.vendor.label} (${c.vendor.binary})  ${line}`);
+          : `signed out — /account login ${c.vendor.binary} ${c.account}`;
+      this.out(c.signedIn ? 'info' : 'dim', `  ${c.signedIn ? '✓' : ' '} ${c.account.padEnd(12)} ${line}`);
     }
 
     this.out('heading', 'Accounts');
@@ -451,16 +471,34 @@ export class CommandRouter {
       const usable = this.sm.manager.accountResolves(a);
       this.out(
         usable ? 'info' : 'dim',
-        `${a.alias === active ? '●' : ' '} ${a.alias} (${a.provider_id})  ${this.sm.manager.credentialSource(a)}  ${a.health.status}  ${fmtTokens(a.quota.tokens_used_today)} today`,
+        `${a.alias === active ? '●' : ' '} ${a.alias.padEnd(20)} ${this.sm.manager.credentialSource(a)}`,
       );
+      // Spend belongs under the account it was spent on, not summed into one
+      // run total: with several accounts per vendor, which one is close to its
+      // limit is the only question this screen has to answer.
+      const q = a.quota;
+      const win = [
+        `${fmtTokens(q.tokens_used)} tok`,
+        `${q.requests} call${q.requests === 1 ? '' : 's'}`,
+        fmtCost(q.cost_usd),
+        `resets in ${fmtDuration(Date.parse(q.resets_at) - Date.now())}`,
+      ].join(' · ');
+      this.out('dim', `    window   ${win}`);
+      this.out('dim', `    total    ${fmtTokens(q.lifetime_tokens)} tok · ${fmtCost(q.lifetime_cost_usd)} · last used ${fmtAgo(a.last_used_at)}`);
+      if (q.rate_limited_until && Date.parse(q.rate_limited_until) > Date.now()) {
+        this.out('warn', `    limited  ${a.provider_id} says wait ${fmtDuration(Date.parse(q.rate_limited_until) - Date.now())}`);
+      }
     }
-    this.out('dim', '/account login <cli> · /account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
+    this.out('dim', '/account login <cli> [account] · /account new <cli> <name> · /account drop <cli> <name>');
+    this.out('dim', '/account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
 
     const action = await select('Accounts', [
-      { value: 'login', label: 'Sign in with a CLI', hint: 'Claude Code, Codex or Gemini — no key to paste' },
+      { value: 'login', label: 'Sign in with a CLI', hint: 'Claude Code, Codex, Gemini or opencode — no key to paste' },
+      { value: 'new', label: 'Add another account for one vendor', hint: `up to ${MAX_ACCOUNTS_PER_VENDOR} each, signed in separately` },
       { value: 'add', label: 'Paste an API key', hint: 'kept in the system keychain' },
       { value: 'use', label: 'Choose which answers first' },
       { value: 'logout', label: 'Sign out of a CLI' },
+      { value: 'drop', label: 'Delete a named CLI account' },
       { value: 'remove', label: 'Remove a stored key' },
     ]);
     if (action) return this.account([action]);
@@ -473,38 +511,76 @@ export class CommandRouter {
    * it, so CodeMaster never holds the secret and never has to protect it. That
    * is the whole reason to prefer it over pasting a key.
    */
-  private async cliLogin(which?: string): Promise<void> {
-    const state = await this.pickCli(which, 'Sign in with which CLI?', (c) => !c.signedIn);
+  private async cliLogin(which?: string, account?: string): Promise<void> {
+    const state = await this.pickCli(which, account, 'Sign in with which CLI?', (c) => !c.signedIn);
     if (!state) return;
     const { vendor } = state;
     if (!state.installed) {
       this.out('warn', `${vendor.label} is not installed.`);
       return this.out('dim', `Install it with: ${vendor.install}`);
     }
-    if (state.signedIn && !(await confirm(`${vendor.label} is already signed in${state.identity ? ` as ${state.identity}` : ''}. Sign in again?`))) return;
+    if (state.signedIn && !(await confirm(`${vendor.label} · ${state.account} is already signed in${state.identity ? ` as ${state.identity}` : ''}. Sign in again?`))) return;
 
+    // The account's own credential directory, so this sign-in cannot overwrite
+    // another one. `default` sets nothing and uses whatever the CLI already has.
+    const env = accountEnv(vendor.provider_id, state.account);
+    if (!vendor.login.length) {
+      this.out('info', `${vendor.label} has no sign-in command — it signs in from its own interface.`);
+    }
     this.out('info', `Handing the terminal to ${vendor.binary} — follow its prompts; CodeMaster comes back when it finishes.`);
-    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.login));
+    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.login, env));
     invalidateCliState(vendor.provider_id);
-    const after = cliState(vendor.provider_id)!;
+    const after = cliState(vendor.provider_id, state.account)!;
 
     if (!after.signedIn) {
       return this.out('warn', `Not signed in${result.reason ? ` — ${vendor.binary} ${result.reason}` : ''}. Nothing was stored.`);
     }
-    this.out('success', `Signed in to ${vendor.label}${after.identity ? ` as ${after.identity}` : ''}.`);
+    this.out('success', `Signed in to ${vendor.label} · ${state.account}${after.identity ? ` as ${after.identity}` : ''}.`);
     this.out('dim', 'The CLI holds the token — CodeMaster stored no credential.');
     const acct = this.sm.manager.accountForProvider(vendor.provider_id);
     if (acct) this.out('dim', `/account use ${acct.alias} makes ${vendor.label} the one that answers.`);
   }
 
-  private async cliLogout(which?: string): Promise<void> {
-    const state = await this.pickCli(which, 'Sign out of which CLI?', (c) => c.signedIn);
+  /** A named account is an empty credential directory until its CLI signs in
+   *  there, so creating one and signing in are offered as a single step. */
+  private async newCliAccount(which?: string, name?: string): Promise<void> {
+    const state = await this.pickCli(which, DEFAULT_ACCOUNT, 'Another account for which CLI?', () => true);
+    if (!state) return;
+    const { provider_id, label } = state.vendor;
+    const chosen = name ?? (await form(`New ${label} account`, [
+      { name: 'name', label: 'Name it (yours)', placeholder: 'work' },
+    ]))?.name;
+    if (!chosen) return this.out('warn', `Usage: /account new ${state.vendor.binary} <name>`);
+
+    const made = addCliAccount(provider_id, chosen);
+    if (!made.ok) return this.out('warn', made.reason ?? 'could not create it');
+    this.out('success', `${label} · ${chosen} created — no credentials in it yet.`);
+    if (await confirm(`Sign in to ${label} as ${chosen} now?`)) return this.cliLogin(provider_id, chosen);
+    this.out('dim', `Sign in later with /account login ${state.vendor.binary} ${chosen}.`);
+  }
+
+  private async dropCliAccount(which?: string, name?: string): Promise<void> {
+    const state = await this.pickCli(which, name, 'Delete an account of which CLI?', (c) => c.account !== DEFAULT_ACCOUNT);
+    if (!state) return;
+    const account = state.account;
+    if (account === DEFAULT_ACCOUNT) {
+      return this.out('warn', 'default is the machine-wide sign-in — sign out of it with /account logout instead.');
+    }
+    if (!(await confirm(`Delete ${state.vendor.label} · ${account}?`, { detail: 'Its stored credentials are deleted with it.' }))) return;
+    const gone = removeCliAccount(state.vendor.provider_id, account);
+    invalidateCliState(state.vendor.provider_id);
+    this.out(gone ? 'success' : 'warn', gone ? `${state.vendor.label} · ${account} deleted.` : `No account named ${account}.`);
+  }
+
+  private async cliLogout(which?: string, account?: string): Promise<void> {
+    const state = await this.pickCli(which, account, 'Sign out of which CLI?', (c) => c.signedIn);
     if (!state) return;
     const { vendor } = state;
     if (!vendor.logout) return this.out('warn', `${vendor.label} has no sign-out command — clear its credentials with the CLI itself.`);
-    if (!state.signedIn) return this.out('dim', `${vendor.label} is not signed in.`);
-    if (!(await confirm(`Sign out of ${vendor.label}?`, { detail: 'Other tools using this CLI lose the session too.' }))) return;
-    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.logout!));
+    if (!state.signedIn) return this.out('dim', `${vendor.label} · ${state.account} is not signed in.`);
+    const shared = state.account === DEFAULT_ACCOUNT ? 'Other tools using this CLI lose the session too.' : 'Only this account signs out.';
+    if (!(await confirm(`Sign out of ${vendor.label} · ${state.account}?`, { detail: shared }))) return;
+    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.logout!, accountEnv(vendor.provider_id, state.account)));
     invalidateCliState(vendor.provider_id);
     this.out(result.ok ? 'success' : 'warn', result.ok ? `Signed out of ${vendor.label}.` : `${vendor.binary} ${result.reason}`);
   }
@@ -513,28 +589,38 @@ export class CommandRouter {
    *  doing right now. `prefer` puts the ones the action applies to at the top. */
   private async pickCli(
     which: string | undefined,
+    account: string | undefined,
     title: string,
     prefer: (c: CliState) => boolean,
   ): Promise<CliState | null> {
     const all = allCliStates();
+    const names = [...new Set(all.map((c) => c.vendor.binary))];
     if (which) {
       const key = which.toLowerCase();
-      const hit = all.find((c) => c.vendor.binary === key || c.vendor.provider_id === key || c.vendor.label.toLowerCase() === key);
+      const vendorStates = all.filter((c) => c.vendor.binary === key || c.vendor.provider_id === key || c.vendor.label.toLowerCase() === key);
+      if (!vendorStates.length) {
+        this.out('warn', `Unknown CLI ${which}. Known: ${names.join(', ')}`);
+        return null;
+      }
+      const hit = vendorStates.find((c) => c.account === (account ?? DEFAULT_ACCOUNT));
       if (hit) return hit;
-      this.out('warn', `Unknown CLI ${which}. Known: ${all.map((c) => c.vendor.binary).join(', ')}`);
+      this.out('warn', `${vendorStates[0]!.vendor.label} has no account named ${account}. Known: ${vendorStates.map((c) => c.account).join(', ')}`);
       return null;
     }
+    // One row per account, not per vendor: with several signed in, a vendor
+    // name alone no longer says which credentials the command should use.
     const ordered = [...all].sort((a, b) => Number(prefer(b)) - Number(prefer(a)));
     const chosen = await select(title, ordered.map((c) => ({
-      value: c.vendor.provider_id,
-      label: c.vendor.label,
+      value: `${c.vendor.provider_id}#${c.account}`,
+      label: c.account === DEFAULT_ACCOUNT ? c.vendor.label : `${c.vendor.label} · ${c.account}`,
       hint: !c.installed ? 'not installed' : c.signedIn ? `signed in${c.identity ? ` · ${c.identity}` : ''}` : 'signed out',
     })));
     if (!chosen) {
-      this.out('warn', `Usage: /account login <${all.map((c) => c.vendor.binary).join('|')}>`);
+      this.out('warn', `Usage: /account login <${names.join('|')}> [account]`);
       return null;
     }
-    return all.find((c) => c.vendor.provider_id === chosen) ?? null;
+    const [pid, acct] = chosen.split('#');
+    return all.find((c) => c.vendor.provider_id === pid && c.account === acct) ?? null;
   }
 
   private addAccount(provider: string, alias: string, key: string | undefined): void {
@@ -634,10 +720,22 @@ export class CommandRouter {
     this.out('heading', 'Provider windows');
     for (const st of states) {
       const blockedMs = QuotaLedger.blockedForMs(st.key, st.provider_id);
-      const parts = [`${fmtTokens(st.tokens_used)} in ${st.requests} call(s) since ${st.window_start.slice(11, 16)}Z`];
-      if (blockedMs > 0) parts.push(`blocked ${Math.ceil(blockedMs / 1000)}s`);
-      if (st.consecutive_failures > 0) parts.push(`${st.consecutive_failures} consecutive failure(s)`);
-      this.out(blockedMs > 0 ? 'warn' : 'info', `${st.key}  ${parts.join('  ·  ')}`);
+      const avg = st.lifetime_requests ? Math.round(st.latency_ms_total / st.lifetime_requests) : 0;
+      this.out(blockedMs > 0 ? 'warn' : 'info', st.key);
+      this.out('dim', `    window   ${fmtTokens(st.tokens_used)} tok · ${st.requests} call(s) · ${fmtCost(st.cost_usd)} · resets in ${fmtDuration(Date.parse(resetsAt(st)) - Date.now())}`);
+      // in/out/cache split: the same total costs very different money
+      // depending on which side of the call it landed on.
+      const split = [
+        `in ${fmtTokens(st.input_tokens)}`,
+        `out ${fmtTokens(st.output_tokens)}`,
+        st.reasoning_tokens ? `thinking ${fmtTokens(st.reasoning_tokens)}` : null,
+        st.cache_read_tokens ? `cache-read ${fmtTokens(st.cache_read_tokens)}` : null,
+        st.cache_write_tokens ? `cache-write ${fmtTokens(st.cache_write_tokens)}` : null,
+      ].filter(Boolean).join(' · ');
+      this.out('dim', `    split    ${split}`);
+      this.out('dim', `    total    ${fmtTokens(st.lifetime_tokens)} tok · ${st.lifetime_requests} call(s) · ${fmtCost(st.lifetime_cost_usd)} · ${avg}ms avg · last ${fmtAgo(st.last_used_at)}`);
+      if (blockedMs > 0) this.out('warn', `    blocked  ${fmtDuration(blockedMs)} left${st.last_error ? ` — ${st.last_error.slice(0, 80)}` : ''}`);
+      if (st.consecutive_failures > 0) this.out('warn', `    failures ${st.consecutive_failures} in a row`);
     }
   }
 

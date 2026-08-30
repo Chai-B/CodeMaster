@@ -24,6 +24,10 @@ export interface TokenUsage {
   output_tokens: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+  /** Thinking tokens, when the vendor reports them separately. Already part of
+   *  `output_tokens` — the vendors bill them as output — and carried apart only
+   *  so the cost of reasoning can be shown rather than inferred. */
+  reasoning_tokens?: number;
   total_tokens: number;
 }
 

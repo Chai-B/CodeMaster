@@ -94,7 +94,8 @@ export async function callLlm(
     effort: opts.effort,
   });
   bus.emit({ type: 'provider.invoked', provider_id: sel.adapter.provider_id, account_id: sel.account.id });
-  manager.recordUsage(sel.account, response.usage.total_tokens, response.latency_ms);
+  const callCost = manager.costOf(sel.spec, response.usage);
+  manager.recordUsage(sel.account, response.usage, callCost, response.latency_ms);
   Tokens.record({
     session_id: opts.sessionId,
     task_id: opts.taskId,
@@ -103,7 +104,7 @@ export async function callLlm(
     account_id: sel.account.id,
     model_id: sel.model,
     usage: response.usage,
-    cost_usd: manager.costOf(sel.spec, response.usage),
+    cost_usd: callCost,
     components: ['worker'],
   });
   bus.emit({ type: 'provider.response', provider_id: sel.adapter.provider_id, tokens: response.usage.total_tokens });
