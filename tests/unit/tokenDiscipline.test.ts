@@ -109,6 +109,21 @@ test('a plan that verifies its own work is trimmed before it costs anything', as
   assert.equal(isSelfVerificationTask('Checkout the release branch'), false);
 });
 
+// Measured: 70.5k tokens to plan "create a tic tac toe game" and be told it was
+// one task — which is also the planner's own fallback when a plan comes back
+// empty. One short clause with no list and no second verb skips the call.
+test('a single-clause objective is planned without a planning call', async () => {
+  const { isSingleUnit } = await import('../../src/workers/planner.js');
+  assert.equal(isSingleUnit('create a tic tac toe game'), true);
+  assert.equal(isSingleUnit('fix the off-by-one in the paginator'), true);
+  // A second clause, a list, or a joined verb is more than one unit of work.
+  assert.equal(isSingleUnit('add a login page and wire up the session cookie'), false);
+  assert.equal(isSingleUnit('rename the parser, then update its callers'), false);
+  assert.equal(isSingleUnit('port the CLI\n- add flags\n- add tests'), false);
+  // Long enough to be describing a project rather than a change.
+  assert.equal(isSingleUnit('x'.repeat(200)), false);
+});
+
 test('under budget pressure, re-derivable context sheds before purchased reasoning', async () => {
   const { enforceBudget } = await import('../../src/context/compiler.js');
   const { ContextComponent: C } = await import('../../src/types/index.js');

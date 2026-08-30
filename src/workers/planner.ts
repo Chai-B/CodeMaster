@@ -34,6 +34,69 @@ export function isSelfVerificationTask(title: string): boolean {
   return VERIFICATION_ONLY.test(title);
 }
 
+/** Anything that makes an objective more than one unit of work: a second
+ *  clause, a list, a conjunction joining two verbs. */
+const ENUMERATED = /\b(and|then|also|plus|afterwards|followed by|as well as)\b|[;,]|\n\s*[-*\d]/i;
+
+/**
+ * Whether the objective is plainly a single unit of work.
+ *
+ * Planning it otherwise costs a full context compilation and a planning call —
+ * measured at 70.5k tokens on "create a tic tac toe game" — to be told what the
+ * shape of the sentence already said, and the planner's own fallback for an
+ * empty plan is that one task anyway. Deliberately narrow: one short clause,
+ * no list, no second verb. If it turns out to be wrong the solve reports the
+ * rest as follow-up tasks and those are queued behind it, so the run recovers
+ * a task late rather than paying a planning call every time up front.
+ */
+export function isSingleUnit(objective: string): boolean {
+  const t = objective.trim();
+  return t.length > 0 && t.length <= 120 && !ENUMERATED.test(t);
+}
+
+function toTasks(specs: TaskSpec[], session: Session): Task[] {
+  // First pass: allocate ids so dependencies can reference siblings by title (spec §4.2.2).
+  const ids = specs.map(() => id('task'));
+  const idByTitle = new Map<string, string>();
+  specs.forEach((s, i) => idByTitle.set(s.title.trim().toLowerCase(), ids[i]!));
+
+  const tasks: Task[] = specs.map((s, i) => {
+    // Resolve declared dependencies by title; default to a sequential chain.
+    const declared = (s.depends_on ?? [])
+      .map((d) => idByTitle.get(d.trim().toLowerCase()))
+      .filter((x): x is string => Boolean(x) && x !== ids[i]);
+    const dependencies = declared.length ? declared : i > 0 ? [ids[i - 1]!] : [];
+    return {
+      id: ids[i]!,
+      session_id: session.id,
+      title: s.title.slice(0, 120),
+      description: s.description ?? s.title,
+      type: (s.type as TaskType) ?? session.objective_parsed?.task_type ?? 'implement',
+      status: 'pending',
+      // The files this task names, if they exist. Left empty, `locus` is empty,
+      // so the repro generator runs even when the repo already has tests over
+      // the change and the verifier's confidence gate can never fire.
+      input_files: namedFiles(session.repository.path, `${s.title}\n${s.description ?? ''}`).map((path) => ({ path })),
+      output_files: [],
+      dependencies,
+      blocking: [],
+      reasoning_refs: [],
+      decision_refs: [],
+      estimated_tokens: 0,
+      order: i,
+    };
+  });
+
+  // Populate reverse edges (blocking) from dependencies.
+  for (const t of tasks) {
+    for (const depId of t.dependencies) {
+      const dep = tasks.find((x) => x.id === depId);
+      if (dep) dep.blocking.push(t.id);
+    }
+  }
+  return tasks;
+}
+
 export async function generatePlan(
   session: Session,
   manager: ProviderManager,
@@ -56,6 +119,23 @@ export async function generatePlan(
     estimated_tokens: 0,
     order: -1,
   };
+
+  if (isSingleUnit(session.objective)) {
+    const plan: ExecutionPlan = {
+      tasks: toTasks(
+        [{
+          title: session.objective.slice(0, 120),
+          description: session.objective,
+          priority: 'high',
+          type: session.objective_parsed?.task_type,
+        }],
+        session,
+      ),
+      created_at: now(),
+    };
+    bus.emit({ type: 'worker.finished', worker: 'Planner', detail: '1 task · no model call' });
+    return { plan, planningTask: { ...planningTask, status: 'completed' } };
+  }
 
   bus.emit({ type: 'worker.started', worker: 'Planner', detail: 'compiling planning context' });
 
@@ -106,45 +186,7 @@ export async function generatePlan(
     ? kept
     : [{ title: session.objective.slice(0, 120), description: session.objective, priority: 'high', type: session.objective_parsed?.task_type }];
 
-  // First pass: allocate ids so dependencies can reference siblings by title (spec §4.2.2).
-  const ids = specs.map(() => id('task'));
-  const idByTitle = new Map<string, string>();
-  specs.forEach((s, i) => idByTitle.set(s.title.trim().toLowerCase(), ids[i]!));
-
-  const tasks: Task[] = specs.map((s, i) => {
-    // Resolve declared dependencies by title; default to a sequential chain.
-    const declared = (s.depends_on ?? [])
-      .map((d) => idByTitle.get(d.trim().toLowerCase()))
-      .filter((x): x is string => Boolean(x) && x !== ids[i]);
-    const dependencies = declared.length ? declared : i > 0 ? [ids[i - 1]!] : [];
-    return {
-      id: ids[i]!,
-      session_id: session.id,
-      title: s.title.slice(0, 120),
-      description: s.description ?? s.title,
-      type: (s.type as TaskType) ?? session.objective_parsed?.task_type ?? 'implement',
-      status: 'pending',
-      // The files this task names, if they exist. Left empty, `locus` is empty,
-      // so the repro generator runs even when the repo already has tests over
-      // the change and the verifier's confidence gate can never fire.
-      input_files: namedFiles(session.repository.path, `${s.title}\n${s.description ?? ''}`).map((path) => ({ path })),
-      output_files: [],
-      dependencies,
-      blocking: [],
-      reasoning_refs: [],
-      decision_refs: [],
-      estimated_tokens: 0,
-      order: i,
-    };
-  });
-
-  // Populate reverse edges (blocking) from dependencies.
-  for (const t of tasks) {
-    for (const depId of t.dependencies) {
-      const dep = tasks.find((x) => x.id === depId);
-      if (dep) dep.blocking.push(t.id);
-    }
-  }
+  const tasks = toTasks(specs, session);
 
   // persist planning reasoning
   void staticAnalysis(session.repository.path);
