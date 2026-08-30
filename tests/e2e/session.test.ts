@@ -100,3 +100,40 @@ test('an exhausted plan auto-completes and promotes decisions to long-term memor
   assert.ok(after.length > before, `expected a long-term memory row, got ${after.length}`);
   assert.ok(after.some((m) => (m.value_markdown ?? '').includes('per repository')));
 });
+
+// A solve that finds work it cannot finish in the same patch emits it as
+// <next_tasks>. That was parsed, counted and dropped: `runAll` re-reads the
+// queue every round precisely so tasks can be added mid-run, and nothing ever
+// added one, so discovered work silently left the run.
+test('follow-up tasks a solve reports are queued behind it', async () => {
+  const sm = new SessionManager();
+  const session = await sm.createSession('follow-ups', TMP);
+  const task = {
+    id: 'task-followup', session_id: session.id, title: 'first', description: 'first', type: 'implement' as const,
+    status: 'in_progress' as const, input_files: [], output_files: [], dependencies: [], blocking: [],
+    reasoning_refs: [], decision_refs: [], estimated_tokens: 0, order: 0,
+  };
+  Tasks.insert(task);
+
+  const raw = `<task_result>
+<status>completed</status>
+<summary>did the first half</summary>
+<next_tasks>
+<task type="implement" priority="high">Wire the parser into the router</task>
+<task type="test" priority="medium">Wire the parser into the router</task>
+<task type="review" priority="low">Verify the parser is wired in</task>
+<task type="implement" priority="low">first</task>
+</next_tasks>
+</task_result>`;
+  const ir = parseIR(raw, session.id, task.id, { provider_id: 'anthropic', model_id: 'claude-sonnet-4-6' });
+  const res = await processIR(ir, session, task, sm.cfg);
+
+  // One survives: the duplicate title is dropped, the "Verify …" task is the
+  // self-verification the planner already refuses, and "first" is the task that
+  // is running right now.
+  assert.equal(res.nextTasks, 1);
+  const queued = Tasks.forSession(session.id).filter((t) => t.id !== task.id);
+  assert.deepEqual(queued.map((t) => t.title), ['Wire the parser into the router']);
+  assert.deepEqual(queued[0]!.dependencies, [task.id]);
+  assert.equal(queued[0]!.status, 'pending');
+});

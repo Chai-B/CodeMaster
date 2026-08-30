@@ -7,14 +7,21 @@ import { applyWikiUpdate, resolveWikiConflict } from '../wiki/updater.js';
 import { ConflictResolverWorker } from './conflictResolver.js';
 import { runWorker } from './base.js';
 import { applyPatches, type ApplyResult } from './patchApplier.js';
+import { isSelfVerificationTask } from './planner.js';
+import { namedFiles } from '../context/fileSelector.js';
 import { Undo } from '../storage/undo.js';
 import { createCheckpoint } from './checkpointer.js';
 import { indexFile } from '../analysis/indexer.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
-import type { IntermediateRepresentation, Session, Task, ReasoningObject } from '../types/index.js';
+import type { IntermediateRepresentation, Session, Task, ReasoningObject, TaskType } from '../types/index.js';
 import type { Config } from '../config.js';
 import type { ProviderManager } from '../providers/manager.js';
+
+/** A solve reports what it left undone; it does not get to set the size of the
+ *  run. Three per task, and a queue that stops growing at twenty. */
+const MAX_FOLLOW_UPS = 3;
+const MAX_SESSION_TASKS = 20;
 
 export interface ProcessResult {
   apply: ApplyResult;
@@ -173,6 +180,46 @@ export async function processIR(
     }
   }
 
+  // Work the solve found but could not finish in the same patch. It was parsed,
+  // counted and then dropped on the floor — `runAll` re-reads the queue every
+  // round specifically so tasks can be added mid-run, and nothing ever added
+  // one. Titles the planner would have refused are refused here too, and the
+  // queue is capped so a model that keeps finding follow-ups cannot grow it
+  // without bound.
+  const existing = Tasks.forSession(session.id);
+  const seen = new Set(existing.map((t) => t.title.trim().toLowerCase()));
+  const order = Math.max(task.order, ...existing.map((t) => t.order)) + 1;
+  let room = Math.min(MAX_FOLLOW_UPS, MAX_SESSION_TASKS - existing.length);
+  const queued: string[] = [];
+  for (const spec of ir.next_tasks) {
+    if (room <= 0) break;
+    const title = spec.title?.trim();
+    if (!title || isSelfVerificationTask(title) || seen.has(title.toLowerCase())) continue;
+    seen.add(title.toLowerCase());
+    const description = spec.description ?? title;
+    Tasks.insert({
+      id: id('task'),
+      session_id: session.id,
+      title: title.slice(0, 120),
+      description,
+      type: (spec.type as TaskType) ?? task.type,
+      status: 'pending',
+      input_files: namedFiles(repoPath, `${title}\n${description}`).map((path) => ({ path })),
+      output_files: [],
+      dependencies: [task.id],
+      blocking: [],
+      reasoning_refs: [],
+      decision_refs: [],
+      estimated_tokens: 0,
+      order,
+    });
+    queued.push(title);
+    room -= 1;
+  }
+  if (queued.length) {
+    bus.emit({ type: 'log', level: 'info', message: `Queued ${queued.length} follow-up task(s): ${queued.join('; ')}.` });
+  }
+
   // Open questions back into session
   for (const q of ir.open_questions) {
     session.open_questions.push({ id: id('q'), text: q.text, status: 'open' });
@@ -183,7 +230,7 @@ export async function processIR(
   // response paid a key derivation and a file write to be stored and never read.
   ir.raw_output = undefined;
 
-  return { apply, reasoningStored: stored, wikiUpdated, nextTasks: ir.next_tasks.length };
+  return { apply, reasoningStored: stored, wikiUpdated, nextTasks: queued.length };
 }
 
 // Importance scoring (spec §16.7) — decisions/risks weigh higher.
