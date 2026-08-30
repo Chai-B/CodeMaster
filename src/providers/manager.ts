@@ -183,7 +183,10 @@ export class ProviderManager {
       ['openai-codex', cfg.providers.openai_codex],
     ] as const) {
       for (const m of group.models) this.modelToProvider.set(m.id, pid);
-      this.accounts.push(this.makeAccount(pid, 'default', ENV_REF[pid]!));
+      // Named for its vendor, not 'default': every vendor got one and they were
+      // all called the same thing, so `/account` listed four identical rows and
+      // the picker handed back an alias that matched whichever came first.
+      this.accounts.push(this.makeAccount(pid, pid, ENV_REF[pid]!));
     }
 
     // Restore any stored encrypted accounts.
@@ -354,8 +357,8 @@ export class ProviderManager {
    * degrades to the default instead of breaking the run.
    */
   modelFor(role?: LlmRole, requested?: string, tier?: LlmTier): string {
-    const def = this.cfg.providers.default;
-    if (this.cfg.providers.pinned) return def;
+    if (this.cfg.providers.pinned) return this.cfg.providers.default;
+    const def = this.defaultModel();
     for (const want of [requested, role ? this.roleModel(role, tier) : undefined]) {
       if (want && this.modelSpec(want) && this.providerHasCredentials(this.providerOf(want))) return want;
     }
@@ -364,6 +367,29 @@ export class ProviderManager {
     // other vendor should mean the tool runs: the config ships a default and
     // most people never edit it, so failing on it strands a working credential.
     return this.cheapestCredentialed() ?? def;
+  }
+
+  /**
+   * The model this run defaults to.
+   *
+   * `/account use` names the account that answers first, and an account belongs
+   * to a vendor. Choosing one on a different vendor from `providers.default`
+   * used to change nothing: routing resolved the model first and the preference
+   * only picked between accounts already on that model's vendor, so adding an
+   * OpenAI key and selecting it left every call going to Anthropic. Selecting
+   * an account now moves the default onto its vendor, at the model closest in
+   * price to the configured one, which is what "switch" has to mean.
+   *
+   * A pin still wins, and so does an unusable account: a preference for
+   * something with no credential must not strand a run that would otherwise
+   * work.
+   */
+  private defaultModel(): string {
+    const def = this.cfg.providers.default;
+    if (this.cfg.providers.pinned || !this.preferred) return def;
+    const acct = this.accounts.find((a) => a.alias === this.preferred);
+    if (!acct || acct.provider_id === this.providerOf(def) || !this.resolves(acct)) return def;
+    return this.nearestOn(acct.provider_id, def) ?? def;
   }
 
   private cheapestCredentialed(): string | undefined {
@@ -381,8 +407,9 @@ export class ProviderManager {
     const configured = this.routing(role).model;
     if (configured) return configured;
     if (tier) return this.tierModel(tier);
-    if (!DERIVED_CHEAP.has(role)) return this.cfg.providers.default;
-    return this.cheapestOn(this.providerOf(this.cfg.providers.default));
+    const def = this.defaultModel();
+    if (!DERIVED_CHEAP.has(role)) return def;
+    return this.cheapestOn(this.providerOf(def));
   }
 
   /** The model a tier names, on the default's own vendor.
@@ -395,7 +422,7 @@ export class ProviderManager {
    *  step up from crossing into a vendor the user has no key for; failover
    *  handles the case where the vendor itself is gone. */
   private tierModel(tier: LlmTier): string {
-    const def = this.cfg.providers.default;
+    const def = this.defaultModel();
     if (tier === 'standard') return def;
     const ranked = this.listModels()
       .filter((m) => this.providerOf(m.id) === this.providerOf(def))

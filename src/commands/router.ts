@@ -423,7 +423,7 @@ export class CommandRouter {
       if (!alias) return this.out('warn', 'Usage: /account use <alias>');
       const chose = this.sm.manager.useAccount(alias);
       if (!chose) return this.out('warn', `No account named ${alias}. Run /account to list them.`);
-      return this.out('success', `${alias} now answers first, for any model on its provider.`);
+      return this.out('success', `${alias} now answers first — calls route to ${this.sm.manager.modelFor('solve')}.`);
     }
     if (args[0] === 'remove') {
       const alias = args[1] ?? (await this.pickAccount('Remove which account?'));

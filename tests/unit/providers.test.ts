@@ -211,6 +211,71 @@ test('a job is sized by what it carries, and the tier picks the model', async ()
   assert.equal(top.modelFor('solve', undefined, 'light'), 'claude-haiku-4-5-20251001');
 });
 
+// Holding keys for several vendors at once is the point of /account; choosing
+// one has to actually move the calls. It did not: routing resolved the model
+// first, and the preference only picked between accounts already on that
+// model's vendor, so selecting an OpenAI account left every call on Anthropic.
+test('choosing an account on another vendor moves the calls to that vendor', async () => {
+  const { ProviderManager } = await import('../../src/providers/manager.js');
+  const cfg = {
+    providers: {
+      default: 'claude-sonnet-4-6',
+      anthropic: {
+        models: [
+          { id: 'claude-sonnet-4-6', context_size: 200_000, cost_per_1m_input: 3, cost_per_1m_output: 15 },
+          { id: 'claude-haiku-4-5-20251001', context_size: 200_000, cost_per_1m_input: 1, cost_per_1m_output: 5 },
+        ],
+      },
+      openai: {
+        models: [
+          { id: 'gpt-5', context_size: 400_000, cost_per_1m_input: 2, cost_per_1m_output: 14 },
+          { id: 'gpt-5-mini', context_size: 400_000, cost_per_1m_input: 1, cost_per_1m_output: 3 },
+        ],
+      },
+      google: { models: [] },
+      openai_codex: { models: [] },
+    },
+  } as unknown as ConstructorParameters<typeof ProviderManager>[0];
+
+  const prevOpenai = process.env.OPENAI_API_KEY;
+  const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+  process.env.OPENAI_API_KEY = 'sk-test';
+  process.env.ANTHROPIC_API_KEY = 'sk-test';
+  try {
+    const m = new ProviderManager(cfg);
+    // Every vendor's env-backed account is named for its vendor, so the four of
+    // them are distinguishable — they were all called 'default'.
+    const aliases = m.listAccounts().map((a) => a.alias);
+    assert.equal(new Set(aliases).size, aliases.length, `duplicate aliases: ${aliases}`);
+
+    assert.equal(m.modelFor('solve'), 'claude-sonnet-4-6');
+    assert.ok(m.useAccount('openai'));
+    // Nearest in price to the configured default, not the vendor's first listing.
+    assert.equal(m.modelFor('solve'), 'gpt-5');
+    // The whole table follows, tiers included.
+    assert.equal(m.modelFor('solve', undefined, 'light'), 'gpt-5-mini');
+    assert.equal(m.modelFor('summarize'), 'gpt-5-mini');
+
+    // A pin is still a promise about one model, and it outranks the choice.
+    cfg.providers.pinned = true;
+    const pinned = new ProviderManager(cfg);
+    assert.ok(pinned.useAccount('openai'));
+    assert.equal(pinned.modelFor('solve'), 'claude-sonnet-4-6');
+    cfg.providers.pinned = false;
+
+    // A preference for a vendor with no key must not strand a working run.
+    delete process.env.OPENAI_API_KEY;
+    const keyless = new ProviderManager(cfg);
+    assert.ok(keyless.useAccount('openai'));
+    assert.equal(keyless.modelFor('solve'), 'claude-sonnet-4-6');
+  } finally {
+    if (prevOpenai === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = prevOpenai;
+    if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+  }
+});
+
 test('a free-form prompt is not overridden by a provider-native output format', () => {
   const spec = [{ id: 'm', context_size: 100_000, cost_per_1m_input: 1, cost_per_1m_output: 1 }];
   const adapters = [new OpenAIAdapter(spec), new GeminiAdapter(spec), new CodexAdapter(spec)];
