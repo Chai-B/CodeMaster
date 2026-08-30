@@ -90,6 +90,14 @@ export interface ProviderResponse {
   usage: TokenUsage;
   model: string;
   latency_ms: number;
+  /**
+   * The model's own thinking, when the vendor returns it. Reasoning tokens are
+   * billed whether or not anyone reads them, and the adapters used to request
+   * extended thinking and then drop every block that was not the answer. Kept
+   * so the run can show its working and so the next call can be told what was
+   * already worked out.
+   */
+  reasoning?: string;
 }
 
 /** Thrown when a conversation id no longer exists vendor-side. The caller

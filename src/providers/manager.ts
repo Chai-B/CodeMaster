@@ -7,8 +7,9 @@ import { codexCliAvailable } from './codex.js';
 import { OpenAIAdapter } from './openai.js';
 import { GeminiAdapter, geminiCliAvailable } from './gemini.js';
 import { CodexAdapter } from './codex.js';
+import { OpencodeAdapter, opencodeCliAvailable } from './opencode.js';
 import { CredentialManager } from './credentials.js';
-import { cliState, vendorFor } from './cliAuth.js';
+import { DEFAULT_ACCOUNT, allCliStates, cliRef, cliState, parseCliRef, vendorFor } from './cliAuth.js';
 import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
@@ -125,6 +126,8 @@ const ENV_REF: Record<string, string> = {
   openai: 'env:OPENAI_API_KEY',
   google: 'env:GEMINI_API_KEY',
   'openai-codex': 'env:OPENAI_API_KEY',
+  // opencode holds no API key of its own — it is reachable only through its
+  // own sign-in, so it gets no env placeholder.
 };
 
 /**
@@ -161,7 +164,7 @@ export function anyProviderAvailable(): boolean {
   ];
   if (env.some((k) => process.env[k])) return true;
   if (CredentialManager.list().length > 0) return true;
-  return claudeCliAvailable() || codexCliAvailable() || geminiCliAvailable();
+  return claudeCliAvailable() || codexCliAvailable() || geminiCliAvailable() || opencodeCliAvailable();
 }
 
 export class ProviderManager {
@@ -176,24 +179,37 @@ export class ProviderManager {
     this.adapters.set('openai', new OpenAIAdapter(cfg.providers.openai.models));
     this.adapters.set('google', new GeminiAdapter(cfg.providers.google.models));
     this.adapters.set('openai-codex', new CodexAdapter(cfg.providers.openai_codex.models));
+    this.adapters.set('opencode', new OpencodeAdapter(cfg.providers.opencode?.models ?? []));
 
     for (const [pid, group] of [
       ['anthropic', cfg.providers.anthropic],
       ['openai', cfg.providers.openai],
       ['google', cfg.providers.google],
       ['openai-codex', cfg.providers.openai_codex],
+      ['opencode', cfg.providers.opencode ?? { models: [] }],
     ] as const) {
       for (const m of group.models) this.modelToProvider.set(m.id, pid);
       // Named for its vendor, not 'default': every vendor got one and they were
       // all called the same thing, so `/account` listed four identical rows and
       // the picker handed back an alias that matched whichever came first.
-      this.accounts.push(this.makeAccount(pid, pid, ENV_REF[pid]!));
+      const envRef = ENV_REF[pid];
+      if (envRef) this.accounts.push(this.makeAccount(pid, pid, envRef));
     }
 
     // Restore any stored encrypted accounts.
     for (const credId of CredentialManager.list()) {
       const [pid, alias] = credId.split('::');
       if (pid && this.adapters.has(pid)) this.accounts.push(this.makeAccount(pid, alias ?? 'stored', `cred:${credId}`));
+    }
+
+    // One row per named CLI account. `default` is the machine-wide sign-in and
+    // already has a row above for every vendor that has an env placeholder, so
+    // it only gets its own here for a vendor that has none.
+    for (const st of allCliStates()) {
+      if (!this.adapters.has(st.vendor.provider_id)) continue;
+      if (st.account === DEFAULT_ACCOUNT && ENV_REF[st.vendor.provider_id]) continue;
+      const alias = st.account === DEFAULT_ACCOUNT ? st.vendor.provider_id : `${st.vendor.provider_id}#${st.account}`;
+      this.accounts.push(this.makeAccount(st.vendor.provider_id, alias, cliRef(st.vendor.provider_id, st.account)));
     }
   }
 
@@ -249,6 +265,7 @@ export class ProviderManager {
       ...this.cfg.providers.openai.models,
       ...this.cfg.providers.google.models,
       ...this.cfg.providers.openai_codex.models,
+      ...(this.cfg.providers.opencode?.models ?? []),
     ];
   }
   listAccounts(): Account[] {
@@ -284,6 +301,8 @@ export class ProviderManager {
     if (a.credential_ref.startsWith('env:')) {
       return !!process.env[a.credential_ref.slice(4)] || this.envOrCliCredentials(a.provider_id);
     }
+    const cli = parseCliRef(a.credential_ref);
+    if (cli) return cliState(cli.provider_id, cli.account)?.signedIn === true;
     return true;
   }
 
@@ -315,6 +334,12 @@ export class ProviderManager {
   credentialSource(a: Account): string {
     if (a.credential_ref.startsWith('cred:')) return 'stored key';
     if (a.credential_ref.startsWith('env:') && process.env[a.credential_ref.slice(4)]) return a.credential_ref;
+    const ref = parseCliRef(a.credential_ref);
+    if (ref) {
+      const st = cliState(ref.provider_id, ref.account);
+      const who = st?.identity ? ` · ${st.identity}` : '';
+      return `${ref.provider_id} CLI · ${ref.account}${who}`;
+    }
     const cli = cliState(a.provider_id);
     if (cli?.signedIn) return `${cli.vendor.binary} CLI${cli.identity ? ` · ${cli.identity}` : ''}`;
     if (this.resolves(a)) return a.credential_ref;
@@ -536,6 +561,8 @@ export class ProviderManager {
         return !!process.env.OPENAI_API_KEY || codexCliAvailable();
       case 'google':
         return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) || geminiCliAvailable();
+      case 'opencode':
+        return opencodeCliAvailable();
       default:
         return true;
     }

@@ -145,6 +145,8 @@ export interface Config {
     openai: ProviderModels;
     google: ProviderModels;
     openai_codex: ProviderModels;
+    /** Absent from configs written before opencode was a vendor. */
+    opencode?: ProviderModels;
   };
   checkpointing: {
     enabled: boolean;
@@ -215,6 +217,14 @@ export const DEFAULT_CONFIG: Config = {
     openai_codex: {
       models: [
         { id: 'gpt-5-codex', context_size: 200_000, cost_per_1m_input: 1.25, cost_per_1m_output: 10 },
+      ],
+    },
+    // opencode fronts whichever model it is signed in to, and only the free
+    // tier has a price this file can state without inventing one. Add the paid
+    // model you use, with its real per-million rates, to cost it correctly.
+    opencode: {
+      models: [
+        { id: 'opencode/deepseek-v4-flash-free', context_size: 200_000, cost_per_1m_input: 0, cost_per_1m_output: 0 },
       ],
     },
   },

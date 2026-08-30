@@ -372,6 +372,9 @@ function App() {
   const [queued, setQueued] = useState(0);
   const inputHistoryRef = useRef<string[]>([]);
   const historyIdxRef = useRef(-1);
+  /** Set by the raw stdin reader: the chunk being parsed was a wheel notch. */
+  const wheelRef = useRef(false);
+  const maxScrollRef = useRef(0);
   const cwd = process.cwd();
   const shortCwd = cwd.startsWith(os.homedir()) ? '~' + cwd.slice(os.homedir().length) : cwd;
 
@@ -442,6 +445,11 @@ function App() {
   }, [stdout, stdin, setRawMode, repaint]);
 
   useInput((c, key) => {
+    // The chunk this key came from was a wheel notch, already handled as
+    // scrolling by the raw reader below. Ink parses one key per chunk, so
+    // dropping it here drops the whole notch.
+    if (wheelRef.current) return;
+
     const prevHistory = () => {
       const hist = inputHistoryRef.current;
       if (!hist.length) return;
@@ -498,16 +506,12 @@ function App() {
         if (sel) { setInput(sel.cmd + ' '); setAcOptions([]); }
       }
       if (key.escape) setAcOptions([]);
-    } else if (maxScroll > 0) {
-      // One row per press: a wheel notch is several arrows already, and this is
-      // also the keyboard's line-at-a-time scroll.
-      if (key.upArrow) { setScroll((v) => Math.min(maxScroll, v + 1)); return; }
-      if (key.downArrow) { setScroll((v) => Math.max(0, v - 1)); return; }
-    } else {
-      // Nothing has scrolled off yet, so the arrows are free to be recall.
-      if (key.upArrow) prevHistory();
-      if (key.downArrow) nextHistory();
+      return;
     }
+    // Recall, always. Scrolling belongs to the wheel, shift-arrows and the page
+    // keys; it no longer takes the arrows away once the output runs long.
+    if (key.upArrow) prevHistory();
+    if (key.downArrow) nextHistory();
   }, { isActive: !prompt });
 
   function handleChange(val: string) {
@@ -527,13 +531,20 @@ function App() {
 
   const handleSubmit = useCallback(
     async (raw: string) => {
-      if (acOptions.length > 0) {
+      // A menu open over a command already typed in full is just decoration:
+      // Enter runs it. Enter on a partial word still completes it instead.
+      const typed = raw.trim().toLowerCase();
+      if (acOptions.length > 0 && !acOptions.some((o) => o.cmd === typed)) {
         const sel = acOptions[acIndex];
-        if (sel) { setInput(sel.cmd + ' '); setAcOptions([]); }
+        if (sel) setInput(sel.cmd + ' ');
+        setAcOptions([]);
         return;
       }
       const text = raw.trim();
       setInput('');
+      // setInput does not run handleChange, so without this the menu outlived
+      // the command that was picked from it.
+      setAcOptions([]);
       if (!text) return;
       // A run in progress does not block the prompt; the line waits its turn
       // and the count of waiting lines is shown above the composer.
@@ -612,6 +623,30 @@ function App() {
     totalRef.current = maxScroll;
     if (grown > 0) setScroll((v) => (v > 0 ? v + grown : 0));
   }, [maxScroll]);
+
+  // The wheel and the arrow keys arrive as the same bytes: alternate-scroll
+  // mode — which is what keeps mouse selection working — turns a notch into
+  // several ↑ or ↓ sequences. The transcript used to take the arrows for that,
+  // leaving command recall on ctrl-p/ctrl-n. They are told apart by the read
+  // that delivered them: a notch is one chunk carrying several sequences, a
+  // keypress is one chunk carrying one. Nothing is timed and nothing is guessed.
+  maxScrollRef.current = maxScroll;
+  useEffect(() => {
+    const onData = (data: Buffer | string) => {
+      const seq = data.toString();
+      const up = seq.match(/\x1b\[A/g)?.length ?? 0;
+      const down = seq.match(/\x1b\[B/g)?.length ?? 0;
+      wheelRef.current = up + down >= 2;
+      if (!wheelRef.current) return;
+      const delta = up - down;
+      setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
+    };
+    // Ahead of Ink's own reader, so the flag is set before it parses the chunk.
+    process.stdin.prependListener('data', onData);
+    return () => {
+      process.stdin.off('data', onData);
+    };
+  }, []);
 
   return (
     <Box flexDirection="column" width={cols} height={rows}>

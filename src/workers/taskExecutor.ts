@@ -11,7 +11,8 @@ import { Learning } from '../learning/reflector.js';
 import { throwIfCancelled } from '../util/cancel.js';
 import { invokeWithBackoff, tierFor, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
-import type { Session, Task, IntermediateRepresentation, CompiledPrompt } from '../types/index.js';
+import { id, now } from '../util/id.js';
+import type { Session, Task, IntermediateRepresentation, CompiledPrompt, ProviderResponse } from '../types/index.js';
 
 /** One vendor-side conversation, carried across a task's solver iterations.
  *  The solver owns it; `provider_id` is filled in by the first successful call
@@ -233,6 +234,8 @@ export async function executeTask(
     }
   }
 
+  attachThinking(ir, response, session.id, task.id, sel.adapter.provider_id, sel.model);
+
   Learning.recordComponents(session.repository.path, task.type, componentUse(compiled, response.text));
 
   // Store the answer against the prompt that bought it, so an identical
@@ -262,4 +265,46 @@ export async function executeTask(
     reasoningStored: proc.reasoningStored,
     wikiUpdated: proc.wikiUpdated,
   };
+}
+
+/**
+ * Keep the model's own thinking with the answer it produced. Reasoning tokens
+ * are billed as output whether or not anyone reads them, and every adapter used
+ * to throw the blocks away — so the run paid for the working and then had no
+ * record of it. Stored as reasoning, it shows in the transcript and is
+ * searchable by the next task that touches the same code.
+ */
+function attachThinking(
+  ir: IntermediateRepresentation,
+  response: ProviderResponse,
+  sessionId: string,
+  taskId: string,
+  providerId: string,
+  modelId: string,
+): void {
+  const text = response.reasoning?.trim();
+  if (!text) return;
+  const first = text.split(/(?<=[.!?])\s|\n/)[0]?.trim() ?? text;
+  ir.thinking = [
+    ...(ir.thinking ?? []),
+    {
+      id: id('rsn'),
+      type: 'thinking',
+      session_id: sessionId,
+      task_id: taskId,
+      summary: first.slice(0, 200),
+      detail: text,
+      evidence: [],
+      confidence: 1,
+      produced_by: { provider_id: providerId, model_id: modelId },
+      produced_at: now(),
+      affected_files: [],
+      affected_modules: [],
+      tags: ['thinking'],
+      permanent: false,
+      wiki_keys: [],
+      reference_count: 0,
+      importance: 0,
+    },
+  ];
 }

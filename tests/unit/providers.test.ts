@@ -3,6 +3,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { foldOpencodeEvents } from '../../src/providers/opencode.js';
+import { parseGeminiJson, usageFromGeminiStats } from '../../src/providers/gemini.js';
 import { AnthropicAdapter } from '../../src/providers/anthropic.js';
 import { OpenAIAdapter } from '../../src/providers/openai.js';
 import { GeminiAdapter } from '../../src/providers/gemini.js';
@@ -297,4 +299,62 @@ test('a free-form prompt is not overridden by a provider-native output format', 
     const normal = a.format_prompt(compiled, 'm');
     assert.ok(normal.user.length > compiled.body.length, `${a.constructor.name} dropped its output format`);
   }
+});
+
+test('opencode: an event stream folds into an answer, its thinking and its real token count', () => {
+  // Shape taken from `opencode run --format json`: every line is
+  // {type, timestamp, sessionID, ...event}.
+  const lines = [
+    '{"type":"step_start","timestamp":1,"sessionID":"s"}',
+    '{"type":"reasoning","timestamp":2,"sessionID":"s","part":{"text":"the join is unbounded"}}',
+    '{"type":"tool_use","timestamp":3,"sessionID":"s","part":{"tool":"read","state":{"status":"completed"}}}',
+    '{"type":"step_finish","timestamp":4,"sessionID":"s","part":{"cost":0,"tokens":{"input":100,"output":20,"reasoning":30,"cache":{"read":10,"write":0}}}}',
+    '{"type":"text","timestamp":5,"sessionID":"s","part":{"text":"--- a/x\\n+++ b/x"}}',
+    '{"type":"step_finish","timestamp":6,"sessionID":"s","part":{"cost":0,"tokens":{"input":5,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
+    'not json at all',
+  ];
+  const out = foldOpencodeEvents(lines);
+  assert.equal(out.text, '--- a/x\n+++ b/x');
+  assert.equal(out.reasoning, 'the join is unbounded');
+  assert.equal(out.usage.input_tokens, 105);
+  // Reasoning is billed as output and reported apart from it, so it is added in.
+  assert.equal(out.usage.output_tokens, 51);
+  assert.equal(out.usage.cache_read_tokens, 10);
+  assert.equal(out.usage.total_tokens, 156);
+  assert.equal(out.error, undefined);
+});
+
+test('opencode: an upstream failure is named, not swallowed', () => {
+  const out = foldOpencodeEvents([
+    '{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"APIError","data":{"message":"Model is unavailable."}}}',
+  ]);
+  assert.equal(out.text, '');
+  assert.equal(out.error, 'Model is unavailable.');
+  assert.equal(out.usage.total_tokens, 0);
+});
+
+test('gemini: the CLI reports real token counts, thinking included', () => {
+  // `gemini -o json` prints {response, stats}; stats.models[<id>].tokens is the
+  // only place the counts appear. This path used to record zeros.
+  const body = parseGeminiJson(
+    'Loaded cached credentials.\n' +
+      JSON.stringify({
+        response: 'ok',
+        stats: {
+          models: {
+            'gemini-3-pro': { tokens: { prompt: 900, candidates: 40, thoughts: 60, cached: 300, total: 1000 } },
+            'gemini-3-flash': { tokens: { prompt: 100, candidates: 10, thoughts: 0, cached: 0, total: 110 } },
+          },
+        },
+      }),
+  );
+  assert.equal(body?.response, 'ok');
+  const u = usageFromGeminiStats(body?.stats);
+  assert.equal(u.input_tokens, 1000);
+  assert.equal(u.output_tokens, 110);
+  assert.equal(u.cache_read_tokens, 300);
+  assert.equal(u.total_tokens, 1110);
+
+  assert.equal(parseGeminiJson('no json here'), null);
+  assert.equal(usageFromGeminiStats(undefined).total_tokens, 0);
 });

@@ -1,7 +1,7 @@
 // Anthropic provider adapter (spec §13.5).
 
 import Anthropic from '@anthropic-ai/sdk';
-import { cliSignedIn } from './cliAuth.js';
+import { cliEnvFor, cliSignedIn } from './cliAuth.js';
 import { runCli, type CliRun } from './cliRun.js';
 import { parseIR } from '../workers/outputParser.js';
 import { CredentialManager } from './credentials.js';
@@ -67,7 +67,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     // No API key / OAuth token, but the authenticated Claude CLI is present →
     // run on the user's Claude subscription via the CLI (spec §13 account creds).
     if (!auth.apiKey && !auth.authToken) {
-      if (claudeCliAvailable()) return invokeViaClaudeCli(request);
+      if (claudeCliAvailable()) return invokeViaClaudeCli(request, cliEnvFor('anthropic', account.credential_ref));
       throw new Error('No Anthropic credentials. Set ANTHROPIC_API_KEY, run `claude setup-token`, or install the authenticated `claude` CLI.');
     }
     const client = new Anthropic(auth.authToken ? { authToken: auth.authToken } : { apiKey: auth.apiKey });
@@ -89,6 +89,16 @@ export class AnthropicAdapter implements ProviderAdapter {
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('');
+    // The thinking budget above is billed as output tokens whether or not
+    // anyone looks at the result. This used to filter for text and drop the
+    // rest, so every one of those tokens was paid for and thrown away.
+    // Narrowed structurally: this SDK version's ContentBlock union predates
+    // extended thinking, so the block type it returns has no name to import.
+    const reasoning = (resp.content as Array<{ type: string; thinking?: string }>)
+      .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string')
+      .map((b) => b.thinking!)
+      .join('\n\n')
+      .trim();
     const usage = resp.usage as Anthropic.Usage & {
       cache_read_input_tokens?: number | null;
       cache_creation_input_tokens?: number | null;
@@ -111,6 +121,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       },
       model: request.model,
       latency_ms: latency,
+      reasoning: reasoning || undefined,
     };
   }
 
@@ -231,7 +242,7 @@ export function usageFromCliResult(d: CliResult): TokenUsage {
   return { input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite, total_tokens: input + output };
 }
 
-async function invokeViaClaudeCli(request: ProviderRequest): Promise<ProviderResponse> {
+async function invokeViaClaudeCli(request: ProviderRequest, env: NodeJS.ProcessEnv): Promise<ProviderResponse> {
   const started = Date.now();
   const conv = request.conversation;
   // Resuming replays the vendor's system prompt from its own cache, so the
@@ -261,7 +272,7 @@ async function invokeViaClaudeCli(request: ProviderRequest): Promise<ProviderRes
       ];
   // The CLI emits its whole JSON body at the end, so there is no partial output
   // worth surfacing — the runner's heartbeat is what tells the user it is alive.
-  const run = (): Promise<CliRun> => runCli('claude', args, request.user);
+  const run = (): Promise<CliRun> => runCli('claude', args, request.user, undefined, env);
 
   // Empty stdout is a transient CLI-overload symptom that a short retry clears.
   // A structured error body is not transient — a usage limit will not lift in

@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { runCli } from './cliRun.js';
-import { cliSignedIn } from './cliAuth.js';
+import { cliEnvFor, cliSignedIn } from './cliAuth.js';
 import { bus } from '../events/bus.js';
 import { irFromDiff } from '../workers/irFromDiff.js';
 import { DIFF_OUTPUT_FORMAT } from '../context/outputFormat.js';
@@ -60,7 +60,7 @@ export class CodexAdapter implements ProviderAdapter {
     // user's ChatGPT subscription, the same way the Anthropic adapter falls back
     // to the `claude` CLI. This is what gives failover a second vendor to reach.
     if (!apiKey) {
-      if (codexCliAvailable()) return await invokeViaCodexCli(request);
+      if (codexCliAvailable()) return await invokeViaCodexCli(request, cliEnvFor('openai-codex', account.credential_ref));
       throw new Error('No OpenAI credentials for Codex. Set OPENAI_API_KEY or install the authenticated `codex` CLI.');
     }
     const client = new OpenAI({ apiKey });
@@ -118,16 +118,29 @@ interface CodexUsage {
   output_tokens?: number;
 }
 
-/** Surface the steps Codex reports, and nothing else — the event stream also
- *  carries deltas and bookkeeping that would flood the log. */
-function reportEvent(line: string): void {
+/**
+ * Surface the steps Codex reports, and keep the reasoning it emits alongside
+ * them — the event stream also carries deltas and bookkeeping that would flood
+ * the log, so those are dropped.
+ *
+ * Reasoning items are billed output. They used to go to a debug log that the
+ * TUI never shows, which meant paying for the model's thinking and discarding
+ * it; `sink` is where it is kept instead.
+ */
+function reportEvent(line: string, sink: string[]): void {
   if (!line.includes('item.completed')) return;
   try {
     const ev = JSON.parse(line) as { type?: string; item?: { type?: string; text?: string } };
     if (ev.type !== 'item.completed' || !ev.item) return;
     const kind = ev.item.type ?? 'step';
     if (kind === 'agent_message') return; // the answer itself; parsed from the output file
-    bus.emit({ type: 'log', level: 'debug', message: `codex: ${kind}${ev.item.text ? ` — ${ev.item.text.slice(0, 120)}` : ''}` });
+    const text = ev.item.text ?? '';
+    if (kind === 'reasoning' && text.trim()) {
+      sink.push(text.trim());
+      bus.emit({ type: 'log', level: 'debug', message: `codex thinking — ${text.slice(0, 120)}` });
+      return;
+    }
+    bus.emit({ type: 'log', level: 'debug', message: `codex: ${kind}${text ? ` — ${text.slice(0, 120)}` : ''}` });
   } catch {
     // A partial line is not worth reporting.
   }
@@ -155,8 +168,9 @@ export function usageFromEvents(jsonl: string): CodexUsage | null {
  * the prompt states the context is complete — otherwise Codex explores the repo
  * on its own and spends tokens re-deriving what the compiler already supplied.
  */
-async function invokeViaCodexCli(request: ProviderRequest): Promise<ProviderResponse> {
+async function invokeViaCodexCli(request: ProviderRequest, env: NodeJS.ProcessEnv): Promise<ProviderResponse> {
   const started = Date.now();
+  const thinking: string[] = [];
   const outFile = path.join(os.tmpdir(), `codex-out-${process.pid}-${Date.now()}.txt`);
   const args = [
     'exec',
@@ -171,7 +185,7 @@ async function invokeViaCodexCli(request: ProviderRequest): Promise<ProviderResp
   try {
     // Codex streams a JSONL event per step, so the work it is doing can be
     // reported as it happens instead of after the fact.
-    const r = await runCli('codex', args, input, (line) => reportEvent(line));
+    const r = await runCli('codex', args, input, (line) => reportEvent(line, thinking), env);
     const text = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8').trim() : '';
     if (r.status !== 0 || !text) {
       const why = [
@@ -192,6 +206,7 @@ async function invokeViaCodexCli(request: ProviderRequest): Promise<ProviderResp
       usage: { input_tokens, output_tokens, cache_read_tokens: cacheRead, total_tokens: input_tokens + output_tokens },
       model: request.model,
       latency_ms: Date.now() - started,
+      reasoning: thinking.join('\n\n') || undefined,
     };
   } finally {
     fs.rmSync(outFile, { force: true });

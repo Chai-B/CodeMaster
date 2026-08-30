@@ -28,10 +28,13 @@ export function runCli(
   input: string,
   /** Called with each complete stdout line as it arrives. */
   onLine?: (line: string) => void,
+  /** The account's environment, when the call is for a named CLI account
+   *  rather than the machine-wide sign-in. */
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<CliRun> {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], env });
     let stdout = '';
     let stderr = '';
     let pending = '';

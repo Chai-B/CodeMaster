@@ -1,7 +1,7 @@
 // Intermediate Representation — provider-agnostic model output (spec §15).
 
 import type { ISO8601, FileRef, ProviderRef } from './common.js';
-import type { Decision, Observation, Risk, Assumption } from './reasoning.js';
+import type { Decision, Observation, Risk, Assumption, Thinking } from './reasoning.js';
 import type { WikiUpdate } from './wiki.js';
 import type { TaskType } from './session.js';
 
@@ -58,6 +58,8 @@ export interface IntermediateRepresentation {
   observations: Observation[];
   risks: Risk[];
   assumptions: Assumption[];
+  /** The model's own thinking for this call, when the vendor returned it. */
+  thinking?: Thinking[];
 
   wiki_updates: WikiUpdate[];
   wiki_reads: string[];

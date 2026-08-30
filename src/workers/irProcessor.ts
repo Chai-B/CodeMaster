@@ -47,6 +47,7 @@ export async function processIR(
     ...ir.observations,
     ...ir.risks,
     ...ir.assumptions,
+    ...(ir.thinking ?? []),
   ];
   let stored = 0;
   for (const r of reasoning) {

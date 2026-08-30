@@ -8,7 +8,10 @@ export type ReasoningType =
   | 'hypothesis'
   | 'risk'
   | 'assumption'
-  | 'constraint';
+  | 'constraint'
+  /** The model's own thinking, as the vendor returned it. Billed as output
+   *  whether or not it is read, so it is kept rather than discarded. */
+  | 'thinking';
 
 export interface ReasoningBase {
   id: string;
@@ -75,13 +78,18 @@ export interface ConstraintReasoning extends ReasoningBase {
   type: 'constraint';
 }
 
+export interface Thinking extends ReasoningBase {
+  type: 'thinking';
+}
+
 export type ReasoningObject =
   | Decision
   | Observation
   | Hypothesis
   | Risk
   | Assumption
-  | ConstraintReasoning;
+  | ConstraintReasoning
+  | Thinking;
 
 export interface FailureRecord {
   id: string;

@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { irFromJson } from '../workers/irFromJson.js';
 import { JSON_OUTPUT_FORMAT } from '../context/outputFormat.js';
 import { CredentialManager } from './credentials.js';
-import { cliSignedIn } from './cliAuth.js';
+import { cliEnvFor, cliSignedIn } from './cliAuth.js';
 import { runCli } from './cliRun.js';
 import type {
   ProviderAdapter,
@@ -55,7 +55,7 @@ export class GeminiAdapter implements ProviderAdapter {
     // Google account, the same way the Anthropic and Codex adapters fall back to
     // theirs. Without this, signing in with the Gemini CLI bought nothing.
     if (!apiKey) {
-      if (geminiCliAvailable()) return await invokeViaGeminiCli(request);
+      if (geminiCliAvailable()) return await invokeViaGeminiCli(request, cliEnvFor('google', account.credential_ref));
       throw new Error('No Google credentials. Set GEMINI_API_KEY, or sign in with the `gemini` CLI via /account login.');
     }
     const genai = new GoogleGenerativeAI(apiKey);
@@ -110,17 +110,20 @@ export function geminiCliAvailable(): boolean {
  * compiled, so the prompt says so — otherwise the CLI explores the repository
  * itself and re-derives what the compiler just supplied.
  *
- * The CLI reports no token counts we can trust, so none are recorded rather
- * than estimated. Cost accounting for this path reads zero, which is honest:
- * the free tier is what most of these sign-ins are.
+ * `-o json` is asked for because the plain output is prose with no token counts
+ * at all: this path used to record zeros for every call. The JSON body is
+ * `{ session_id, response, stats, error? }`, and `stats.models[<model>].tokens`
+ * carries the real numbers, thinking tokens among them.
  */
-async function invokeViaGeminiCli(request: ProviderRequest): Promise<ProviderResponse> {
+async function invokeViaGeminiCli(request: ProviderRequest, env: NodeJS.ProcessEnv): Promise<ProviderResponse> {
   const started = Date.now();
   const input = `${request.system}\n\nAll context needed is below. Do not read files or run commands; answer from the context provided.\n\n${request.user}`;
-  const r = await runCli('gemini', ['-m', request.model, '-p', input], '');
-  const text = (r.stdout ?? '').trim();
+  const r = await runCli('gemini', ['-m', request.model, '-o', 'json', '-p', input], '', undefined, env);
+  const body = parseGeminiJson(r.stdout ?? '');
+  const text = (body?.response ?? '').trim();
   if (r.status !== 0 || !text) {
     const why = [
+      body?.error ? `${body.error.type}: ${body.error.message}` : null,
       r.error ? `spawn ${(r.error as NodeJS.ErrnoException).code ?? r.error.message}` : null,
       r.signal ? `signal ${r.signal}` : null,
       r.status ? `exit ${r.status}` : null,
@@ -131,8 +134,56 @@ async function invokeViaGeminiCli(request: ProviderRequest): Promise<ProviderRes
   }
   return {
     text,
-    usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    usage: usageFromGeminiStats(body?.stats),
     model: request.model,
     latency_ms: Date.now() - started,
+  };
+}
+
+interface GeminiTokens {
+  input?: number;
+  prompt?: number;
+  candidates?: number;
+  total?: number;
+  cached?: number;
+  thoughts?: number;
+}
+
+export interface GeminiJson {
+  response?: string;
+  error?: { type?: string; message?: string };
+  stats?: { models?: Record<string, { tokens?: GeminiTokens }> };
+}
+
+/** The CLI prints a banner before the body on a first run in a directory, so
+ *  the JSON is found rather than assumed to start at character zero. */
+export function parseGeminiJson(out: string): GeminiJson | null {
+  const start = out.indexOf('{');
+  if (start < 0) return null;
+  try {
+    return JSON.parse(out.slice(start)) as GeminiJson;
+  } catch {
+    return null;
+  }
+}
+
+/** Summed across models, because a single call can route through more than one
+ *  (a flash pre-pass in front of pro). Thinking is billed as output and the CLI
+ *  reports it separately, so it is folded in rather than left uncounted. */
+export function usageFromGeminiStats(stats: GeminiJson['stats']): TokenUsage {
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  for (const m of Object.values(stats?.models ?? {})) {
+    const t = m.tokens ?? {};
+    input += t.prompt ?? t.input ?? 0;
+    output += (t.candidates ?? 0) + (t.thoughts ?? 0);
+    cached += t.cached ?? 0;
+  }
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cached || undefined,
+    total_tokens: input + output,
   };
 }
