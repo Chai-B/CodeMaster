@@ -69,17 +69,24 @@ test('a task boundary is what ends planning', () => {
   assert.equal(phaseOf(sep!, 'Planning'), 'Solving');
 });
 
-// Every attempt to rebuild scrolling inside this program cost something the
-// terminal already does for free: claiming the mouse (SGR `?1000h`) killed
-// drag-select, and alternate scroll (`?1007h`) made a wheel notch and an arrow
-// key the same bytes. Settled output now goes into the terminal's own
-// scrollback, so none of those sequences may come back.
-test('the TUI leaves scrolling, selection and copy to the terminal', () => {
+// The pinned frame has three load-bearing pieces whose absence is silent
+// rather than loud: the alternate page (without it the header and the composer
+// are just lines in the shell's scroll region and drag away), and the two
+// guards that keep mouse reports out of Ink's key parser and out of the
+// composer. Losing the second one makes every wheel notch read as escape and
+// cancel the running task, which looks like a bug in the task.
+test('the pinned frame keeps its page, its wheel and its two mouse guards', () => {
   const tui = fs.readFileSync(path.join(process.cwd(), 'src/index.tsx'), 'utf8');
-  assert.ok(!/\?1049h/.test(tui), 'the alternate screen is back, and it has no scrollback');
-  assert.ok(!/\?100[026]h/.test(tui), 'mouse reporting is back on, which breaks selection');
+  assert.ok(/\?1049h/.test(tui), 'the alternate screen is gone, so nothing is pinned');
+  assert.ok(/\?1049l/.test(tui), 'the alternate screen is never released, so quitting strands the terminal');
+  assert.ok(/\?1000h/.test(tui) && /\?1006h/.test(tui), 'the mouse is not claimed, so the wheel does nothing');
+  assert.ok(/\?1000l/.test(tui) && /\?1006l/.test(tui), 'mouse reporting is never released');
   assert.ok(!/\?1007h/.test(tui), 'alternate scroll is back, which makes the wheel and the arrows the same key');
-  assert.ok(/<Static\b/.test(tui), 'settled lines no longer go into the scrollback');
-  // Recall keeps its aliases even though the arrows are unambiguous again.
+  assert.ok(!/<Static\b/.test(tui), '<Static> writes past the frame and breaks the pinning');
+  assert.ok(/if \(mouseRef\.current\) return;/.test(tui), 'useInput reads wheel notches as escape');
+  assert.ok(/replace\(MOUSE, ''\)/.test(tui), 'wheel notches are typed into the composer');
+  // The arrows are recall and nothing else; scrolling has the wheel, shift and
+  // the page keys. Recall keeps its shell aliases as well.
+  assert.ok(/if \(key\.upArrow\) prevHistory\(\);/.test(tui), 'the arrows no longer recall');
   assert.ok(tui.includes("c === 'p'") && tui.includes("c === 'n'"), 'history lost its keys');
 });

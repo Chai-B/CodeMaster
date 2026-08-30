@@ -5,8 +5,8 @@ import { render } from 'ink';
 import { Writable } from 'node:stream';
 import stripAnsi from 'strip-ansi';
 import stringWidth from 'string-width';
-import { Transcript } from '../../src/components/MessageList.js';
-import { Banner } from '../../src/components/Header.js';
+import { MessageList, Transcript, estimateRows } from '../../src/components/MessageList.js';
+import { HeaderBar } from '../../src/components/Header.js';
 import { Activity, StatusBar } from '../../src/components/Activity.js';
 import { EMPTY_LOGS, logReducer, type LogState } from '../../src/util/parser.js';
 import type { LogEntry } from '../../src/util/parser.js';
@@ -86,6 +86,81 @@ test('no rendered line exceeds the terminal width', async () => {
   }
 });
 
+const baseRows = new Map<string, number>();
+
+async function rowsOf(entry: LogEntry, cols: number, expanded: boolean): Promise<number> {
+  const key = `${cols}:${expanded}`;
+  let base = baseRows.get(key);
+  if (base === undefined) {
+    base = (await draw([ANCHOR], cols, expanded)).length;
+    baseRows.set(key, base);
+  }
+  return (await draw([ANCHOR, entry], cols, expanded)).length - base;
+}
+
+const WIDTHS = [40, 60, 80, 120];
+
+// The viewport chooses how many entries fit by asking estimateRows how tall
+// each one is. If the estimate drifts from what Ink actually draws, the frame
+// overruns the window and the terminal scrolls by a row — which is the exact
+// drift the pinning exists to remove.
+test('estimateRows matches the rendered height of every log type', async () => {
+  for (const cols of WIDTHS) {
+    for (const [name, entry] of CASES) {
+      const drawn = await rowsOf(entry, cols, false);
+      assert.equal(estimateRows(entry, cols, false), drawn, `${name} at ${cols} cols`);
+    }
+  }
+});
+
+test('estimateRows matches folded and expanded reasoning', async () => {
+  for (const cols of WIDTHS) {
+    for (const expanded of [false, true]) {
+      const drawn = await rowsOf(REASONING, cols, expanded);
+      assert.equal(estimateRows(REASONING, cols, expanded), drawn, `reasoning at ${cols}, expanded=${expanded}`);
+    }
+  }
+});
+
+/** Render just the viewport, with no sentinel: its whole contract is that it is
+ *  exactly `height` rows tall whatever it is given. */
+async function viewport(entries: LogEntry[], cols: number, height: number, scroll: number): Promise<string[]> {
+  const out = new Fake(cols);
+  const inst = render(
+    React.createElement(MessageList, { settled: entries, live: [], expanded: false, height, scroll }),
+    { stdout: out as never, patchConsole: false },
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  inst.unmount();
+  const lines = stripAnsi(out.buf).split('\n');
+  // Ink terminates the frame with a newline; that is not a row of the frame.
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+test('the viewport is exactly its given height, empty or overfull', async () => {
+  const many: LogEntry[] = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, type: 'tool', text: `step ${i}` }));
+  for (const cols of [40, 80, 120]) {
+    for (const height of [3, 10, 24]) {
+      for (const [label, entries] of [['empty', []], ['one', [ANCHOR]], ['overfull', many]] as Array<[string, LogEntry[]]>) {
+        const lines = await viewport(entries, cols, height, 0);
+        assert.equal(lines.length, height, `${label} at ${cols}x${height}`);
+      }
+    }
+  }
+});
+
+test('the viewport keeps the newest line and scrolling reaches the oldest', async () => {
+  const many: LogEntry[] = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, type: 'tool', text: `step ${i}` }));
+  const bottom = await viewport(many, 80, 10, 0);
+  assert.ok(bottom.at(-1)!.includes('step 59'), `newest line missing: ${JSON.stringify(bottom.at(-1))}`);
+  const top = await viewport(many, 80, 10, 55);
+  assert.ok(top.join('\n').includes('step 0'), 'scrolling back never reaches the first line');
+  const mid = await viewport(many, 80, 10, 20);
+  assert.ok(mid.join('\n').includes('earlier line'), 'no indication that lines are hidden above');
+  assert.equal(mid.length, 10, 'the hidden-above notice must come out of the budget, not add to it');
+});
+
 /** Everything Ink still redraws every frame, at one width. A row wider than
  *  the window wraps, and a wrapped live region tears as it repaints. */
 async function liveRows(cols: number, running: boolean): Promise<string[]> {
@@ -104,7 +179,7 @@ async function liveRows(cols: number, running: boolean): Promise<string[]> {
     React.createElement(
       React.Fragment,
       null,
-      React.createElement(Banner, { shortCwd: '~/Codemaster', version: '1.0.0' }),
+      React.createElement(HeaderBar, { shortCwd: '~/Codemaster', version: '1.0.0', title: running ? 'Fix configuration precedence between file and flags' : '', cols }),
       running
         ? React.createElement(Activity, {
             phase: 'Solving' as const,
@@ -135,10 +210,10 @@ test('no live-region line exceeds the terminal width', async () => {
   }
 });
 
-// `<Static>` prints each item once and never looks at it again, so the settled
-// array may only ever grow at the end. Trimming its front, or reusing an id,
-// makes Ink reprint the whole transcript from wherever the change landed —
-// silently, and only once a session has run long enough to hit the bound.
+// An entry's id is its React key in the viewport and its identity in the
+// scroll arithmetic. Rewriting an earlier slot makes Ink reuse the wrong node,
+// and a reused id makes two different lines the same line — both silent, and
+// both only once a session has run long enough to hit the bound.
 test('settled lines are append-only and never reuse an id', async () => {
   const TYPES: LogEntry['type'][] = ['md', 'tool', 'result', 'reasoning', 'success', 'dim', 'sep', 'heading'];
   let state: LogState = EMPTY_LOGS;

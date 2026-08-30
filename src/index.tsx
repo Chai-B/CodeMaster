@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Box, render, Static, Text, useApp, useInput, useStdin, useStdout } from 'ink';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Box, measureElement, render, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
 
-import { Banner } from './components/Header.js';
-import { LogLine } from './components/MessageList.js';
+import { HeaderBar } from './components/Header.js';
+import { MessageList, totalRows } from './components/MessageList.js';
 import { Activity, StatusBar } from './components/Activity.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
 import { Prompt } from './components/Prompt.js';
@@ -75,16 +75,41 @@ function computeStatus(): SessionStatusView | null {
 }
 
 // ── Mini components ───────────────────────────────────────────────────────────
-function useCols(): number {
+/** Ink recalculates its own layout on a resize, but nothing tells React, so a
+ *  component that reads `stdout.columns` keeps rendering the old number — the
+ *  rule under the header stayed its old width until the next keystroke. This
+ *  subscribes, so a resize is a state change like any other. */
+function useSize(): { cols: number; rows: number } {
   const { stdout } = useStdout();
-  return Math.max(28, stdout?.columns ?? 80);
+  const read = () => ({ cols: Math.max(28, stdout?.columns ?? 80), rows: Math.max(8, (stdout?.rows ?? 24) - 1) });
+  const [size, setSize] = useState(read);
+  useEffect(() => {
+    if (!stdout) return;
+    const on = () => setSize(read());
+    stdout.on('resize', on);
+    on();
+    return () => { stdout.off('resize', on); };
+  }, [stdout]);
+  return size;
+}
+
+function useCols(): number {
+  return useSize().cols;
+}
+
+/** One row short of the window on purpose. Filling the last row means something
+ *  writes one past it and the terminal scrolls by one — and on the alternate
+ *  screen there is no scrollback to scroll into, so the top row is what is
+ *  lost. That top row is the header. */
+function useRows(): number {
+  return useSize().rows;
 }
 
 /** A framed prompt, the way every terminal agent draws one. The old input was
  *  a rule above and a rule below a bare line, which read as two separators with
  *  something trapped between them rather than as a box you type into. */
 function InputArea({
-  value, onChange, onSubmit, running, ghost, queued, focus, placeholder,
+  value, onChange, onSubmit, running, ghost, queued, focus, placeholder, resetKey,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -92,6 +117,12 @@ function InputArea({
   running: boolean;
   ghost: string;
   queued: number;
+  /** Bumped when a keystroke is swallowed rather than typed. ink-text-input
+   *  keeps its own cursor offset and only re-clamps it when the value prop
+   *  changes, so a swallowed key leaves the offset one past the end, where it
+   *  clamps to zero on the next character — after `?` or ctrl+r, typing
+   *  `/help` produced `help/`. Remounting puts the cursor back at the end. */
+  resetKey: number;
   /** Off while a command is asking something: two focused fields would both
    *  take the keystroke. */
   focus: boolean;
@@ -108,7 +139,7 @@ function InputArea({
           the run is visible at the place you are already looking. */}
       <Box borderStyle="round" borderColor={running ? AMBER : BLUE} paddingX={1}>
         <Text bold color={running ? AMBER : BLUE_HI}>{'❯ '}</Text>
-        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} focus={focus} showCursor placeholder={placeholder} />
+        <TextInput key={resetKey} value={value} onChange={onChange} onSubmit={onSubmit} focus={focus} showCursor placeholder={placeholder} />
         {/* The rest of the only command that still matches, greyed in place —
             tab takes it. Guessing at a name and reading /help are both slower. */}
         {ghost ? <Text color={BLUE_DIM}>{ghost}</Text> : null}
@@ -117,21 +148,34 @@ function InputArea({
   );
 }
 
-/** What the keyboard does. Scrolling is absent on purpose: the transcript goes
- *  into the terminal's own scrollback, so the wheel, drag-select, page keys and
- *  copy are the terminal's job and cannot be taken away by this program. */
+/** What the keyboard does. Every line here has to be true: the last two builds
+ *  each advertised a scroll binding that had stopped working, which is worse
+ *  than advertising none. */
 const SHORTCUTS: Array<[string, string]> = [
   ['enter', 'send'],
   ['tab', 'complete the highlighted command'],
-  ['↑ ↓', 'previous commands (ctrl+p / ctrl+n too)'],
-  ['esc', 'interrupt the running task'],
+  ['\u2191 \u2193', 'previous commands (ctrl+p / ctrl+n too)'],
+  ['wheel', 'scroll the transcript'],
+  ['pgup pgdn', 'scroll a page'],
+  ['shift+\u2191\u2193', 'scroll three lines'],
+  ['esc', 'back to the newest line, or interrupt the running task'],
   ['ctrl+r', 'print every piece of reasoning so far'],
-  ['ctrl+l', 'clear the screen'],
+  ['ctrl+l', 'clear the transcript'],
   ['ctrl+c', 'stop the task, or quit when idle'],
   ['ctrl+q', 'quit'],
   ['?', 'this list'],
-  ['wheel / drag', 'your terminal — scroll, select, copy'],
+  ['shift+drag', 'select text (option or fn on macOS Terminal, alt in VS Code)'],
 ];
+
+/** SGR mouse reports. The wheel is the only reason the mouse is claimed at all,
+ *  but claiming it means every report lands in stdin, so these bytes have to be
+ *  kept out of the composer and out of Ink's key parser. The escape is optional
+ *  because Ink strips one leading ESC before the composer ever sees the chunk,
+ *  so the first report of a burst arrives as `[<64;…M` and the rest keep theirs. */
+const MOUSE = /\x1b?\[<(\d+);\d+;\d+[Mm]/g;
+
+/** Rows per wheel notch. Three is what terminals send for their own scrolling. */
+const WHEEL_ROWS = 3;
 
 const KEY_COL = 13;
 
@@ -153,14 +197,38 @@ function App() {
   const [expanded, setExpanded] = useState(false);
   const { stdout } = useStdout();
   const { stdin, setRawMode } = useStdin();
-  const cols = useCols();
+  const { cols, rows } = useSize();
 
-  // The transcript is the terminal's own scrollback, so /clear has to clear the
-  // terminal, not just this program's idea of what it printed. The `<Static>`
-  // below is remounted on the same generation counter.
+  // The whole interface is one frame exactly as tall as the window, drawn on
+  // the alternate screen. That page has no scroll region of its own, which is
+  // the point: the header is row one and the status bar is the last row, and
+  // rows cannot scroll away from themselves. It is also why the wheel has to be
+  // claimed below — the terminal has nothing of its own left to scroll.
   useEffect(() => {
-    if (logs.clearGen > 0) stdout?.write('\x1b[2J\x1b[3J\x1b[H');
-  }, [logs.clearGen, stdout]);
+    if (!stdout?.isTTY) return;
+    const leave = () => {
+      try { stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); } catch { /* stream already gone */ }
+    };
+    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h');
+    process.on('exit', leave);
+    return () => { process.off('exit', leave); leave(); };
+  }, [stdout]);
+
+  // How far back the transcript is scrolled, counted in rows up from the newest.
+  const [scroll, setScroll] = useState(0);
+  // The transcript's real height, asked of the layout rather than added up from
+  // what the header, the activity panel, the prompt form, the composer and the
+  // status bar each claim to draw. Those six numbers drifted out of step every
+  // time one of the components changed.
+  const viewRef = useRef(null);
+  const [viewH, setViewH] = useState(10);
+  // Ink only writes when its output changes. Coming back from a vendor's own
+  // interface the state is identical but the page underneath is blank, so the
+  // frame has to be forced out again.
+  const [, repaint] = useReducer((n: number) => n + 1, 0);
+  // Remount counter for the composer, bumped whenever a keystroke reaches it
+  // but is swallowed here instead of typed.
+  const [inputKey, resetInput] = useReducer((n: number) => n + 1, 0);
 
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
@@ -179,16 +247,36 @@ function App() {
   const cwd = process.cwd();
   const shortCwd = cwd.startsWith(os.homedir()) ? '~' + cwd.slice(os.homedir().length) : cwd;
 
-  // ink-text-input passes ctrl combinations straight through to the field, so
-  // ctrl+r would do what it does *and* type an "r" into the composer. The byte
-  // says which it was: a lone C0 code that is not enter, tab or escape can only
-  // be ctrl and a letter. Read ahead of Ink's own parser so the flag is set
-  // before either handler sees the key.
+  // Raw stdin, read ahead of Ink's own parser so both flags are set before any
+  // handler sees the chunk.
+  //
+  // `ctrlKeyRef` — ink-text-input passes ctrl combinations straight through to
+  // the field, so ctrl+r would do what it does *and* type an "r". A lone C0
+  // byte that is not enter, tab or escape can only be ctrl and a letter.
+  //
+  // `mouseRef` — a claimed mouse puts its reports in stdin. Every report starts
+  // with ESC, so without this flag Ink would read a wheel notch as the escape
+  // key and cancel the running task.
   const ctrlKeyRef = useRef(false);
+  const mouseRef = useRef(false);
+  const maxScrollRef = useRef(0);
   useEffect(() => {
     const onData = (d: Buffer | string) => {
       const b = d.toString();
       ctrlKeyRef.current = b.length === 1 && b < ' ' && b !== '\r' && b !== '\n' && b !== '\t' && b !== '\x1b';
+      MOUSE.lastIndex = 0;
+      let delta = 0;
+      let seen = false;
+      for (let m = MOUSE.exec(b); m; m = MOUSE.exec(b)) {
+        seen = true;
+        // 64 is a notch away from you, 65 towards you. Every other button —
+        // clicks, drags, the ones a terminal sends while shift is held — is
+        // read and dropped, which is what keeps them out of the composer.
+        if (m[1] === '64') delta += WHEEL_ROWS;
+        else if (m[1] === '65') delta -= WHEEL_ROWS;
+      }
+      mouseRef.current = seen;
+      if (delta !== 0) setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
     };
     process.stdin.prependListener('data', onData);
     return () => { process.stdin.off('data', onData); };
@@ -236,27 +324,36 @@ function App() {
     return () => setPrompter(null);
   }, []);
 
-  // A vendor's own sign-in draws its own interface and reads its own keys, so
-  // it gets the terminal: out of raw mode, stdin released. Nothing has to be
-  // repainted afterwards — what the vendor printed stays in the scrollback
-  // above ours, which is where the record of it belongs.
+  // A vendor's own sign-in draws its own interface, opens a browser and reads
+  // its own keys, so it gets the whole terminal: the alternate page released,
+  // the mouse given back, stdin out of raw mode. What it prints belongs in the
+  // real scrollback, not on a page that is about to be thrown away. Taking the
+  // page back afterwards leaves it blank, so Ink is asked to repaint.
   useEffect(() => {
     setSuspender(async (run) => {
       if (!stdout?.isTTY) return await run();
       const wasRaw = stdin?.isRaw ?? false;
       if (wasRaw) setRawMode(false);
       stdin?.pause();
+      stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l');
       try {
         return await run();
       } finally {
+        stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h');
         stdin?.resume();
         if (wasRaw) setRawMode(true);
+        repaint();
       }
     });
     return () => setSuspender(null);
-  }, [stdout, stdin, setRawMode]);
+  }, [stdout, stdin, setRawMode, repaint]);
 
   useInput((c, key) => {
+    // The chunk this "key" came from was a mouse report, already handled by the
+    // raw reader above. Ink parses one key per chunk, and a report begins with
+    // ESC — without this a wheel notch would read as escape and cancel the run.
+    if (mouseRef.current) return;
+
     const prevHistory = () => {
       const hist = inputHistoryRef.current;
       if (!hist.length) return;
@@ -272,11 +369,10 @@ function App() {
     };
 
     if (key.ctrl && c === 'q') { exit(); return; }
-    if (key.ctrl && c === 'l') { dispatch({ type: 'clear' }); return; }
-    // A line already in the scrollback cannot be unfolded in place, so this
-    // does the only thing that works there: it unfolds every future line, and
-    // prints what was already reasoned as a fresh block. Reasoning is paid for
-    // whether or not it is read.
+    if (key.ctrl && c === 'l') { dispatch({ type: 'clear' }); setScroll(0); return; }
+    // Unfolds every future line, and prints what was already reasoned as a
+    // fresh block rather than re-rendering lines that may be scrolled out of
+    // sight. Reasoning is paid for whether or not it is read.
     if (key.ctrl && c === 'r') {
       setExpanded((v) => !v);
       const seen = logs.settled.filter((e) => e.type === 'reasoning');
@@ -295,8 +391,20 @@ function App() {
     // Ctrl-C stops the running task and keeps the session; with nothing
     // running there is nothing to stop, so it leaves.
     if (key.ctrl && c === 'c') { if (!cancelActive()) exit(); return; }
-    // Esc is what people reach for to stop a running thing. It stops the task,
-    // not the process — the session and everything on disk survive.
+
+    // The transcript is a viewport, so it has its own scroll. The wheel is
+    // handled in the raw reader; these are for hands already on the keyboard.
+    // The arrows are plain recall — shift is what makes them scroll.
+    const page = Math.max(1, viewH - 2);
+    if (key.pageUp) { setScroll((v) => Math.min(maxScroll, v + page)); return; }
+    if (key.pageDown) { setScroll((v) => Math.max(0, v - page)); return; }
+    if (key.shift && key.upArrow) { setScroll((v) => Math.min(maxScroll, v + WHEEL_ROWS)); return; }
+    if (key.shift && key.downArrow) { setScroll((v) => Math.max(0, v - WHEEL_ROWS)); return; }
+
+    // Esc means "put me back". Scrolled away from the newest line that is where
+    // you want to be; otherwise it stops the running task — not the process, so
+    // the session and everything on disk survive.
+    if (key.escape && scroll > 0) { setScroll(0); return; }
     if (key.escape && running) { cancelActive(); return; }
 
     if (acOptions.length > 0) {
@@ -309,15 +417,20 @@ function App() {
       if (key.escape) setAcOptions([]);
       return;
     }
-    // Recall, and nothing else. Scrolling is the terminal's, so the arrows are
-    // unambiguous however long the output runs.
+    // Recall, and nothing else. Scrolling has the wheel, shift and the page
+    // keys, so the arrows stay unambiguous however long the output runs.
     if (key.upArrow) prevHistory();
     if (key.downArrow) nextHistory();
   }, { isActive: !prompt });
 
   function handleChange(val: string) {
-    if (ctrlKeyRef.current) return;
+    if (ctrlKeyRef.current) { resetInput(); return; }
+    // ink-text-input treats a multi-byte chunk as a paste, so a wheel notch
+    // would otherwise type `[<64;33;12M` into the prompt.
+    if (mouseRef.current) { val = val.replace(MOUSE, ''); if (val === input) { resetInput(); return; } }
     historyIdxRef.current = -1;
+    // Typing is a request to see what you are typing.
+    if (scroll > 0) setScroll(0);
     // `?` alone is a question about the prompt itself; inside a sentence it is
     // just a question mark. Handled here rather than as a key binding because
     // the composer takes the keystroke either way — intercepting it upstream
@@ -327,6 +440,7 @@ function App() {
       for (const [k, what] of SHORTCUTS) log('dim', `  ${k.padEnd(KEY_COL)}${what}`);
       setInput('');
       setAcOptions([]);
+      resetInput();
       return;
     }
     setInput(val);
@@ -405,39 +519,69 @@ function App() {
     : '';
 
   // What the task bar is counting: the last rule the run drew is the task it
-  // is inside.
+  // is inside. It is also what the header shows on its right, so the top row
+  // says what is being worked on rather than repeating the path below.
   const taskTitle = [...logs.settled].reverse().find((e) => e.type === 'sep')?.text ?? '';
 
+  // Measuring every entry is a pass over the whole transcript, so it is done
+  // once per event rather than once per keystroke.
+  const maxScroll = useMemo(
+    () => Math.max(0, totalRows([...logs.settled, ...logs.live], cols, expanded) - viewH),
+    [logs.settled, logs.live, cols, expanded, viewH],
+  );
+  // A resize can shrink the range under a scroll already set.
+  const clamped = Math.min(scroll, maxScroll);
+
+  // Scroll counts rows up from the bottom, so a line arriving while the reader
+  // is scrolled back would slide the passage they are reading off the top.
+  const totalRef = useRef(0);
+  useEffect(() => {
+    const grown = maxScroll - totalRef.current;
+    totalRef.current = maxScroll;
+    if (grown > 0) setScroll((v) => (v > 0 ? v + grown : 0));
+  }, [maxScroll]);
+  maxScrollRef.current = maxScroll;
+
+  // Asked of the layout after it settles, not added up from what each piece of
+  // chrome claims to draw. No dependency array on purpose: it re-measures every
+  // render and the equality guard stops the loop.
+  useEffect(() => {
+    const h = viewRef.current ? measureElement(viewRef.current).height : 0;
+    if (h > 0 && h !== viewH) setViewH(h);
+  });
+
   return (
-    <Box flexDirection="column" width={cols}>
-      {/* Settled lines are printed once and then belong to the terminal, which
-          is what makes the wheel, drag-select and copy work at all. The array
-          may only be appended to; `clearGen` remounts it for /clear. */}
-      <Static key={logs.clearGen} items={['banner' as const, ...logs.settled]}>
-        {(e) =>
-          e === 'banner'
-            ? <Banner key="banner" shortCwd={shortCwd} version={VERSION} />
-            : <LogLine key={e.id} entry={e} expanded={expanded} />}
-      </Static>
-      {running && !prompt && (
-        <Activity
-          phase={logs.phase}
-          phaseStart={logs.phaseStart || startedAt}
-          phaseDone={logs.phaseDone}
-          steps={logs.live}
-          status={status}
-          taskTitle={taskTitle}
-        />
-      )}
-      {acOptions.length > 0 && !prompt && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
-      {prompt && (
-        <Prompt
-          spec={prompt.spec}
-          onDone={(r) => { setPrompt(null); prompt.resolve(r); }}
-        />
-      )}
-      <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} focus={!prompt} placeholder="/new <objective> or /help" />
-      <StatusBar shortCwd={shortCwd} usage={usage} status={status} running={running} since={startedAt} />
+    <Box flexDirection="column" width={cols} height={rows}>
+      <HeaderBar version={VERSION} shortCwd={shortCwd} title={taskTitle} cols={cols} />
+
+      {/* The only part of the frame that scrolls. `flexGrow` hands it whatever
+          the header and the footer below did not take, however tall those are
+          on this frame. */}
+      <Box ref={viewRef} flexGrow={1} flexShrink={1} overflow="hidden">
+        <MessageList settled={logs.settled} live={logs.live} expanded={expanded} height={viewH} scroll={clamped} />
+      </Box>
+
+      <Box flexShrink={0} flexDirection="column">
+        {running && !prompt && (
+          <Activity
+            phase={logs.phase}
+            phaseStart={logs.phaseStart || startedAt}
+            phaseDone={logs.phaseDone}
+            steps={logs.live}
+            status={status}
+            taskTitle={taskTitle}
+          />
+        )}
+        {acOptions.length > 0 && !prompt && <Autocomplete options={acOptions} selectedIndex={acIndex} />}
+        {prompt && (
+          <Prompt
+            spec={prompt.spec}
+            onDone={(r) => { setPrompt(null); prompt.resolve(r); }}
+          />
+        )}
+        <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} focus={!prompt} placeholder="/new <objective> or /help" resetKey={inputKey} />
+        <StatusBar shortCwd={shortCwd} usage={usage} status={status} running={running} since={startedAt} />
+      </Box>
     </Box>
   );
 }

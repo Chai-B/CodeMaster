@@ -1,39 +1,45 @@
 import React from 'react';
-import { Box, Text, useStdout } from 'ink';
-import { BLUE_HI, BLUE_DIM, MUTED, LOGO } from '../themes/blue.js';
+import { Box, Text } from 'ink';
+import { BLUE_HI, BLUE_DIM, MUTED } from '../themes/blue.js';
 
-const TAGLINE = 'Describe what you want done, or /help for commands.';
-
-/** The startup card: the C, the wordmark, where you are.
+/**
+ * Two rows welded to the top of the window.
  *
- *  Printed once into the terminal's scrollback as the first line of the
- *  transcript, not repainted forever at the top of a pinned frame. The seven-row
- *  bordered banner this replaced spent its right half repeating what the status
- *  bar already said, and cost those rows on every single frame. */
-export function Banner({ shortCwd, version }: { shortCwd: string; version: string }) {
-  const { stdout } = useStdout();
-  const cols = Math.max(28, stdout?.columns ?? 80);
-  // Border, padding and margin take eight columns before a glyph is drawn; the
-  // mark takes ten more. A narrow window keeps the words and drops the mark.
-  const inner = cols - 8;
-  const mark = inner >= LOGO[0]!.length + 24;
-  const text = Math.max(8, inner - (mark ? LOGO[0]!.length + 2 : 0));
+ * The three-row mark this replaced was printed once and read once, which is
+ * fine for something that scrolls away — but the header is now pinned, so every
+ * row it takes is a row the transcript never gets back. What stays is the one
+ * thing worth having permanently on screen beside the wordmark: what the run is
+ * currently working on, or where you are when nothing is running.
+ */
+export function HeaderBar({ version, shortCwd, title, cols }: {
+  version: string;
+  shortCwd: string;
+  title: string;
+  /** Passed in rather than read from `stdout`: a resize is only a re-render
+   *  because the shell subscribed to it, and a header that read the width for
+   *  itself would draw its rule at whatever width the last render happened to
+   *  see. */
+  cols: number;
+}) {
+  const name = `◆ CodeMaster`;
+  const ver = ` v${version}`;
+  const right = title || shortCwd;
+  // The right-hand half is whatever is left after the wordmark, and never less
+  // than nothing — a 28-column window shows the name alone.
+  const gap = Math.max(1, cols - 2 - name.length - ver.length - right.length);
+  const room = Math.max(0, cols - 2 - name.length - ver.length - gap);
 
   return (
-    <Box alignSelf="flex-start" borderStyle="round" borderColor={BLUE_DIM} paddingX={2} marginX={1}>
-      {mark && (
-        <Box flexDirection="column" flexShrink={0} marginRight={2}>
-          {LOGO.map((l, i) => <Text key={i} color={BLUE_HI} bold>{l}</Text>)}
+    <Box flexDirection="column" flexShrink={0}>
+      <Box paddingX={1}>
+        <Text bold color={BLUE_HI}>{name}</Text>
+        <Text color={MUTED}>{ver}</Text>
+        <Text>{' '.repeat(gap)}</Text>
+        <Box width={room}>
+          <Text color={MUTED} wrap="truncate-middle">{right}</Text>
         </Box>
-      )}
-      <Box flexDirection="column" width={text}>
-        <Box>
-          <Text bold color={BLUE_HI}>CodeMaster</Text>
-          <Text color={MUTED}>{`  v${version}`}</Text>
-        </Box>
-        <Text color={MUTED} wrap="truncate-middle">{shortCwd}</Text>
-        <Text color={BLUE_DIM} wrap="truncate-end">{TAGLINE}</Text>
       </Box>
+      <Text color={BLUE_DIM}>{'─'.repeat(cols)}</Text>
     </Box>
   );
 }
