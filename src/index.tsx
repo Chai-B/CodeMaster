@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { Box, render, Text, useApp, useInput, useStdout } from 'ink';
+import { Box, render, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import os from 'os';
 import { createRequire } from 'module';
@@ -21,6 +21,7 @@ import { staticAnalysis } from './analysis/api.js';
 import { Tokens } from './storage/tokens.js';
 import { QuotaLedger } from './providers/quotaLedger.js';
 import { setPrompter, type PromptSpec, type PromptResult } from './ui/prompt.js';
+import { setSuspender } from './ui/terminal.js';
 
 const require_ = createRequire(import.meta.url);
 const VERSION = (require_('../package.json') as { version: string }).version;
@@ -320,6 +321,10 @@ function App() {
   const [help, setHelp] = useState(false);
   const [scroll, setScroll] = useState(0);
   const { stdout } = useStdout();
+  const { stdin, setRawMode } = useStdin();
+  // Bumped after another program has had the terminal: the alternate screen we
+  // come back to is empty and nothing else would ask Ink to draw the frame again.
+  const [, repaint] = useReducer((n: number) => n + 1, 0);
   const rows = useRows();
   const cols = useCols();
 
@@ -412,6 +417,29 @@ function App() {
     setPrompter((spec) => new Promise((resolve) => setPrompt({ spec, resolve })));
     return () => setPrompter(null);
   }, []);
+
+  // A vendor's own sign-in draws its own interface and reads its own keys, so
+  // it gets the terminal: off the alternate screen, out of raw mode, stdin
+  // released. Everything is put back afterwards and the frame is repainted,
+  // because the page we return to is blank and Ink only writes what changed.
+  useEffect(() => {
+    setSuspender(async (run) => {
+      if (!stdout?.isTTY) return await run();
+      const wasRaw = stdin?.isRaw ?? false;
+      stdout.write('\x1b[?1007l\x1b[?1049l');
+      if (wasRaw) setRawMode(false);
+      stdin?.pause();
+      try {
+        return await run();
+      } finally {
+        stdin?.resume();
+        if (wasRaw) setRawMode(true);
+        stdout.write('\x1b[?1049h\x1b[?1007h\x1b[2J\x1b[H');
+        repaint();
+      }
+    });
+    return () => setSuspender(null);
+  }, [stdout, stdin, setRawMode, repaint]);
 
   useInput((c, key) => {
     const prevHistory = () => {

@@ -5,9 +5,10 @@ import { throwIfCancelled } from '../util/cancel.js';
 import { AnthropicAdapter, claudeCliAvailable } from './anthropic.js';
 import { codexCliAvailable } from './codex.js';
 import { OpenAIAdapter } from './openai.js';
-import { GeminiAdapter } from './gemini.js';
+import { GeminiAdapter, geminiCliAvailable } from './gemini.js';
 import { CodexAdapter } from './codex.js';
 import { CredentialManager } from './credentials.js';
+import { cliState, vendorFor } from './cliAuth.js';
 import { QuotaLedger, parseRetryAfterMs } from './quotaLedger.js';
 import { bus } from '../events/bus.js';
 import type { Config } from '../config.js';
@@ -160,7 +161,7 @@ export function anyProviderAvailable(): boolean {
   ];
   if (env.some((k) => process.env[k])) return true;
   if (CredentialManager.list().length > 0) return true;
-  return claudeCliAvailable() || codexCliAvailable();
+  return claudeCliAvailable() || codexCliAvailable() || geminiCliAvailable();
 }
 
 export class ProviderManager {
@@ -305,6 +306,31 @@ export class ProviderManager {
   /** For `/account` and `/doctor`: presence is not the same as usable. */
   accountResolves(a: Account): boolean {
     return this.resolves(a);
+  }
+
+  /** Where this account's credential actually comes from, in the words the user
+   *  would use. Every vendor gets an env-backed placeholder at startup, so
+   *  printing `credential_ref` told someone signed in through a CLI that their
+   *  account was `env:GEMINI_API_KEY` — a variable they had never set. */
+  credentialSource(a: Account): string {
+    if (a.credential_ref.startsWith('cred:')) return 'stored key';
+    if (a.credential_ref.startsWith('env:') && process.env[a.credential_ref.slice(4)]) return a.credential_ref;
+    const cli = cliState(a.provider_id);
+    if (cli?.signedIn) return `${cli.vendor.binary} CLI${cli.identity ? ` · ${cli.identity}` : ''}`;
+    if (this.resolves(a)) return a.credential_ref;
+    return 'no credential';
+  }
+
+  /** The account row a CLI sign-in should light up, so `/account use` has a name
+   *  to take. Every vendor already has one from the constructor. */
+  accountForProvider(providerId: string): Account | undefined {
+    return this.accounts.find((a) => a.provider_id === providerId && this.resolves(a))
+      ?? this.accounts.find((a) => a.provider_id === providerId);
+  }
+
+  /** Whether this vendor is reachable through its own CLI right now. */
+  cliVendor(providerId: string) {
+    return vendorFor(providerId);
   }
 
   /** Account selector (spec §13.3) — health → capacity → rate → context → score. */
@@ -509,7 +535,7 @@ export class ProviderManager {
       case 'openai-codex':
         return !!process.env.OPENAI_API_KEY || codexCliAvailable();
       case 'google':
-        return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+        return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) || geminiCliAvailable();
       default:
         return true;
     }

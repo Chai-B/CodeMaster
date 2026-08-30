@@ -14,9 +14,7 @@ import { Undo, revert } from '../storage/undo.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { GitWorker } from '../analysis/git.js';
 import { LLM_ROLES } from '../types/index.js';
-import { claudeCliAvailable } from '../providers/anthropic.js';
 import { anyProviderAvailable } from '../providers/manager.js';
-import { codexCliAvailable } from '../providers/codex.js';
 import fs from 'fs';
 import path from 'path';
 import { compileContext } from '../context/compiler.js';
@@ -39,6 +37,8 @@ import { COMMANDS } from './catalog.js';
 import { beginCancellable, Cancelled, endCancellable } from '../util/cancel.js';
 import { activeRepoPath, listProjects, loadConfig, saveConfig, CONFIG_PATH } from '../config.js';
 import { select, confirm, form, interactive } from '../ui/prompt.js';
+import { withTerminal } from '../ui/terminal.js';
+import { allCliStates, cliState, invalidateCliState, runOnTerminal, type CliState } from '../providers/cliAuth.js';
 import { listWorkers, topoOrder, registerCoreWorkers } from '../workers/scheduler.js';
 import type { Session, LlmRole } from '../types/index.js';
 import type { Config } from '../config.js';
@@ -405,6 +405,8 @@ export class CommandRouter {
    * and masks its echo, so the secret does not survive the call.
    */
   private async account(args: string[] = []): Promise<void> {
+    if (args[0] === 'login') return this.cliLogin(args[1]);
+    if (args[0] === 'logout') return this.cliLogout(args[1]);
     if (args[0] === 'add') {
       if (args[1] && args[2]) return this.addAccount(args[1], args[2], args[3] ?? process.env.CODEMASTER_NEW_KEY);
       // Three positional arguments in the right order, one of them a secret, is
@@ -431,26 +433,108 @@ export class CommandRouter {
       const removed = this.sm.manager.removeAccount(alias);
       return this.out(removed ? 'success' : 'warn', `Account ${alias} ${removed ? 'removed' : 'not found'}`);
     }
+    this.out('heading', 'Sign-ins');
+    for (const c of allCliStates()) {
+      const line = !c.installed
+        ? `not installed — ${c.vendor.install}`
+        : c.signedIn
+          ? `signed in${c.identity ? ` · ${c.identity}` : ''}`
+          : `installed, signed out — /account login ${c.vendor.binary}`;
+      this.out(c.signedIn ? 'info' : 'dim', `${c.signedIn ? '✓' : ' '} ${c.vendor.label} (${c.vendor.binary})  ${line}`);
+    }
+
     this.out('heading', 'Accounts');
     const active = this.sm.manager.activeAccount();
     for (const a of this.sm.manager.listAccounts()) {
       // Presence is not usability: the constructor makes an env-backed account
       // for every vendor whether or not that variable is ever set.
       const usable = this.sm.manager.accountResolves(a);
-      const src = a.credential_ref.startsWith('cred:') ? 'stored' : a.credential_ref;
       this.out(
         usable ? 'info' : 'dim',
-        `${a.alias === active ? '●' : ' '} ${a.alias} (${a.provider_id})  ${usable ? src : `${src} — no credential`}  ${a.health.status}  ${fmtTokens(a.quota.tokens_used_today)} today`,
+        `${a.alias === active ? '●' : ' '} ${a.alias} (${a.provider_id})  ${this.sm.manager.credentialSource(a)}  ${a.health.status}  ${fmtTokens(a.quota.tokens_used_today)} today`,
       );
     }
-    this.out('dim', '/account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
+    this.out('dim', '/account login <cli> · /account add <provider> <alias> <key> · /account use <alias> · /account remove <alias>');
 
     const action = await select('Accounts', [
-      { value: 'add', label: 'Add an account', hint: 'a vendor key' },
+      { value: 'login', label: 'Sign in with a CLI', hint: 'Claude Code, Codex or Gemini — no key to paste' },
+      { value: 'add', label: 'Paste an API key', hint: 'kept in the system keychain' },
       { value: 'use', label: 'Choose which answers first' },
-      { value: 'remove', label: 'Remove a stored account' },
+      { value: 'logout', label: 'Sign out of a CLI' },
+      { value: 'remove', label: 'Remove a stored key' },
     ]);
     if (action) return this.account([action]);
+  }
+
+  /**
+   * Sign in by running the vendor's own login, with the terminal handed to it.
+   *
+   * Nothing is stored on this path: the CLI keeps the token wherever it keeps
+   * it, so CodeMaster never holds the secret and never has to protect it. That
+   * is the whole reason to prefer it over pasting a key.
+   */
+  private async cliLogin(which?: string): Promise<void> {
+    const state = await this.pickCli(which, 'Sign in with which CLI?', (c) => !c.signedIn);
+    if (!state) return;
+    const { vendor } = state;
+    if (!state.installed) {
+      this.out('warn', `${vendor.label} is not installed.`);
+      return this.out('dim', `Install it with: ${vendor.install}`);
+    }
+    if (state.signedIn && !(await confirm(`${vendor.label} is already signed in${state.identity ? ` as ${state.identity}` : ''}. Sign in again?`))) return;
+
+    this.out('info', `Handing the terminal to ${vendor.binary} — follow its prompts; CodeMaster comes back when it finishes.`);
+    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.login));
+    invalidateCliState(vendor.provider_id);
+    const after = cliState(vendor.provider_id)!;
+
+    if (!after.signedIn) {
+      return this.out('warn', `Not signed in${result.reason ? ` — ${vendor.binary} ${result.reason}` : ''}. Nothing was stored.`);
+    }
+    this.out('success', `Signed in to ${vendor.label}${after.identity ? ` as ${after.identity}` : ''}.`);
+    this.out('dim', 'The CLI holds the token — CodeMaster stored no credential.');
+    const acct = this.sm.manager.accountForProvider(vendor.provider_id);
+    if (acct) this.out('dim', `/account use ${acct.alias} makes ${vendor.label} the one that answers.`);
+  }
+
+  private async cliLogout(which?: string): Promise<void> {
+    const state = await this.pickCli(which, 'Sign out of which CLI?', (c) => c.signedIn);
+    if (!state) return;
+    const { vendor } = state;
+    if (!vendor.logout) return this.out('warn', `${vendor.label} has no sign-out command — clear its credentials with the CLI itself.`);
+    if (!state.signedIn) return this.out('dim', `${vendor.label} is not signed in.`);
+    if (!(await confirm(`Sign out of ${vendor.label}?`, { detail: 'Other tools using this CLI lose the session too.' }))) return;
+    const result = await withTerminal(() => runOnTerminal(vendor.binary, vendor.logout!));
+    invalidateCliState(vendor.provider_id);
+    this.out(result.ok ? 'success' : 'warn', result.ok ? `Signed out of ${vendor.label}.` : `${vendor.binary} ${result.reason}`);
+  }
+
+  /** Name it on the command line, or pick from a list that says what each one is
+   *  doing right now. `prefer` puts the ones the action applies to at the top. */
+  private async pickCli(
+    which: string | undefined,
+    title: string,
+    prefer: (c: CliState) => boolean,
+  ): Promise<CliState | null> {
+    const all = allCliStates();
+    if (which) {
+      const key = which.toLowerCase();
+      const hit = all.find((c) => c.vendor.binary === key || c.vendor.provider_id === key || c.vendor.label.toLowerCase() === key);
+      if (hit) return hit;
+      this.out('warn', `Unknown CLI ${which}. Known: ${all.map((c) => c.vendor.binary).join(', ')}`);
+      return null;
+    }
+    const ordered = [...all].sort((a, b) => Number(prefer(b)) - Number(prefer(a)));
+    const chosen = await select(title, ordered.map((c) => ({
+      value: c.vendor.provider_id,
+      label: c.vendor.label,
+      hint: !c.installed ? 'not installed' : c.signedIn ? `signed in${c.identity ? ` · ${c.identity}` : ''}` : 'signed out',
+    })));
+    if (!chosen) {
+      this.out('warn', `Usage: /account login <${all.map((c) => c.vendor.binary).join('|')}>`);
+      return null;
+    }
+    return all.find((c) => c.vendor.provider_id === chosen) ?? null;
   }
 
   private addAccount(provider: string, alias: string, key: string | undefined): void {
@@ -705,14 +789,24 @@ export class CommandRouter {
       const active = this.sm.manager.activeAccount();
       this.out('success', `Credentials found${active ? ` — ${active} answers first` : ''}.`);
     } else {
+      // Sending someone to another shell and asking them to come back was the
+      // whole problem: the vendor's login runs here, on this terminal.
       const how = await select('No provider credentials yet. How do you want to sign in?', [
-        ...(claudeCliAvailable() ? [{ value: 'claude', label: 'Claude Code subscription', hint: 'run `claude setup-token` in a shell' }] : []),
-        ...(codexCliAvailable() ? [{ value: 'codex', label: 'Codex CLI login', hint: 'run `codex login` in a shell' }] : []),
+        ...allCliStates()
+          .filter((c) => c.installed && !c.signedIn)
+          .map((c) => ({ value: `cli:${c.vendor.provider_id}`, label: `Sign in with ${c.vendor.label}`, hint: `runs \`${c.vendor.binary}\` here — no key to paste` })),
         { value: 'key', label: 'Paste an API key', hint: 'stored in the system keychain' },
+        ...allCliStates()
+          .filter((c) => !c.installed)
+          .map((c) => ({ value: `install:${c.vendor.provider_id}`, label: `${c.vendor.label} — not installed`, hint: c.vendor.install })),
         { value: 'skip', label: 'Skip for now', hint: 'deterministic commands still work' },
       ]);
-      if (how === 'claude') this.out('info', 'Run `claude setup-token` in a shell, then come back and run /setup again.');
-      if (how === 'codex') this.out('info', 'Run `codex login` in a shell, then come back and run /setup again.');
+      if (how?.startsWith('cli:')) await this.cliLogin(how.slice(4));
+      if (how?.startsWith('install:')) {
+        const v = allCliStates().find((c) => c.vendor.provider_id === how.slice(8))!.vendor;
+        this.out('info', `Install it with: ${v.install}`);
+        this.out('dim', 'Then run /setup again, or /account login.');
+      }
       if (how === 'key') await this.account(['add']);
     }
 
@@ -1297,11 +1391,17 @@ export class CommandRouter {
       if (usable.length) ok(`Providers: ${usable.map((a) => `${a.provider_id}/${a.alias} (${a.health.status})`).join(', ')}`);
       else bad('Credentials found, but none of them resolve.', 'Run /account to see which, then /account add <provider> <alias> <key>.');
     } else {
-      bad('No provider credentials.', 'Set ANTHROPIC_API_KEY / OPENAI_API_KEY, run `claude setup-token`, or /account add.');
+      bad('No provider credentials.', 'Run /account login to sign in with a vendor CLI, or /account add to paste a key.');
     }
-    const clis = [claudeCliAvailable() ? 'claude' : null, codexCliAvailable() ? 'codex' : null].filter(Boolean);
-    if (clis.length) ok(`Subscription CLIs available: ${clis.join(', ')} — vendor plans are used before metered keys.`);
-    else this.out('dim', 'No vendor CLI on PATH; calls go through metered API keys.');
+    // Installed but signed out is the case that used to read as available and
+    // then failed on the first call, so it is called out by name.
+    const clis = allCliStates();
+    const live = clis.filter((c) => c.signedIn);
+    if (live.length) ok(`Signed in: ${live.map((c) => c.vendor.binary).join(', ')} — vendor plans are used before metered keys.`);
+    for (const c of clis.filter((x) => x.installed && !x.signedIn)) {
+      bad(`${c.vendor.label} is installed but signed out.`, `Run /account login ${c.vendor.binary}.`);
+    }
+    if (!live.length && !clis.some((c) => c.installed)) this.out('dim', 'No vendor CLI on PATH; calls go through metered API keys.');
 
     const blocked = QuotaLedger.all().filter((st) => QuotaLedger.blockedForMs(st.key, st.provider_id) > 0);
     if (blocked.length) bad(`${blocked.length} provider window(s) are cooling down.`, 'Run /cost to see for how long.');

@@ -30,7 +30,7 @@ export const COMMANDS: CommandDef[] = [
   // Provider
   { cmd: '/model', desc: 'Show or switch the model in use', group: 'Provider', usage: '/model | /model <model_id>' },
   { cmd: '/provider', desc: 'List/use/status providers', group: 'Provider', usage: '/provider | /provider use <model_id>' },
-  { cmd: '/account', desc: 'Hold several vendors\' keys and choose which answers', group: 'Provider', usage: '/account | /account add <provider> <alias> <key> | /account use <alias> | /account remove <alias>' },
+  { cmd: '/account', desc: 'Sign in to vendor CLIs, hold several accounts, choose which answers', group: 'Provider', usage: '/account | /account login <claude|codex|gemini> | /account logout <cli> | /account add <provider> <alias> <key> | /account use <alias> | /account remove <alias>' },
   { cmd: '/handoff', desc: 'Hand off session to a provider', group: 'Provider', usage: '/handoff <model_id>' },
   // Memory / Wiki
   { cmd: '/memory', desc: 'Inspect/search memory', group: 'Memory', usage: '/memory | /memory compress' },

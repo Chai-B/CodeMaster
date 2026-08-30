@@ -1,7 +1,7 @@
 // Anthropic provider adapter (spec §13.5).
 
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnSync } from 'child_process';
+import { cliSignedIn } from './cliAuth.js';
 import { runCli, type CliRun } from './cliRun.js';
 import { parseIR } from '../workers/outputParser.js';
 import { CredentialManager } from './credentials.js';
@@ -158,15 +158,10 @@ function credentialFromStore(id: string): string | undefined {
   return CredentialManager.retrieve(id) ?? undefined;
 }
 
-let _cliChecked: boolean | null = null;
+/** Installed *and* signed in. It used to mean only the former, so a user who
+ *  had the binary but no session got a green provider and a failed first call. */
 export function claudeCliAvailable(): boolean {
-  if (_cliChecked !== null) return _cliChecked;
-  try {
-    _cliChecked = spawnSync('claude', ['--version'], { encoding: 'utf8' }).status === 0;
-  } catch {
-    _cliChecked = false;
-  }
-  return _cliChecked;
+  return cliSignedIn('anthropic');
 }
 
 const CLI_DISALLOWED_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'NotebookEdit'];

@@ -5,8 +5,8 @@ import OpenAI from 'openai';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawnSync } from 'child_process';
 import { runCli } from './cliRun.js';
+import { cliSignedIn } from './cliAuth.js';
 import { bus } from '../events/bus.js';
 import { irFromDiff } from '../workers/irFromDiff.js';
 import { DIFF_OUTPUT_FORMAT } from '../context/outputFormat.js';
@@ -107,15 +107,9 @@ function resolveKey(account: Account): string | undefined {
   return process.env.OPENAI_API_KEY || account.credential_ref || undefined;
 }
 
-let _cliChecked: boolean | null = null;
+/** Installed *and* signed in — see the note on `claudeCliAvailable`. */
 export function codexCliAvailable(): boolean {
-  if (_cliChecked !== null) return _cliChecked;
-  try {
-    _cliChecked = spawnSync('codex', ['--version'], { encoding: 'utf8' }).status === 0;
-  } catch {
-    _cliChecked = false;
-  }
-  return _cliChecked;
+  return cliSignedIn('openai-codex');
 }
 
 interface CodexUsage {
