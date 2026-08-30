@@ -886,20 +886,25 @@ export class CommandRouter {
     if (this.sm.manager.hasAnyProvider()) {
       const active = this.sm.manager.activeAccount();
       this.out('success', `Credentials found${active ? ` — ${active} answers first` : ''}.`);
+      const signedIn = allCliStates().filter((c) => c.signedIn).length;
+      if (signedIn) this.out('dim', `${signedIn} CLI account${signedIn === 1 ? '' : 's'} signed in · /account new <cli> <name> adds another, up to ${MAX_ACCOUNTS_PER_VENDOR} per vendor.`);
     } else {
       // Sending someone to another shell and asking them to come back was the
       // whole problem: the vendor's login runs here, on this terminal.
       const how = await select('No provider credentials yet. How do you want to sign in?', [
         ...allCliStates()
           .filter((c) => c.installed && !c.signedIn)
-          .map((c) => ({ value: `cli:${c.vendor.provider_id}`, label: `Sign in with ${c.vendor.label}`, hint: `runs \`${c.vendor.binary}\` here — no key to paste` })),
+          .map((c) => ({ value: `cli:${c.vendor.provider_id}#${c.account}`, label: `Sign in with ${c.vendor.label}`, hint: `runs \`${c.vendor.binary}\` here — no key to paste` })),
         { value: 'key', label: 'Paste an API key', hint: 'stored in the system keychain' },
         ...allCliStates()
           .filter((c) => !c.installed)
           .map((c) => ({ value: `install:${c.vendor.provider_id}`, label: `${c.vendor.label} — not installed`, hint: c.vendor.install })),
         { value: 'skip', label: 'Skip for now', hint: 'deterministic commands still work' },
       ]);
-      if (how?.startsWith('cli:')) await this.cliLogin(how.slice(4));
+      if (how?.startsWith('cli:')) {
+        const [pid, acct] = how.slice(4).split('#');
+        await this.cliLogin(pid, acct);
+      }
       if (how?.startsWith('install:')) {
         const v = allCliStates().find((c) => c.vendor.provider_id === how.slice(8))!.vendor;
         this.out('info', `Install it with: ${v.install}`);
@@ -1495,14 +1500,20 @@ export class CommandRouter {
     // then failed on the first call, so it is called out by name.
     const clis = allCliStates();
     const live = clis.filter((c) => c.signedIn);
-    if (live.length) ok(`Signed in: ${live.map((c) => c.vendor.binary).join(', ')} — vendor plans are used before metered keys.`);
+    if (live.length) {
+      ok(`Signed in: ${live.map((c) => `${c.vendor.binary}/${c.account}`).join(', ')} — vendor plans are used before metered keys.`);
+    }
     for (const c of clis.filter((x) => x.installed && !x.signedIn)) {
-      bad(`${c.vendor.label} is installed but signed out.`, `Run /account login ${c.vendor.binary}.`);
+      // A named account that has never been signed in is half-created, and it
+      // reads as an available provider until the first call fails.
+      bad(`${c.vendor.label} · ${c.account} is installed but signed out.`, `Run /account login ${c.vendor.binary} ${c.account}.`);
     }
     if (!live.length && !clis.some((c) => c.installed)) this.out('dim', 'No vendor CLI on PATH; calls go through metered API keys.');
 
     const blocked = QuotaLedger.all().filter((st) => QuotaLedger.blockedForMs(st.key, st.provider_id) > 0);
-    if (blocked.length) bad(`${blocked.length} provider window(s) are cooling down.`, 'Run /cost to see for how long.');
+    for (const st of blocked) {
+      bad(`${st.key} is cooling down for ${fmtDuration(QuotaLedger.blockedForMs(st.key, st.provider_id))}.`, st.last_error ? st.last_error.slice(0, 120) : 'Run /cost for the window.');
+    }
 
     for (const [label, bin] of [['ripgrep', 'rg'], ['python', 'python3']] as const) {
       if (which(bin)) ok(`${label} found`);
