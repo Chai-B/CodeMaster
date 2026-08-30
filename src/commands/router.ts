@@ -169,7 +169,12 @@ export class CommandRouter {
     const { text: answer, tokens } = await answerQuestion(text, repo, this.sm.manager, this.sm.cfg, live);
     this.out('heading', 'Answer');
     for (const line of answer.split('\n')) this.out('md', line);
-    this.out('dim', `${fmtTokens(tokens)} tokens · nothing was written. /new <objective> to act on this.`);
+    this.out(
+      'dim',
+      tokens === 0
+        ? 'Answered from the index · no model call. /new <objective> to act on this.'
+        : `${fmtTokens(tokens)} tokens · nothing was written. /new <objective> to act on this.`,
+    );
   }
 
   // ── Session ───────────────────────────────────────────────

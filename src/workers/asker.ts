@@ -10,7 +10,7 @@ import { compileContext } from '../context/compiler.js';
 import { Tasks } from '../storage/sessions.js';
 import { Reasoning } from '../storage/reasoning.js';
 import { callLlm } from './llm.js';
-import { staticAnalysis } from '../analysis/api.js';
+import { staticAnalysis, type StaticAnalysisAPI, type SymbolLocation } from '../analysis/api.js';
 import { namedFiles } from '../context/fileSelector.js';
 import { parseObjective } from './intentParser.js';
 import { bus } from '../events/bus.js';
@@ -119,6 +119,98 @@ export function sessionState(live: Session): string {
   return parts.join('\n\n');
 }
 
+/** Words that are never the subject of a structural question, so a repository
+ *  that happens to define a symbol called `get` or `file` does not hijack one. */
+const STOP = new Set([
+  'the', 'and', 'for', 'are', 'was', 'how', 'why', 'what', 'who', 'where', 'which', 'does', 'did',
+  'can', 'file', 'files', 'function', 'class', 'method', 'symbol', 'defined', 'declared',
+  'implemented', 'called', 'calls', 'used', 'uses', 'import', 'imports', 'depends', 'depend',
+  'this', 'that', 'get', 'set', 'new', 'code', 'from', 'with', 'into', 'break', 'breaks', 'change',
+]);
+
+function candidates(q: string): string[] {
+  const ticked = [...q.matchAll(/`([^`\s]+)`/g)].map((m) => m[1]!);
+  if (ticked.length) return ticked;
+  return [...q.matchAll(/[A-Za-z_$][A-Za-z0-9_$]{2,}/g)]
+    .map((m) => m[0]!)
+    .filter((w) => !STOP.has(w.toLowerCase()));
+}
+
+/** The one symbol in the question that the index knows. Zero means the question
+ *  is about something not indexed; several means it is a comparison or a
+ *  sentence, not a lookup. Either way the model answers it, not this. */
+function subject(api: StaticAnalysisAPI, q: string): { name: string; defs: SymbolLocation[] } | null {
+  const hits = candidates(q)
+    .map((name) => ({ name, defs: api.findDefinition(name) }))
+    .filter((h) => h.defs.length);
+  return new Set(hits.map((h) => h.name)).size === 1 ? hits[0]! : null;
+}
+
+/** The one file the question names, as a repo-relative path. */
+function fileSubject(api: StaticAnalysisAPI, q: string): string | null {
+  const tok = q.match(/`([^`\s]+)`/)?.[1] ?? q.match(/[\w.@/-]+\.[a-z]{1,4}\b/i)?.[0];
+  if (!tok) return null;
+  if (tok.includes('/')) return tok;
+  const files = api.filesByBaseName(tok.replace(/\.[^.]+$/, ''));
+  return files.length === 1 ? files[0]! : null;
+}
+
+/**
+ * The answer to a structural question, read straight out of the index.
+ *
+ * "Where is X defined", "who calls X", "what imports this file" are already
+ * exact rows in the symbol, call and dependency tables. Sending them to a model
+ * pays for a full context compilation and a call so that it can read the same
+ * rows back — and paraphrase them, occasionally wrong. Every shape here is
+ * matched narrowly and only answered when the index actually resolves the
+ * subject; anything else returns null and takes the normal path, where the
+ * model can at least say what it does not know.
+ */
+export function structuralAnswer(api: StaticAnalysisAPI, question: string): string | null {
+  const q = question.trim();
+
+  if (/\bwhere\b[^?]*\b(defined|declared|implemented|lives?|located)\b/i.test(q) ||
+      /\bwhich file\b[^?]*\b(defin|declar|implement|contain)/i.test(q)) {
+    const s = subject(api, q);
+    if (!s) return null;
+    return [
+      `\`${s.name}\` is defined in:`,
+      ...s.defs.map((d) => `- \`${d.file}:${d.line}\` — ${d.kind}${d.signature ? ` \`${d.signature}\`` : ''}`),
+    ].join('\n');
+  }
+
+  if (/\b(who|what)\b[^?]*\bcalls\b/i.test(q) || /\bcallers? of\b/i.test(q) ||
+      /\bwhere\b[^?]*\b(called|used)\b/i.test(q)) {
+    const s = subject(api, q);
+    if (!s) return null;
+    const callers = api.getCallers(s.name);
+    if (!callers.length) return null;
+    return [
+      `\`${s.name}\` is called from ${callers.length} site(s):`,
+      ...callers.map((c) => `- \`${c.file}:${c.line}\` — in ${c.name}`),
+    ].join('\n');
+  }
+
+  if (/\bwhat\b[^?]*\b(depends on|imports)\b/i.test(q) || /\bdependents of\b/i.test(q) ||
+      /\bwhat\b[^?]*\bbreaks?\b/i.test(q)) {
+    const f = fileSubject(api, q);
+    if (!f) return null;
+    const deps = api.getDependents(f);
+    if (!deps.length) return null;
+    return [`${deps.length} file(s) import \`${f}\`:`, ...deps.map((d) => `- \`${d}\``)].join('\n');
+  }
+
+  if (/\bwhat does\b[^?]*\b(depend on|import)\b/i.test(q) || /\bdependencies of\b/i.test(q)) {
+    const f = fileSubject(api, q);
+    if (!f) return null;
+    const deps = api.getDependencies(f);
+    if (!deps.length) return null;
+    return [`\`${f}\` imports ${deps.length} file(s):`, ...deps.map((d) => `- \`${d}\``)].join('\n');
+  }
+
+  return null;
+}
+
 export async function answerQuestion(
   question: string,
   repoPath: string,
@@ -137,6 +229,16 @@ export async function answerQuestion(
     bus.emit({ type: 'worker.started', worker: 'StaticIndexer', detail: 'indexing repository' });
     const stats = await api.reindex({ embed: true });
     bus.emit({ type: 'worker.finished', worker: 'StaticIndexer', detail: `${stats.files} files, ${stats.symbols} symbols` });
+  }
+
+  // The index holds the exact answer to a structural question, so answering it
+  // from there costs no call at all — the cheapest model is still more
+  // expensive, and less accurate, than the rows it would be reading back.
+  const direct = structuralAnswer(api, question);
+  if (direct) {
+    bus.emit({ type: 'worker.started', worker: 'Asker', detail: 'answering from the index' });
+    bus.emit({ type: 'worker.finished', worker: 'Asker', detail: 'no model call' });
+    return { text: direct, tokens: 0, model: 'index' };
   }
 
   const { session, task } = ephemeral(question, repoPath, commit);
