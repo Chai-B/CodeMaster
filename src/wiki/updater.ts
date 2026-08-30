@@ -121,6 +121,31 @@ export function applyWikiUpdate(
   return { key: update.key, action: 'updated' };
 }
 
+/**
+ * Write the reconciled text over a flagged entry and clear the flag.
+ *
+ * A conflict leaves the entry holding the incoming text under `status:
+ * conflict`, with the previous text kept as a version. Whoever decides between
+ * them writes the answer back through here rather than through
+ * `applyWikiUpdate`, which would compare the answer against what it replaces
+ * and flag it all over again — that loop is what queued an endless chain of
+ * resolvers.
+ */
+export function resolveWikiConflict(key: string, content: string, sessionId?: string): void {
+  const existing = Wiki.get(normalizeKey(key));
+  if (!existing) return;
+  const stamp = now();
+  writeVersion(existing.wiki_key, existing.content_markdown, stamp);
+  const entry: WikiEntry = {
+    wiki_key: existing.wiki_key,
+    front_matter: { ...existing.front_matter, status: 'current', last_updated: stamp, last_updated_by_session: sessionId },
+    content_markdown: content,
+  };
+  Wiki.upsert(entry, sessionId);
+  writeMarkdown(entry);
+  bus.emit({ type: 'wiki.updated', key: entry.wiki_key });
+}
+
 // crude token-set Jaccard similarity
 function similarity(a: string, b: string): number {
   const sa = new Set(a.toLowerCase().split(/\s+/));

@@ -142,7 +142,7 @@ export async function executeTask(
       message: `Reused a stored answer for this exact context — ${cached.tokens} tokens not spent.`,
     });
     const reused: IntermediateRepresentation = { ...cached.ir, session_id: session.id, task_id: task.id };
-    const rproc = await processIR(reused, session, task, cfg);
+    const rproc = await processIR(reused, session, task, cfg, manager);
     const rms = Date.now() - started;
     bus.emit({ type: 'task.completed', task_id: task.id, tokens: 0, ms: rms });
     return {
@@ -240,7 +240,7 @@ export async function executeTask(
   if (ir.status !== 'failed') PromptCache.put(cacheKey, sel.model, ir, response.usage.total_tokens);
 
   bus.emit({ type: 'worker.started', worker: 'IRProcessor', detail: 'applying patches + reasoning' });
-  const proc = await processIR(ir, session, task, cfg);
+  const proc = await processIR(ir, session, task, cfg, manager);
 
   // The handoff package is one-shot — consumed by the first task after a switch (spec §13.6).
   if ((session.metadata as Record<string, unknown> | undefined)?.pending_handoff) {

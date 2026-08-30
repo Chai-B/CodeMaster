@@ -3,7 +3,9 @@
 
 import { Reasoning, Failures } from '../storage/reasoning.js';
 import { Tasks } from '../storage/sessions.js';
-import { applyWikiUpdate } from '../wiki/updater.js';
+import { applyWikiUpdate, resolveWikiConflict } from '../wiki/updater.js';
+import { ConflictResolverWorker } from './conflictResolver.js';
+import { runWorker } from './base.js';
 import { applyPatches, type ApplyResult } from './patchApplier.js';
 import { Undo } from '../storage/undo.js';
 import { createCheckpoint } from './checkpointer.js';
@@ -12,6 +14,7 @@ import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
 import type { IntermediateRepresentation, Session, Task, ReasoningObject } from '../types/index.js';
 import type { Config } from '../config.js';
+import type { ProviderManager } from '../providers/manager.js';
 
 export interface ProcessResult {
   apply: ApplyResult;
@@ -25,6 +28,9 @@ export async function processIR(
   session: Session,
   task: Task,
   cfg: Config,
+  /** Absent in tests and in any caller with no provider layer; without it a
+   *  conflict is queued rather than reconciled. */
+  manager?: ProviderManager,
 ): Promise<ProcessResult> {
   const repoPath = session.repository.path;
 
@@ -106,6 +112,41 @@ export async function processIR(
         (t) => t.title === title && t.status !== 'completed' && t.status !== 'failed',
       );
       if (res.action === 'conflict' && !alreadyQueued) {
+        // Reconciling two entries is a transform of text already in hand, not
+        // work that needs the repository. Sent through the task queue it paid
+        // for planning, a full context compilation and the solve model —
+        // 76,709 tokens on one `notes/` conflict. The dedicated worker asks the
+        // merge model the same question with both texts inline, capped at 600
+        // output tokens, and writes the answer straight back.
+        const resolved = manager
+          ? await runWorker(
+              ConflictResolverWorker,
+              {
+                sessionId: session.id,
+                a: res.previous ?? '',
+                b: res.incoming ?? '',
+                context: `Wiki entry "${res.key}" in ${session.repository.path}`,
+                manager,
+                cfg,
+              },
+              { repoPath, sessionId: session.id },
+            ).catch(() => null)
+          : null;
+        if (resolved) {
+          const content =
+            resolved.decision === 'a'
+              ? res.previous
+              : resolved.decision === 'b'
+                ? res.incoming
+                : resolved.decision === 'merge' && resolved.merged
+                  ? resolved.merged
+                  : `${res.previous ?? ''}\n\n${res.incoming ?? ''}`;
+          resolveWikiConflict(res.key, content ?? '', session.id);
+          bus.emit({ type: 'log', level: 'info', message: `Reconciled ${res.key}: ${resolved.rationale || resolved.decision}.` });
+          continue;
+        }
+        // No provider to ask, or the merge call failed. The entry stays flagged
+        // and a task carries the decision instead of dropping it.
         Tasks.insert({
           id: id('task'),
           session_id: session.id,
