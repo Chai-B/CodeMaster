@@ -209,6 +209,10 @@ export async function compileContext(
   if (files.length) {
     // Annotate each file with its RKG role + immediate dependencies (spec §6.4) so
     // the model gets "what this file is for and how it connects", not just contents.
+    // Single-file indexing leaves the graph behind the file index. This is the
+    // one moment the lag would change an answer, so it is settled here rather
+    // than after every edit — the prompt is about to be paid for either way.
+    if (api.derivedStale()) api.rebuildRKG();
     const subgraph = api.rkg().relevantSubgraph(selectedPaths);
     const annotate = (p: string): string => {
       const g = subgraph.get(p);

@@ -978,6 +978,7 @@ export class CommandRouter {
       this.out('heading', 'Repository knowledge graph');
       this.out('info', `Nodes: ${s.nodes}  Edges: ${s.edges}`);
       this.out('info', `By type: ${Object.entries(s.byType).map(([t, c]) => `${t}:${c}`).join(', ')}`);
+      if (api.derivedStale()) this.out('warn', 'Stale: files were indexed individually since the last full build. /index rebuilds it.');
       return;
     }
     if (arg === 'untested') {

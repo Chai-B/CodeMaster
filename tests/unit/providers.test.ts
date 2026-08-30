@@ -10,6 +10,8 @@ import { OpenAIAdapter } from '../../src/providers/openai.js';
 import { GeminiAdapter } from '../../src/providers/gemini.js';
 import { CodexAdapter } from '../../src/providers/codex.js';
 import type { ProviderResponse } from '../../src/types/index.js';
+import fs from 'fs';
+import path from 'path';
 
 function resp(text: string, model: string): ProviderResponse {
   return { text, usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }, model, latency_ms: 1 };
@@ -357,4 +359,42 @@ test('gemini: the CLI reports real token counts, thinking included', () => {
 
   assert.equal(parseGeminiJson('no json here'), null);
   assert.equal(usageFromGeminiStats(undefined).total_tokens, 0);
+});
+
+// An `/ask` answer is prose. Each provider appends its own output contract to
+// the compiled body, and every one of them has to stand down when the prompt is
+// free-form — otherwise the answer arrives as a diff or a JSON envelope and the
+// question mode's own instructions are contradicted by whichever contract was
+// appended last. Four independent guards, so this is what holds them together.
+test('no provider appends an output contract to a free-form prompt', () => {
+  const dir = path.join(process.cwd(), 'src/providers');
+  const offenders: string[] = [];
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.ts'))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const line of src.split('\n')) {
+      // The import of the constant is not the append; the interpolation is.
+      if (!/\$\{[A-Z_]*OUTPUT_FORMAT\}/.test(line)) continue;
+      if (!line.includes('free_form')) offenders.push(`${f}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test('question mode and patch mode do not share an output contract', async () => {
+  const { PROSE_OUTPUT_FORMAT, OUTPUT_FORMAT, PROSE_SYSTEM_PROMPT } = await import('../../src/context/outputFormat.js');
+  assert.notEqual(PROSE_OUTPUT_FORMAT, OUTPUT_FORMAT);
+  // Prose must not ask for the tags the patch contract is built out of, or the
+  // answer comes back wrapped in a format nothing renders.
+  for (const tag of ['<patch', '<file', '<diff']) {
+    assert.ok(!PROSE_OUTPUT_FORMAT.includes(tag), `prose contract still asks for ${tag}`);
+    assert.ok(!PROSE_SYSTEM_PROMPT.includes(tag), `prose system prompt still asks for ${tag}`);
+  }
+});
+
+// `prose: true` is the only thing that sets `free_form`, so the guards above
+// are load-bearing only while this line survives.
+test('prose is what makes a compiled prompt free-form', () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'src/context/compiler.ts'), 'utf8');
+  assert.match(src, /free_form:\s*opts\.prose/);
+  assert.match(src, /opts\.prose \? PROSE_OUTPUT_FORMAT : OUTPUT_FORMAT/);
 });

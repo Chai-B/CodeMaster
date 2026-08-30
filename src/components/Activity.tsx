@@ -158,11 +158,23 @@ function Budget({ used, total }: { used: number; total: number }) {
  * because the moment you need that is the moment before you start something
  * expensive.
  */
-export function StatusBar({ shortCwd, usage, status, running, since }: {
+export function StatusBar({ shortCwd, usage, status, running, since, notice }: {
   shortCwd: string; usage: UsageView; status: SessionStatusView | null; running: boolean; since: number;
+  /** A moment's confirmation of something that left no other trace — copying a
+   *  selection, say. It takes the whole line because it is short-lived and
+   *  because the thing it confirms is the thing you just did. */
+  notice?: string;
 }) {
   const cols = useCols();
   useTick(1000, running);
+
+  if (notice) {
+    return (
+      <Box paddingX={1} width={cols}>
+        <Text color={GREEN} wrap="truncate-end">{notice}</Text>
+      </Box>
+    );
+  }
 
   // A deep path would otherwise take the whole line and push the model, the
   // budget and the rate-limit warning off the end of it — and the tail of a

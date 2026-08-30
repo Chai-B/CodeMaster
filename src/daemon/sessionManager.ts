@@ -432,7 +432,14 @@ export class SessionManager {
           try {
             const verdict = await runWorker(
               VerifierWorker,
-              { session, task: next, manager: this.manager, cfg: this.cfg, testResults: bvResults },
+              {
+                session,
+                task: next,
+                manager: this.manager,
+                cfg: this.cfg,
+                testResults: bvResults,
+                files: next.output_files.map((f) => f.path),
+              },
               { repoPath: session.repository.path, sessionId: session.id },
             );
             if (verdict.verdict === 'fail') {

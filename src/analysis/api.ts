@@ -36,19 +36,43 @@ export class StaticAnalysisAPI {
     dependencyGraph(this.repoPath, true);
     populateRKG(this.repoPath);
     importCoverage(this.repoPath);
+    this.setDerivedStale(false);
     if (opts.embed && (await embavailable())) await this.embedAll();
     return stats;
+  }
+
+  /** Whether the RKG and coverage stores have fallen behind the file index.
+   *
+   *  `reindex` rebuilds every derived store; `indexFile` rebuilds only the two
+   *  cheap ones, because rebuilding the graph once per file would cost more
+   *  than the whole task. So the gap is recorded instead of paid for, and the
+   *  one place it changes an answer — compiling a prompt — settles it first. */
+  derivedStale(): boolean {
+    const row = getRepoDb(this.repoPath)
+      .prepare("SELECT value FROM repo_meta WHERE key='derived_stale'")
+      .get() as { value: string } | undefined;
+    return !!row;
+  }
+
+  private setDerivedStale(stale: boolean): void {
+    const db = getRepoDb(this.repoPath);
+    if (stale) db.prepare('INSERT OR REPLACE INTO repo_meta (key, value) VALUES (?,?)').run('derived_stale', new Date().toISOString());
+    else db.prepare("DELETE FROM repo_meta WHERE key='derived_stale'").run();
   }
 
   rkg() {
     return rkgQuery(this.repoPath);
   }
   rebuildRKG(): { nodes: number; edges: number } {
-    return populateRKG(this.repoPath);
+    const r = populateRKG(this.repoPath);
+    importCoverage(this.repoPath);
+    this.setDerivedStale(false);
+    return r;
   }
   async indexFile(rel: string): Promise<void> {
     await indexFile(this.repoPath, rel);
     dependencyGraph(this.repoPath, true);
+    this.setDerivedStale(true);
   }
   stats(): IndexStats | null {
     return getIndexStats(this.repoPath);
@@ -119,8 +143,13 @@ export class StaticAnalysisAPI {
    * installed for that language, and by ripgrep otherwise. The server knows the
    * difference between a call and a same-named local; ripgrep does not, so the
    * selector was pulling in files that merely mentioned the word.
+   *
+   * The method comes back with the files because the two are not the same
+   * evidence: an `lsp` hit is a resolved reference, a `ripgrep` hit is a file
+   * containing the word. Returning them indistinguishably let a guess be
+   * spent as though it were a fact.
    */
-  async findReferencesResolved(symbol: string): Promise<string[]> {
+  async findReferencesResolved(symbol: string): Promise<{ files: string[]; method: 'lsp' | 'ripgrep' }> {
     const def = this.findDefinition(symbol)[0];
     const lang = def ? langOf(def.file) : null;
     if (def && lang && def.line) {
@@ -134,10 +163,10 @@ export class StaticAnalysisAPI {
         const rel = [...new Set(locs.map((l) => this.toRepoRelative(l.file)))].filter(
           (f): f is string => f !== null,
         );
-        if (rel.length) return rel;
+        if (rel.length) return { files: rel, method: 'lsp' };
       }
     }
-    return [...new Set(this.findReferences(symbol).map((r) => r.file))];
+    return { files: [...new Set(this.findReferences(symbol).map((r) => r.file))], method: 'ripgrep' };
   }
 
   /** 1-based column of `symbol` on its definition line, 1 when not found. */
@@ -264,8 +293,8 @@ export class StaticAnalysisAPI {
   async getDiff(a: string, b: string): Promise<string> {
     return this.git.diffBetween(a, b);
   }
-  async getWorkingDiff(): Promise<string> {
-    return this.git.fullWorkingDiff();
+  async getWorkingDiff(paths?: string[]): Promise<string> {
+    return this.git.fullWorkingDiff(paths);
   }
   async getBlame(file: string): Promise<string> {
     return this.git.blame(file);

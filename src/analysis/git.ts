@@ -100,8 +100,11 @@ export class GitWorker {
    * produced an empty diff — and the verifier then reported that a file which
    * exists on disk had never been created, costing a needless correction round.
    */
-  fullWorkingDiff(): string {
+  fullWorkingDiff(paths?: string[]): string {
     if (!this.owns) return '';
+    // Scoping to a caller's own paths keeps unrelated edits sitting in the
+    // work tree out of its answer. No paths still means the whole tree.
+    const only = paths?.length ? new Set(paths) : null;
     const run = (args: string[]): string => {
       // `diff --no-index` exits 1 when the files differ, so read stdout rather
       // than gating on the status code.
@@ -112,9 +115,10 @@ export class GitWorker {
     const untracked = run(['ls-files', '--others', '--exclude-standard', '-z'])
       .split('\0')
       .filter(Boolean)
+      .filter((f) => !only || only.has(f))
       .map((f) => run(['diff', '--no-index', '--', empty, f]))
       .join('');
-    return run(['diff', 'HEAD']) + untracked;
+    return run(only ? ['diff', 'HEAD', '--', ...only] : ['diff', 'HEAD']) + untracked;
   }
 
   async workingDiff(): Promise<string> {

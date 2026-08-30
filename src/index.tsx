@@ -9,6 +9,7 @@ import { Header } from './components/Header.js';
 import { MessageList, totalRows } from './components/MessageList.js';
 import { Activity, StatusBar } from './components/Activity.js';
 import { Autocomplete, type Cmd } from './components/Autocomplete.js';
+import { ScreenSelection } from './ui/selection.js';
 import { Prompt } from './components/Prompt.js';
 import { EMPTY_LOGS, eventToLog, logReducer, type LogType, type SessionStatusView, type UsageView } from './util/parser.js';
 import { BLUE, BLUE_HI, BLUE_DIM, AMBER } from './themes/blue.js';
@@ -137,7 +138,11 @@ function InputArea({
       )}
       {/* The frame changes colour with what the tool is doing, so the state of
           the run is visible at the place you are already looking. */}
-      <Box borderStyle="round" borderColor={running ? AMBER : BLUE} paddingX={1}>
+      {/* `marginX` and not padding: the frame has to start in the same column
+          as the header card, the transcript gutter and the status bar, all of
+          which are inset by one. Without it the composer alone hung a column to
+          the left of everything above it. */}
+      <Box borderStyle="round" borderColor={running ? AMBER : BLUE} paddingX={1} marginX={1}>
         <Text bold color={running ? AMBER : BLUE_HI}>{'❯ '}</Text>
         <TextInput key={resetKey} value={value} onChange={onChange} onSubmit={onSubmit} focus={focus} showCursor placeholder={placeholder} />
         {/* The rest of the only command that still matches, greyed in place —
@@ -164,7 +169,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['ctrl+c', 'stop the task, or quit when idle'],
   ['ctrl+q', 'quit'],
   ['?', 'this list'],
-  ['shift+drag', 'select text (option or fn on macOS Terminal, alt in VS Code)'],
+  ['drag', 'select text — it is copied when you let go'],
 ];
 
 /** SGR mouse reports. The wheel is the only reason the mouse is claimed at all,
@@ -172,7 +177,7 @@ const SHORTCUTS: Array<[string, string]> = [
  *  kept out of the composer and out of Ink's key parser. The escape is optional
  *  because Ink strips one leading ESC before the composer ever sees the chunk,
  *  so the first report of a burst arrives as `[<64;…M` and the rest keep theirs. */
-const MOUSE = /\x1b?\[<(\d+);\d+;\d+[Mm]/g;
+const MOUSE = /\x1b?\[<(\d+);(\d+);(\d+)([Mm])/g;
 
 /** Rows per wheel notch. Three is what terminals send for their own scrolling. */
 const WHEEL_ROWS = 3;
@@ -198,6 +203,16 @@ function App() {
   const { stdout } = useStdout();
   const { stdin, setRawMode } = useStdin();
   const { cols, rows } = useSize();
+  const selRef = useRef<ScreenSelection | null>(null);
+  // Short-lived confirmation on the status bar. Copying is otherwise silent —
+  // the highlight disappears and nothing says whether it landed.
+  const [notice, setNotice] = useState('');
+  const noticeTimer = useRef<NodeJS.Timeout | null>(null);
+  const say = useCallback((text: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice(text);
+    noticeTimer.current = setTimeout(() => setNotice(''), 2500);
+  }, []);
 
   // The whole interface is one frame exactly as tall as the window, drawn on
   // the alternate screen. That page has no scroll region of its own, which is
@@ -207,11 +222,16 @@ function App() {
   useEffect(() => {
     if (!stdout?.isTTY) return;
     const leave = () => {
-      try { stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l'); } catch { /* stream already gone */ }
+      try { stdout.write('\x1b[?1006l\x1b[?1002l\x1b[?1049l'); } catch { /* stream already gone */ }
     };
-    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h');
+    // `?1002h` rather than plain button reporting: it adds motion-while-pressed
+    // and the release, which is the whole of a drag. The wheel still arrives.
+    stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1002h\x1b[?1006h');
+    // Claiming the mouse took the terminal's own select-and-copy away, so we
+    // do it ourselves from here on.
+    selRef.current = new ScreenSelection(stdout);
     process.on('exit', leave);
-    return () => { process.off('exit', leave); leave(); };
+    return () => { process.off('exit', leave); selRef.current?.detach(); selRef.current = null; leave(); };
   }, [stdout]);
 
   // How far back the transcript is scrolled, counted in rows up from the newest.
@@ -269,18 +289,35 @@ function App() {
       let seen = false;
       for (let m = MOUSE.exec(b); m; m = MOUSE.exec(b)) {
         seen = true;
-        // 64 is a notch away from you, 65 towards you. Every other button —
-        // clicks, drags, the ones a terminal sends while shift is held — is
-        // read and dropped, which is what keeps them out of the composer.
-        if (m[1] === '64') delta += WHEEL_ROWS;
-        else if (m[1] === '65') delta -= WHEEL_ROWS;
+        const btn = m[1]!;
+        const col = Number(m[2]);
+        const row = Number(m[3]);
+        const sel = selRef.current;
+        // 64 is a notch away from you, 65 towards you.
+        if (btn === '64') delta += WHEEL_ROWS;
+        else if (btn === '65') delta -= WHEEL_ROWS;
+        else if (!sel) continue;
+        // Left button: press, motion while held, release. Together they are a
+        // drag, and a drag is a selection — the terminal cannot make one for us
+        // any more, because we took the mouse to get the wheel.
+        else if (btn === '0' && m[4] === 'M') sel.begin(row, col);
+        else if (btn === '32') sel.drag(row, col);
+        else if (btn === '0') {
+          const n = sel.end();
+          if (n) say(`copied ${n} line${n === 1 ? '' : 's'}`);
+        }
       }
       mouseRef.current = seen;
-      if (delta !== 0) setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
+      // Scrolling moves the text out from under the highlight, so the
+      // highlight goes with it.
+      if (delta !== 0) {
+        selRef.current?.clear();
+        setScroll((v) => Math.max(0, Math.min(maxScrollRef.current, v + delta)));
+      }
     };
     process.stdin.prependListener('data', onData);
     return () => { process.stdin.off('data', onData); };
-  }, []);
+  }, [say]);
 
   const log = useCallback((type: LogType, text: string) => dispatch({ type: 'add', entry: { type, text } }), []);
 
@@ -335,11 +372,11 @@ function App() {
       const wasRaw = stdin?.isRaw ?? false;
       if (wasRaw) setRawMode(false);
       stdin?.pause();
-      stdout.write('\x1b[?1006l\x1b[?1000l\x1b[?1049l');
+      stdout.write('\x1b[?1006l\x1b[?1002l\x1b[?1049l');
       try {
         return await run();
       } finally {
-        stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h');
+        stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?1002h\x1b[?1006h');
         stdin?.resume();
         if (wasRaw) setRawMode(true);
         repaint();
@@ -353,6 +390,12 @@ function App() {
     // raw reader above. Ink parses one key per chunk, and a report begins with
     // ESC — without this a wheel notch would read as escape and cancel the run.
     if (mouseRef.current) return;
+    // Typing over a highlight drops it, the way it does everywhere else.
+    const hadSelection = selRef.current?.active ?? false;
+    selRef.current?.clear();
+    // Escape's first meaning is "never mind this selection"; only once there
+    // is none does it go back to returning to the bottom or interrupting.
+    if (hadSelection && key.escape) return;
 
     const prevHistory = () => {
       const hist = inputHistoryRef.current;
@@ -580,7 +623,7 @@ function App() {
           />
         )}
         <InputArea value={input} onChange={handleChange} onSubmit={handleSubmit} running={running} ghost={ghost} queued={queued} focus={!prompt} placeholder="/new <objective> or /help" resetKey={inputKey} />
-        <StatusBar shortCwd={shortCwd} usage={usage} status={status} running={running} since={startedAt} />
+        <StatusBar shortCwd={shortCwd} usage={usage} status={status} running={running} since={startedAt} notice={notice} />
       </Box>
     </Box>
   );

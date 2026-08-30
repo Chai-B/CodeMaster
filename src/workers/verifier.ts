@@ -14,6 +14,11 @@ export interface VerifyInput {
   manager: ProviderManager;
   cfg: Config;
   testResults?: TestResults;
+  /** The files this task actually wrote. Without it the verdict is passed the
+   *  whole working tree, so an unrelated edit sitting in the repo decides
+   *  whether this task is judged correct. Empty or absent still means the full
+   *  diff, which is what the other callers of getWorkingDiff want. */
+  files?: string[];
 }
 
 export interface VerificationResult {
@@ -33,6 +38,29 @@ function renderTestResults(t: TestResults): string {
   return `\n\n## Deterministic test results (authoritative)\nframework=${t.framework} ran=${t.ran} passed=${t.passed} failed=${t.failed} guardOk=${t.guardOk} reproUsed=${t.reproUsed}\n${t.output.slice(0, 2000)}`;
 }
 
+/**
+ * Read a verdict out of the reviewer's reply.
+ *
+ * A review we could not read is not a review that passed. This used to default
+ * to `pass` — twice over — so malformed output was recorded as a clean bill of
+ * health, which is the one direction the mistake must not go. `partial` rather
+ * than `fail` because `fail` re-executes the whole task for self-correction,
+ * and paying for a full retry over a parse error is the wrong trade.
+ */
+export function parseVerification(text: string): VerificationResult {
+  const raw = (firstTag(text, 'verdict') ?? '').trim().toLowerCase();
+  const issues = [...text.matchAll(/<issue>([\s\S]*?)<\/issue>/g)].map((m) => m[1]!.trim());
+  const summary = firstTag(text, 'summary') ?? '';
+  if (raw !== 'pass' && raw !== 'fail' && raw !== 'partial') {
+    return {
+      verdict: 'partial',
+      issues: [...issues, `Verifier response could not be parsed${raw ? ` (verdict "${raw}")` : ' (no verdict)'}`],
+      summary: summary || 'Verifier returned no readable verdict; treating as unverified.',
+    };
+  }
+  return { verdict: raw, issues, summary };
+}
+
 export const VerifierWorker: Worker<VerifyInput, VerificationResult> = {
   name: 'Verifier',
   version: '1.0',
@@ -40,7 +68,7 @@ export const VerifierWorker: Worker<VerifyInput, VerificationResult> = {
   validate: (i) => ({ ok: !!i.task, error: 'task required' }),
   async execute(input) {
     const api = staticAnalysis(input.session.repository.path);
-    const diff = await api.getWorkingDiff();
+    const diff = await api.getWorkingDiff(input.files);
     const user =
       `## Task\n${input.task.title}\n${input.task.description}\n\n## Resulting diff\n\`\`\`diff\n${diff.slice(0, 12000)}\n\`\`\`` +
       (input.testResults ? renderTestResults(input.testResults) : '');
@@ -52,12 +80,6 @@ export const VerifierWorker: Worker<VerifyInput, VerificationResult> = {
       taskId: input.task.id,
       maxTokens: 1024,
     });
-    const verdict = (firstTag(text, 'verdict') ?? 'pass').toLowerCase();
-    const issues = [...text.matchAll(/<issue>([\s\S]*?)<\/issue>/g)].map((m) => m[1]!.trim());
-    return {
-      verdict: (['pass', 'fail', 'partial'].includes(verdict) ? verdict : 'pass') as VerificationResult['verdict'],
-      issues,
-      summary: firstTag(text, 'summary') ?? '',
-    };
+    return parseVerification(text);
   },
 };

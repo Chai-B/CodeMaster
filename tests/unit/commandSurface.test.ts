@@ -79,8 +79,13 @@ test('the pinned frame keeps its page, its wheel and its two mouse guards', () =
   const tui = fs.readFileSync(path.join(process.cwd(), 'src/index.tsx'), 'utf8');
   assert.ok(/\?1049h/.test(tui), 'the alternate screen is gone, so nothing is pinned');
   assert.ok(/\?1049l/.test(tui), 'the alternate screen is never released, so quitting strands the terminal');
-  assert.ok(/\?1000h/.test(tui) && /\?1006h/.test(tui), 'the mouse is not claimed, so the wheel does nothing');
-  assert.ok(/\?1000l/.test(tui) && /\?1006l/.test(tui), 'mouse reporting is never released');
+  // `?1002h`, not `?1000h`: button-event tracking is what adds motion and
+  // release, and without those a drag cannot be selected or copied.
+  assert.ok(/\?1002h/.test(tui) && /\?1006h/.test(tui), 'the mouse is not claimed, so the wheel does nothing');
+  assert.ok(/\?1002l/.test(tui) && /\?1006l/.test(tui), 'mouse reporting is never released');
+  // Selection reads the frame Ink wrote and maps line `i` to row `i + 1`. That
+  // holds only while the root box is exactly the window's height.
+  assert.ok(/height=\{rows\}/.test(tui), 'the root box no longer spans the window, so selected rows are off by however much it shrank');
   assert.ok(!/\?1007h/.test(tui), 'alternate scroll is back, which makes the wheel and the arrows the same key');
   assert.ok(!/<Static\b/.test(tui), '<Static> writes past the frame and breaks the pinning');
   assert.ok(/if \(mouseRef\.current\) return;/.test(tui), 'useInput reads wheel notches as escape');

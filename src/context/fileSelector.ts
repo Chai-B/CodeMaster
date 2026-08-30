@@ -126,8 +126,12 @@ export async function selectFiles(
     for (const f of topSource) {
       for (const dep of api.getImpactOf(f)) addN(dep);
       for (const sym of api.symbolsInFile(f, 12)) {
-        // Language-server references when a server is installed; ripgrep otherwise.
-        for (const file of (await api.findReferencesResolved(sym.name)).slice(0, 12)) addN(file);
+        // Language-server references when a server is installed; ripgrep
+        // otherwise — and a ripgrep hit is only a file that mentions the word,
+        // so fewer of them are taken before the guesses start crowding out the
+        // files that were actually resolved.
+        const refs = await api.findReferencesResolved(sym.name);
+        for (const file of refs.files.slice(0, refs.method === 'lsp' ? 12 : 5)) addN(file);
         for (const c of api.getCallers(sym.name)) addN(c.file);
       }
     }
