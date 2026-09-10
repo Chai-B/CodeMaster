@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CodeMaster v2.0.0 Interactive Terminal</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .cursor-blink { animation: blink 0.8s infinite; }
+    .font-mono-tui {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+    input:focus { outline: none; }
+  </style>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-2 sm:p-4 font-sans select-none">
+  <!-- Outer Shell Container -->
+  <div class="max-w-4xl mx-auto bg-[#0d1117] text-[#c9d1d9] border border-[#30363d] rounded-xl shadow-2xl overflow-hidden font-mono-tui text-xs sm:text-sm">
+    
+    <!-- Window Titlebar -->
+    <div class="bg-[#161b22] px-4 py-2.5 border-b border-[#30363d] flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <span class="w-3 h-3 rounded-full bg-[#ff5f56] inline-block"></span>
+        <span class="w-3 h-3 rounded-full bg-[#ffbd2e] inline-block"></span>
+        <span class="w-3 h-3 rounded-full bg-[#27c93f] inline-block"></span>
+        <span class="ml-2 text-xs text-[#8b949e] font-semibold tracking-wide">chaitanya@macbook:~/codemaster — 80×24 (zsh)</span>
+      </div>
+      <div class="flex items-center space-x-3 text-xs">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#1f2937] text-[#6FA8DC] border border-[#374151]">
+          v2.0.0
+        </span>
+        <button id="modeToggleBtn" onclick="toggleInteractiveMode()" class="text-[11px] px-2 py-0.5 rounded bg-[#21262d] hover:bg-[#30363d] text-[#e6edf3] border border-[#30363d] transition">
+          Interactive Shell: ON
+        </button>
+        <span id="speedBadge" class="text-[11px] text-[#8b949e] cursor-pointer hover:text-white transition" onclick="toggleSpeed()">
+          Speed: 1×
+        </span>
+      </div>
+    </div>
+
+    <!-- Interactive Player / Terminal Stage -->
+    <div id="terminalScreen" class="p-4 sm:p-6 space-y-3 min-h-[420px] bg-[#0d1117] overflow-y-auto max-h-[500px]" onclick="focusInput()">
+      
+      <!-- CodeMaster Pinned Header Card -->
+      <div id="headerCard" class="border border-[#4A5361] rounded-lg p-3 bg-[#111620] flex items-start space-x-4 shadow-sm transition-all duration-500">
+        <div class="text-[#6FA8DC] font-bold leading-none hidden sm:block">
+          <div>&nbsp;▄████▄&nbsp;</div>
+          <div>██&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+          <div>&nbsp;▀████▀&nbsp;</div>
+        </div>
+        <div class="flex-1 space-y-1">
+          <div class="flex items-baseline space-x-2">
+            <span class="font-bold text-[#6FA8DC] text-sm">CodeMaster</span>
+            <span class="text-[#6E7B8B] text-xs">v2.0.0</span>
+            <span class="text-[10px] text-[#3F9668] bg-[#1a3828] px-1.5 py-0.2 rounded border border-[#2d6143]">node:sqlite Zero-Compile</span>
+          </div>
+          <div class="text-[#6E7B8B] text-xs truncate">~/codemaster</div>
+          <div class="text-[#4A5361] text-xs">Describe what you want done, or /help for commands.</div>
+        </div>
+      </div>
+
+      <!-- Live Stepper Row -->
+      <div id="stepperRow" class="hidden items-center space-x-4 py-1.5 px-3 bg-[#161b22] border border-[#21262d] rounded-md transition-all duration-300">
+        <div class="flex items-center space-x-1.5">
+          <span class="font-bold text-xs" id="stepPlanLabel">Planning</span>
+          <span id="stepPlanIcon" class="text-[#3F9668]">·</span>
+        </div>
+        <span class="text-[#30363d]">──</span>
+        <div class="flex items-center space-x-1.5">
+          <span class="font-bold text-xs" id="stepSolveLabel">Solving</span>
+          <span id="stepSolveIcon" class="text-[#6FA8DC]">·</span>
+        </div>
+        <span class="text-[#30363d]">──</span>
+        <div class="flex items-center space-x-1.5">
+          <span class="font-bold text-xs" id="stepVerifyLabel">Verifying</span>
+          <span id="stepVerifyIcon" class="text-[#6E7B8B]">·</span>
+        </div>
+        <div class="flex-1"></div>
+        <div id="liveTimer" class="text-xs text-[#8b949e]">0.0s</div>
+      </div>
+
+      <!-- Activity Feed (Settled messages and execution logs) -->
+      <div id="activityFeed" class="space-y-2 text-xs"></div>
+
+      <!-- Autocomplete Dropdown Preview -->
+      <div id="autocompleteBox" class="hidden border border-[#30363d] bg-[#161b22] rounded-md p-1.5 w-72 shadow-lg text-[11px] space-y-1">
+        <div id="ac0" class="flex justify-between px-2 py-0.5 rounded bg-[#1f2937] text-[#6FA8DC] cursor-pointer" onclick="selectCommand('/model')">
+          <span>/model</span><span class="text-[#6E7B8B]">gemini-2.5-pro</span>
+        </div>
+        <div id="ac1" class="flex justify-between px-2 py-0.5 text-[#8b949e] cursor-pointer" onclick="selectCommand('/tokens')">
+          <span>/tokens</span><span class="text-[#6E7B8B]">TokenJuice budget</span>
+        </div>
+        <div id="ac2" class="flex justify-between px-2 py-0.5 text-[#8b949e] cursor-pointer" onclick="selectCommand('/memory')">
+          <span>/memory</span><span class="text-[#6E7B8B]">FTS5 + RRF recall</span>
+        </div>
+        <div id="ac3" class="flex justify-between px-2 py-0.5 text-[#8b949e] cursor-pointer" onclick="selectCommand('/worktree')">
+          <span>/worktree</span><span class="text-[#6E7B8B]">isolated sandboxes</span>
+        </div>
+        <div id="ac4" class="flex justify-between px-2 py-0.5 text-[#8b949e] cursor-pointer" onclick="selectCommand('/bench')">
+          <span>/bench</span><span class="text-[#6E7B8B]">smoke test suite</span>
+        </div>
+        <div id="ac5" class="flex justify-between px-2 py-0.5 text-[#8b949e] cursor-pointer" onclick="selectCommand('/help')">
+          <span>/help</span><span class="text-[#6E7B8B]">list all commands</span>
+        </div>
+      </div>
+
+      <!-- Command Prompt Row -->
+      <div id="promptRow" class="flex items-center space-x-2 pt-1">
+        <span class="text-[#6FA8DC] font-bold">❯</span>
+        <span id="typedInput" class="text-[#e6edf3]"></span>
+        <!-- Real interactive hidden/visible input for manual typing -->
+        <input id="realInput" type="text" autocomplete="off" spellcheck="false"
+               class="bg-transparent border-0 text-[#e6edf3] p-0 m-0 focus:outline-none flex-1 font-mono-tui text-xs sm:text-sm"
+               oninput="onRealInput(this.value)"
+               onkeydown="onInputKey(event)"
+               placeholder="Type a command or instruction (e.g. /help, /tokens, /memory)..." />
+        <span id="cursor" class="w-2 h-4 bg-[#6FA8DC] inline-block cursor-blink"></span>
+      </div>
+
+    </div>
+
+    <!-- Interactive Helper Bar -->
+    <div id="interactiveHelper" class="bg-[#111620] px-4 py-1.5 border-t border-[#21262d] flex flex-wrap items-center justify-between text-[11px] text-[#8b949e] gap-2">
+      <div class="flex items-center space-x-2">
+        <span class="text-[#3F9668] font-bold">● Quick Actions:</span>
+        <button onclick="runCommand('/help')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/help</button>
+        <button onclick="runCommand('/tokens')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/tokens</button>
+        <button onclick="runCommand('/memory')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/memory</button>
+        <button onclick="runCommand('/model')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/model</button>
+        <button onclick="runCommand('/worktree')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/worktree</button>
+        <button onclick="runCommand('/bench')" class="hover:text-[#6FA8DC] bg-[#161b22] px-1.5 py-0.5 rounded border border-[#30363d]">/bench</button>
+        <button onclick="runDemoTask()" class="text-[#3fb950] hover:underline">▶ Run AST Refactor</button>
+      </div>
+      <div>
+        <span>Click prompt or type to interact</span>
+      </div>
+    </div>
+
+    <!-- Playback Control Bar -->
+    <div class="bg-[#161b22] px-4 py-2 border-t border-[#30363d] flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center space-x-2">
+        <button id="playBtn" onclick="togglePlay()" class="px-3 py-1 bg-[#238636] hover:bg-[#2ea043] text-white rounded font-medium text-xs flex items-center space-x-1 transition">
+          <span id="playIcon">⏸</span> <span id="playText">Pause</span>
+        </button>
+        <button onclick="restartDemo()" class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-[#c9d1d9] rounded text-xs transition">
+          ↺ Restart
+        </button>
+      </div>
+
+      <div class="flex-1 max-w-xs sm:max-w-md flex items-center space-x-2">
+        <span id="timeDisplay" class="text-[11px] text-[#8b949e] w-9 text-right">00:00</span>
+        <input id="timeline" type="range" min="0" max="100" value="0" oninput="scrub(this.value)" class="w-full h-1.5 bg-[#30363d] rounded-lg appearance-none cursor-pointer accent-[#6FA8DC]">
+        <span class="text-[11px] text-[#8b949e]">00:23</span>
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <span id="statusIndicator" class="inline-flex items-center text-[11px] text-[#3F9668]">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#3F9668] mr-1.5 animate-pulse"></span>
+          Running Demo
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let brailleIdx = 0;
+    let isPlaying = true;
+    let isManualMode = false;
+    let speed = 1;
+    let currentTime = 0;
+    const TOTAL_DURATION = 22.8;
+
+    const demoPrompt = "Refactor auth middleware using AST surgical edits & verify memory rules";
+
+    function focusInput() {
+      const real = document.getElementById('realInput');
+      real.focus();
+    }
+
+    function toggleSpeed() {
+      if (speed === 1) speed = 1.5;
+      else if (speed === 1.5) speed = 2;
+      else speed = 1;
+      document.getElementById('speedBadge').innerText = `Speed: ${speed}×`;
+    }
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      document.getElementById('playIcon').innerText = isPlaying ? '⏸' : '▶';
+      document.getElementById('playText').innerText = isPlaying ? 'Pause' : 'Play';
+      document.getElementById('statusIndicator').innerHTML = isPlaying 
+        ? '<span class="w-1.5 h-1.5 rounded-full bg-[#3F9668] mr-1.5 animate-pulse"></span> Running Demo'
+        : '<span class="w-1.5 h-1.5 rounded-full bg-[#ffbd2e] mr-1.5"></span> Paused';
+    }
+
+    function toggleInteractiveMode() {
+      isManualMode = !isManualMode;
+      if (isManualMode) {
+        isPlaying = false;
+        document.getElementById('playIcon').innerText = '▶';
+        document.getElementById('playText').innerText = 'Resume Demo';
+        document.getElementById('statusIndicator').innerHTML = '<span class="text-[#6FA8DC]">Interactive Shell Ready</span>';
+        document.getElementById('modeToggleBtn').innerText = 'Interactive Shell: ACTIVE';
+        document.getElementById('modeToggleBtn').className = 'text-[11px] px-2 py-0.5 rounded bg-[#1f2937] text-[#6FA8DC] border border-[#6FA8DC] transition';
+        document.getElementById('realInput').value = '';
+        document.getElementById('typedInput').innerText = '';
+        document.getElementById('realInput').focus();
+      } else {
+        document.getElementById('modeToggleBtn').innerText = 'Interactive Shell: OFF';
+        document.getElementById('modeToggleBtn').className = 'text-[11px] px-2 py-0.5 rounded bg-[#21262d] text-[#e6edf3] border border-[#30363d] transition';
+        togglePlay();
+      }
+    }
+
+    function restartDemo() {
+      currentTime = 0;
+      isPlaying = true;
+      isManualMode = false;
+      document.getElementById('playIcon').innerText = '⏸';
+      document.getElementById('playText').innerText = 'Pause';
+      document.getElementById('activityFeed').innerHTML = '';
+      document.getElementById('typedInput').innerText = '';
+      document.getElementById('realInput').value = '';
+      document.getElementById('stepperRow').classList.add('hidden');
+      document.getElementById('stepperRow').classList.remove('flex');
+      document.getElementById('autocompleteBox').classList.add('hidden');
+      document.getElementById('modeToggleBtn').innerText = 'Interactive Shell: ON';
+      document.getElementById('modeToggleBtn').className = 'text-[11px] px-2 py-0.5 rounded bg-[#21262d] text-[#e6edf3] border border-[#30363d] transition';
+    }
+
+    function scrub(val) {
+      currentTime = (val / 100) * TOTAL_DURATION;
+      renderFrame(currentTime);
+    }
+
+    function onRealInput(val) {
+      if (!isManualMode) {
+        isManualMode = true;
+        isPlaying = false;
+        document.getElementById('playIcon').innerText = '▶';
+        document.getElementById('playText').innerText = 'Resume Demo';
+        document.getElementById('modeToggleBtn').innerText = 'Interactive Shell: ACTIVE';
+        document.getElementById('statusIndicator').innerHTML = '<span class="text-[#6FA8DC]">Interactive Shell Ready</span>';
+      }
+      const autoBox = document.getElementById('autocompleteBox');
+      if (val.startsWith('/')) {
+        autoBox.classList.remove('hidden');
+      } else {
+        autoBox.classList.add('hidden');
+      }
+    }
+
+    function selectCommand(cmd) {
+      document.getElementById('realInput').value = cmd;
+      document.getElementById('autocompleteBox').classList.add('hidden');
+      runCommand(cmd);
+    }
+
+    function onInputKey(e) {
+      if (e.key === 'Enter') {
+        const val = e.target.value.trim();
+        e.target.value = '';
+        document.getElementById('autocompleteBox').classList.add('hidden');
+        if (val) {
+          runCommand(val);
+        }
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const val = e.target.value;
+        if (val === '/') e.target.value = '/model';
+        else if (val === '/m') e.target.value = '/memory';
+        else if (val === '/t') e.target.value = '/tokens';
+        else if (val === '/w') e.target.value = '/worktree';
+        else if (val === '/h') e.target.value = '/help';
+      }
+    }
+
+    function runCommand(cmd) {
+      isManualMode = true;
+      isPlaying = false;
+      const feed = document.getElementById('activityFeed');
+      const time = new Date().toLocaleTimeString();
+
+      // Append user command
+      const cmdRow = document.createElement('div');
+      cmdRow.className = 'flex items-center space-x-2 text-[#e6edf3] pt-2 font-medium';
+      cmdRow.innerHTML = `<span class="text-[#6FA8DC] font-bold">❯</span> <span>${escapeHtml(cmd)}</span>`;
+      feed.appendChild(cmdRow);
+
+      const resp = document.createElement('div');
+      resp.className = 'space-y-1.5 pl-4 border-l-2 border-[#30363d] ml-1 my-1 text-xs animate-fadeIn';
+
+      if (cmd === '/help') {
+        resp.innerHTML = `
+          <div class="text-[#6FA8DC] font-bold">CodeMaster v2.0.0 Command Catalog:</div>
+          <div class="text-[#8b949e] space-y-0.5">
+            <div><span class="text-[#e6edf3] font-mono">/model</span>     - 3-axis role routing (Gemini 2.5 Pro, Claude 3.7, o3-mini)</div>
+            <div><span class="text-[#e6edf3] font-mono">/tokens</span>    - Inspect TokenJuice compression & budget ladder</div>
+            <div><span class="text-[#e6edf3] font-mono">/memory</span>    - Calibrated long-term memory (FTS5 BM25 + RRF)</div>
+            <div><span class="text-[#e6edf3] font-mono">/worktree</span>  - Isolated git scratchpad status</div>
+            <div><span class="text-[#e6edf3] font-mono">/bench</span>     - Run evaluation benchmark harness (smoke suite)</div>
+            <div><span class="text-[#e6edf3] font-mono">/status</span>    - View zero-compile node:sqlite engine status</div>
+            <div><span class="text-[#e6edf3] font-mono">/clear</span>     - Clear terminal feed</div>
+          </div>
+        `;
+      } else if (cmd === '/tokens') {
+        resp.innerHTML = `
+          <div class="text-[#6FA8DC] font-bold">TokenJuice Dynamic Budget:</div>
+          <div class="bg-[#161b22] border border-[#21262d] rounded p-2 text-[11px] font-mono text-[#c9d1d9] space-y-1">
+            <div>Raw Inbound Payload  : <span class="text-[#f85149]">28,400 tokens</span></div>
+            <div>Compressed Payload   : <span class="text-[#3fb950] font-bold">7,760 tokens (-72.7% reduction)</span></div>
+            <div>Prompt Cache Tier    : <span class="text-[#6FA8DC]">Invariant Prefix Active (10% read pricing)</span></div>
+            <div>Lockfiles Pruned     : package-lock.json, cargo.lock (-14.2k tokens)</div>
+            <div>Stack Traces Cleaned : Node internals & node_modules stripped (-2.3k tokens)</div>
+            <div>AST Outlines Extracted: Tree-sitter function signatures (-4.1k tokens)</div>
+          </div>
+        `;
+      } else if (cmd === '/memory') {
+        resp.innerHTML = `
+          <div class="text-[#8E76BF] font-bold">Calibrated Long-Term Memory (FTS5 BM25 + RRF):</div>
+          <div class="bg-[#161b22] border border-[#2d333b] rounded p-2 text-[11px] font-mono text-[#c9d1d9] space-y-1">
+            <div class="text-[#8b949e]">ID   Score  Age    Status       Rule / Memory</div>
+            <div class="text-[#3fb950]">#14  0.94   1d     active       Always replace symbols via AST tree-sitter span</div>
+            <div class="text-[#6E7B8B] line-through">#3   0.12   14d    superseded   Use regex line-diff replacement [by #14]</div>
+            <div>#8   0.88   3d     active       Strip generated lockfiles before LLM ingestion</div>
+            <div>#11  0.79   5d     active       Preserve 0 uncommitted changes on main branch</div>
+            <div class="text-[#8E76BF] pt-1">Dual-Track Markdown Vault: .codemaster/memory/skills/*.md synchronized</div>
+          </div>
+        `;
+      } else if (cmd === '/model') {
+        resp.innerHTML = `
+          <div class="text-[#6FA8DC] font-bold">3-Axis Role Router:</div>
+          <div class="bg-[#161b22] border border-[#21262d] rounded p-2 text-[11px] font-mono text-[#c9d1d9] space-y-1">
+            <div>Provider        : <span class="text-[#e6edf3]">Google DeepMind</span></div>
+            <div>Model Tier      : <span class="text-[#6FA8DC] font-bold">gemini-2.5-pro</span> (Flagship Reasoning)</div>
+            <div>Thinking Effort : <span class="text-[#3fb950]">High (Budget: 8,192 reasoning tokens)</span></div>
+            <div>Fallback Engine : Anthropic Claude 3.7 Sonnet (Cooldown: 0s ready)</div>
+          </div>
+        `;
+      } else if (cmd === '/worktree') {
+        resp.innerHTML = `
+          <div class="text-[#6FA8DC] font-bold">Worktree Manager:</div>
+          <div class="bg-[#161b22] border border-[#21262d] rounded p-2 text-[11px] font-mono text-[#c9d1d9] space-y-1">
+            <div>Active Sandbox : <span class="text-[#e6edf3]">.git/codemaster-worktrees/task-9142</span></div>
+            <div>Sandbox Branch : <span class="text-[#6FA8DC]">codemaster/task-9142</span></div>
+            <div>Main Repository: <span class="text-[#3fb950]">~/codemaster (Clean, 0 dirty files)</span></div>
+            <div>Contention Lock: Released</div>
+          </div>
+        `;
+      } else if (cmd === '/bench') {
+        resp.innerHTML = `
+          <div class="text-[#3F9668] font-bold">CodeMaster Evaluation Harness: Smoke Suite</div>
+          <div class="bg-[#161b22] border border-[#21262d] rounded p-2 text-[11px] font-mono space-y-0.5">
+            <div class="text-[#3fb950]">✓ tiny-ts:definitions        PASS  (54ms, 0 tokens)</div>
+            <div class="text-[#3fb950]">✓ tiny-ts:ast-symbol-span    PASS   (0ms, 0 tokens)</div>
+            <div class="text-[#3fb950]">✓ small-python:deps          PASS  (25ms, 0 tokens)</div>
+            <div class="text-[#3fb950]">✓ legacy-codebase:cycle      PASS  (31ms, 0 tokens)</div>
+            <div class="text-[#3fb950]">✓ medium-monorepo:multi-lang PASS  (29ms, 0 tokens)</div>
+            <div class="text-[#e6edf3] pt-1 border-t border-[#30363d] flex justify-between">
+              <span>pass@1: 100%</span>
+              <span>Succ/Mtok: Infinity (0 tokens)</span>
+              <span>avg: 33ms</span>
+            </div>
+          </div>
+        `;
+      } else if (cmd === '/status') {
+        resp.innerHTML = `
+          <div class="text-[#6FA8DC] font-bold">CodeMaster System Status:</div>
+          <div class="bg-[#161b22] border border-[#21262d] rounded p-2 text-[11px] font-mono text-[#c9d1d9] space-y-1">
+            <div>Engine        : <span class="text-[#3fb950]">Zero-Compile (Node.js 22.5+ DatabaseSync)</span></div>
+            <div>Long-Term DB  : .codemaster/memory.sqlite (FTS5 BM25 active)</div>
+            <div>AST Parser    : web-tree-sitter (TS, JS, Python, Go, Rust)</div>
+            <div>Worktrees     : Isolated git sandboxes enabled</div>
+            <div>Vendor Cache  : Prefix Compiler active (10% read pricing tier)</div>
+          </div>
+        `;
+      } else if (cmd === '/clear') {
+        feed.innerHTML = '';
+        return;
+      } else {
+        // Custom instruction: run simulated task!
+        resp.innerHTML = `
+          <div class="text-[#3fb950] font-bold">Executing Task: "${escapeHtml(cmd)}"</div>
+          <div class="text-[#8b949e] font-mono text-[11px]">
+            <div>● Planning: Queried memory.sqlite · Found 2 relevant rules</div>
+            <div>● Solving: TokenJuice reduced payload from 18,200 → 4,900 tokens (-73%)</div>
+            <div>● AST Surgery: Splice validated @ L32:1-L58:2 with byte undo journal</div>
+            <div>✓ Verifying: Greenfield test oracle passed (0 regressions)</div>
+            <div class="text-[#3fb950] font-bold mt-1">✓ Completed in 2.4s · 4.9k tokens ($0.0021)</div>
+          </div>
+        `;
+      }
+
+      feed.appendChild(resp);
+      const screen = document.getElementById('terminalScreen');
+      screen.scrollTop = screen.scrollHeight;
+    }
+
+    function runDemoTask() {
+      runCommand("Refactor auth middleware using AST surgical edits & verify memory rules");
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>'"]/g, 
+        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
+      );
+    }
+
+    function renderFrame(t) {
+      if (isManualMode) return;
+
+      document.getElementById('timeline').value = Math.min(100, (t / TOTAL_DURATION) * 100);
+      const secs = Math.floor(t);
+      document.getElementById('timeDisplay').innerText = `00:${secs < 10 ? '0' : ''}${secs}`;
+
+      const autoBox = document.getElementById('autocompleteBox');
+      if (t >= 2.5 && t < 5.5) {
+        autoBox.classList.remove('hidden');
+      } else {
+        autoBox.classList.add('hidden');
+      }
+
+      const typedEl = document.getElementById('typedInput');
+      const realIn = document.getElementById('realInput');
+      if (t < 2.5) {
+        typedEl.innerText = "";
+        realIn.placeholder = "Type a command or instruction (e.g. /help, /tokens, /memory)...";
+      } else if (t >= 2.5 && t < 5.5) {
+        typedEl.innerText = "/";
+        realIn.placeholder = "";
+      } else if (t >= 5.5 && t < 9.5) {
+        const progress = (t - 5.5) / (9.5 - 5.5);
+        const chars = Math.floor(progress * demoPrompt.length);
+        typedEl.innerText = demoPrompt.substring(0, chars);
+        realIn.placeholder = "";
+      } else {
+        typedEl.innerText = demoPrompt;
+        realIn.placeholder = "";
+      }
+
+      const stepper = document.getElementById('stepperRow');
+      const planIcon = document.getElementById('stepPlanIcon');
+      const solveIcon = document.getElementById('stepSolveIcon');
+      const verifyIcon = document.getElementById('stepVerifyIcon');
+      const liveTimer = document.getElementById('liveTimer');
+
+      if (t >= 9.5) {
+        stepper.classList.remove('hidden');
+        stepper.classList.add('flex');
+        liveTimer.innerText = `${(t - 9.5).toFixed(1)}s`;
+
+        if (t < 13.0) {
+          planIcon.innerText = BRAILLE[brailleIdx % BRAILLE.length];
+          planIcon.className = "text-[#6FA8DC]";
+          solveIcon.innerText = "·";
+          verifyIcon.innerText = "·";
+        } else if (t >= 13.0 && t < 21.0) {
+          planIcon.innerText = "✓ 1.2s";
+          planIcon.className = "text-[#3F9668]";
+          solveIcon.innerText = BRAILLE[brailleIdx % BRAILLE.length];
+          solveIcon.className = "text-[#6FA8DC]";
+          verifyIcon.innerText = "·";
+        } else if (t >= 21.0 && t < 24.5) {
+          planIcon.innerText = "✓ 1.2s";
+          solveIcon.innerText = "✓ 4.2s";
+          solveIcon.className = "text-[#3F9668]";
+          verifyIcon.innerText = BRAILLE[brailleIdx % BRAILLE.length];
+          verifyIcon.className = "text-[#6FA8DC]";
+        } else {
+          planIcon.innerText = "✓ 1.2s";
+          solveIcon.innerText = "✓ 4.2s";
+          verifyIcon.innerText = "✓ 1.4s";
+          verifyIcon.className = "text-[#3F9668]";
+        }
+      } else {
+        stepper.classList.add('hidden');
+        stepper.classList.remove('flex');
+      }
+
+      const feed = document.getElementById('activityFeed');
+      let html = '';
+
+      if (t >= 11.0) {
+        html += `
+          <div class="flex items-start space-x-2 text-[#8E76BF] animate-fadeIn">
+            <span class="font-bold">◇</span>
+            <div class="flex-1">
+              <span class="text-[#8E76BF] font-semibold">Memory Recall</span>
+              <span class="text-[#8b949e]">BM25+RRF match in memory.sqlite:</span>
+              <div class="text-[#c9d1d9] bg-[#161b22] border border-[#2d333b] rounded p-1.5 mt-1 font-mono text-[11px]">
+                Rule #14: "Always replace symbols via AST tree-sitter span rather than blind regex" (supersedes Rule #3)
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (t >= 13.0) {
+        html += `
+          <div class="flex items-start space-x-2 text-[#6FA8DC] animate-fadeIn">
+            <span class="font-bold">●</span>
+            <div class="flex-1">
+              <span class="font-medium text-[#c9d1d9]">TokenJuice.compress</span>
+              <span class="text-[#8b949e]">(payload: 28,400 raw tokens)</span>
+              <div class="text-[#3F9668] mt-0.5 ml-2 font-mono">⎿ Cleaned lockfiles & test traces: 7,760 tokens remaining (-72.7% cost savings)</div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (t >= 16.5) {
+        html += `
+          <div class="flex items-start space-x-2 text-[#6FA8DC] animate-fadeIn">
+            <span class="font-bold">●</span>
+            <div class="flex-1">
+              <span class="font-medium text-[#c9d1d9]">WorktreeManager</span>
+              <span class="text-[#8b949e]">— isolated scratch directory allocated</span>
+              <div class="text-[#8b949e] ml-2 font-mono">⎿ path: .git/codemaster-worktrees/task-9142 (main branch pristine & lock-free)</div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (t >= 18.0) {
+        html += `
+          <div class="flex items-start space-x-2 text-[#6FA8DC] animate-fadeIn">
+            <span class="font-bold">●</span>
+            <div class="flex-1">
+              <span class="font-medium text-[#c9d1d9]">AST findSymbolSpan</span>
+              <span class="text-[#8b949e]">("validateToken", "src/auth/jwt.ts")</span>
+              <div class="text-[#3F9668] ml-2 font-mono">⎿ Target span: L42:1 - L78:2 (36 lines, 1,180 bytes) · Undo journal #1 saved</div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (t >= 20.0) {
+        html += `
+          <div class="bg-[#161b22] border border-[#30363d] rounded-md p-2 mt-1 font-mono text-[11px] animate-fadeIn">
+            <div class="text-[#8b949e] pb-1 border-b border-[#21262d] flex justify-between">
+              <span>src/auth/jwt.ts [AST Surgical Diff]</span>
+              <span class="text-[#3F9668] font-bold">Verified ✓</span>
+            </div>
+            <div class="pt-1 text-[#e6edf3]">
+              <span class="text-[#f85149]">- async function validateToken(req: Request) { ... }</span><br/>
+              <span class="text-[#3fb950]">+ async function validateToken(req: Request): Promise&lt;Session&gt; {</span><br/>
+              <span class="text-[#3fb950]">+   return sessionEngine.verify(req.headers.authorization);</span><br/>
+              <span class="text-[#3fb950]">+ }</span>
+            </div>
+          </div>
+        `;
+      }
+
+      if (t >= 21.8) {
+        html += `
+          <div class="bg-[#111f18] border border-[#238636] rounded-md p-2.5 mt-2 flex items-center justify-between text-[#3fb950] animate-fadeIn">
+            <div class="flex items-center space-x-2">
+              <span class="font-bold text-sm">✓</span>
+              <span>Task complete in 6.8s · Clean AST Symbol replacement verified</span>
+            </div>
+            <div class="text-[11px] text-[#8b949e]">
+              Tokens: 7.7k · Cost: $0.0032 · Cache 90%
+            </div>
+          </div>
+        `;
+      }
+
+      feed.innerHTML = html;
+      const screen = document.getElementById('terminalScreen');
+      screen.scrollTop = screen.scrollHeight;
+    }
+
+    let lastTime = performance.now();
+    function loop(now) {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+
+      if (isPlaying && !isManualMode) {
+        currentTime += dt * speed;
+        brailleIdx++;
+        if (currentTime > TOTAL_DURATION) {
+          currentTime = TOTAL_DURATION;
+          isPlaying = false;
+          isManualMode = true; // Switch to interactive mode when demo ends!
+          document.getElementById('playIcon').innerText = '▶';
+          document.getElementById('playText').innerText = 'Replay';
+          document.getElementById('modeToggleBtn').innerText = 'Interactive Shell: ACTIVE';
+          document.getElementById('modeToggleBtn').className = 'text-[11px] px-2 py-0.5 rounded bg-[#1f2937] text-[#6FA8DC] border border-[#6FA8DC] transition';
+          document.getElementById('statusIndicator').innerHTML = '<span class="text-[#6FA8DC]">Demo Finished · Interactive Shell Ready (Type /help)</span>';
+          document.getElementById('typedInput').innerText = '';
+          document.getElementById('realInput').placeholder = "Interactive mode: Type /help, /tokens, /memory, /bench or any task...";
+          document.getElementById('realInput').focus();
+        }
+        renderFrame(currentTime);
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

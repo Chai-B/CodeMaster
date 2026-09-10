@@ -15,6 +15,14 @@ This file is the operational guide. [SPEC.md](SPEC.md) is the complete technical
 
 ---
 
+<p align="center">
+  <img src=".github/assets/codemaster_tui_demo.gif" alt="CodeMaster v2.0.0 Terminal User Interface" width="820" />
+  <br />
+  <em><strong>CodeMaster v2.0.0 TUI</strong> in action: Zero-compile node:sqlite, multi-phase stepping, TokenJuice compression, calibrated memory recall &amp; AST surgical edits.</em>
+</p>
+
+---
+
 ## Single-Command Installation
 
 Install CodeMaster with a single command:
@@ -162,6 +170,31 @@ silently ignored. `/model` prints the table in force.
 Under a pin, escalation and role routing are both suppressed — a pinned run
 measures the model it names. Without a pin, a call that fails on one vendor is
 retried on another whose credential resolves.
+
+---
+
+## Interactive TUI & Command Catalog
+
+Launch the interactive terminal session:
+
+```bash
+codemaster
+```
+
+Within the interactive shell, press `/` to trigger the autocomplete menu or type any command directly:
+
+| Command | Category | Purpose & Capability |
+|---|---|---|
+| `/help` | General | Complete interactive catalog of all commands and keybindings |
+| `/tokens` | Optimization | Real-time TokenJuice compression metrics, pruned lockfiles & budget ladders |
+| `/memory` | Memory | Calibrated SQLite FTS5 BM25 + Reciprocal Rank Fusion (RRF) & contradiction resolution |
+| `/model` | Routing | 3-axis role routing: Provider (`Google`, `Anthropic`, `OpenAI`), Model Tier & Thinking Effort |
+| `/worktree` | Sandboxing | Inspect isolated git scratchpads (`.git/codemaster-worktrees/`) keeping `main` pristine |
+| `/diff` | Splicing | Inspect pending AST surgical diffs with byte-level undo journals |
+| `/bench` | Evaluation | Run benchmark harness smoke suite (`pass@1`, `Succ/Mtok`, execution latency) |
+| `/status` | Diagnostics | Display zero-compile `node:sqlite DatabaseSync` and prompt prefix-cache status |
+| `/undo` | Safety | Rollback the most recent AST surgical symbol modification |
+| `/clear` | Viewport | Clear the active terminal activity stream without resetting session state |
 
 ---
 
