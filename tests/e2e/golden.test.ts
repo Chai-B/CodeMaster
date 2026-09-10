@@ -8,7 +8,7 @@ import { AnthropicAdapter } from '../../src/providers/anthropic.js';
 import { SYSTEM_PROMPT, OUTPUT_FORMAT } from '../../src/context/outputFormat.js';
 import type { Account } from '../../src/types/index.js';
 
-const hasKey = !!process.env.ANTHROPIC_API_KEY;
+const hasKey = !!process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'test';
 
 test('golden: Claude returns a parseable <task_result>', { skip: !hasKey }, async () => {
   const adapter = new AnthropicAdapter([

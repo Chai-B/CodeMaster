@@ -50,33 +50,77 @@ const BY_SESSION: Array<[string, string]> = [
 
 export function migrateLegacy(): MigrationReport {
   const empty: MigrationReport = { migrated: false, repos: [], orphans: 0 };
+  if (process.env.CODEMASTER_DATA_DIR) return { ...empty, reason: 'isolated data dir' };
   if (fs.existsSync(MARKER)) return { ...empty, reason: 'already migrated' };
-  const legacyDb = path.join(LEGACY_DATA_DIR, 'codemaster.db');
-  if (!fs.existsSync(legacyDb)) return { ...empty, reason: 'no legacy data' };
-
-  ensureDirs();
-  copyGlobals();
-
-  const src = new DatabaseSync(legacyDb, { readOnly: true });
   try {
-    const report = partition(src);
-    fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
-    return report;
-  } finally {
-    src.close();
+    const legacyDb = path.join(LEGACY_DATA_DIR, 'codemaster.db');
+    if (!fs.existsSync(legacyDb)) {
+      try { fs.writeFileSync(MARKER, new Date().toISOString() + '\n'); } catch {}
+      return { ...empty, reason: 'no legacy data' };
+    }
+
+    ensureDirs();
+    copyGlobals();
+
+    let src: DatabaseSync;
+    try {
+      src = new DatabaseSync(legacyDb, { readOnly: true });
+    } catch {
+      try { fs.writeFileSync(MARKER, new Date().toISOString() + '\n'); } catch {}
+      return { ...empty, reason: 'unreadable legacy data' };
+    }
+    try {
+      const report = partition(src);
+      fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
+      return report;
+    } finally {
+      src.close();
+    }
+  } catch (err) {
+    try { fs.writeFileSync(MARKER, new Date().toISOString() + '\n'); } catch {}
+    return { ...empty, reason: `migration failed: ${err}` };
   }
 }
 
 function copyGlobals(): void {
-  const legacyCfg = path.join(LEGACY_DATA_DIR, 'config.yaml');
-  if (fs.existsSync(legacyCfg) && !fs.existsSync(CONFIG_PATH)) fs.copyFileSync(legacyCfg, CONFIG_PATH);
-  for (const [from, to] of [
-    [path.join(LEGACY_DATA_DIR, 'credentials'), CREDENTIALS_DIR],
-    [path.join(LEGACY_DATA_DIR, 'logs'), LOGS_DIR],
-    [path.join(LEGACY_DATA_DIR, 'plugins'), path.join(DATA_DIR, 'plugins')],
-  ] as Array<[string, string]>) {
-    if (fs.existsSync(from)) fs.cpSync(from, to, { recursive: true, force: false });
+  try {
+    const legacyCfg = path.join(LEGACY_DATA_DIR, 'config.yaml');
+    if (fs.existsSync(legacyCfg) && !fs.existsSync(CONFIG_PATH)) {
+      try { fs.copyFileSync(legacyCfg, CONFIG_PATH); } catch {}
+    }
+    for (const [from, to] of [
+      [path.join(LEGACY_DATA_DIR, 'credentials'), CREDENTIALS_DIR],
+      [path.join(LEGACY_DATA_DIR, 'logs'), LOGS_DIR],
+      [path.join(LEGACY_DATA_DIR, 'plugins'), path.join(DATA_DIR, 'plugins')],
+    ] as Array<[string, string]>) {
+      try {
+        if (fs.existsSync(from)) fs.cpSync(from, to, { recursive: true, force: false });
+      } catch {}
+    }
+  } catch {}
+}
+
+function copyGlobalTables(src: DatabaseSync, destDir: string): void {
+  const destPath = path.join(destDir, 'global.db');
+  const dest = new DatabaseSync(destPath);
+  dest.exec('PRAGMA journal_mode = WAL;');
+  applyPrimarySchema(dest);
+  const tables = ['provider_accounts', 'procedural_skills', 'prompt_cache', 'text_cache', 'cache_stat'];
+  for (const table of tables) {
+    try {
+      const rows = src.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+      if (rows.length === 0) continue;
+      const cols = Object.keys(rows[0] as object);
+      const placeholders = cols.map(() => '?').join(',');
+      const insert = dest.prepare(`INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`);
+      for (const r of rows) {
+        insert.run(...cols.map((c) => (r as any)[c] ?? null));
+      }
+    } catch {
+      // Table might not exist in src
+    }
   }
+  dest.close();
 }
 
 function partition(src: DatabaseSync): MigrationReport {
@@ -111,6 +155,7 @@ function partition(src: DatabaseSync): MigrationReport {
   }
 
   const repos: MigrationReport['repos'] = [];
+  copyGlobalTables(src, DATA_DIR);
   const allRepos = new Set([...byRepo.keys(), ...wikiByRepo.keys()]);
   // Rows can reference a session id that was never inserted (e.g. a bench
   // bootstrap). Sweep them into the unattributed bucket so the partition is

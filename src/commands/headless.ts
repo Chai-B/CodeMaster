@@ -11,7 +11,8 @@ import { Tasks } from '../storage/sessions.js';
 import { Tokens } from '../storage/tokens.js';
 import { eventToLog } from '../util/parser.js';
 import { GitWorker, isRepoRoot } from '../analysis/git.js';
-import { answerQuestion } from '../workers/asker.js';
+import { staticAnalysis } from '../analysis/api.js';
+import { answerQuestion, structuralAnswer } from '../workers/asker.js';
 import type { Session } from '../types/index.js';
 
 const USAGE = `codemaster — persistent reasoning layer for AI coding agents
@@ -122,6 +123,19 @@ async function askHeadless(argv: string[]): Promise<number> {
     sm.cfg.providers.pinned = true;
   }
   try {
+    const api = staticAnalysis(flags.repo);
+    if (!api.stats()) {
+      bus.emit({ type: 'worker.started', worker: 'StaticIndexer', detail: 'indexing repository' });
+      const stats = await api.reindex({ embed: false });
+      bus.emit({ type: 'worker.finished', worker: 'StaticIndexer', detail: `${stats.files} files, ${stats.symbols} symbols` });
+    }
+    const direct = structuralAnswer(api, question);
+    if (direct) {
+      if (flags.json) process.stdout.write(JSON.stringify({ question, repo: flags.repo, model: 'index', answer: direct, tokens: 0 }, null, 2) + '\n');
+      else process.stdout.write(`${direct}\n`);
+      return 0;
+    }
+
     if (!sm.manager.hasAnyProvider()) {
       process.stderr.write('No provider credentials — set an API key, run `claude setup-token`, or use /account add.\n');
       return 3;

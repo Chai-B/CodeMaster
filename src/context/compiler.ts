@@ -9,8 +9,10 @@ import { Learning } from '../learning/reflector.js';
 import { readRelevantSections, readConventions, readArchitecture } from '../wiki/reader.js';
 import { Reasoning, Failures } from '../storage/reasoning.js';
 import { LongTerm } from '../storage/memory.js';
+import { Skills } from '../memory/skills.js';
 import { OUTPUT_FORMAT, SYSTEM_PROMPT, PROSE_OUTPUT_FORMAT, PROSE_SYSTEM_PROMPT } from './outputFormat.js';
 import { estimateTokens } from '../util/tokens.js';
+import { TokenJuice } from '../workers/tokenJuice.js';
 import { now } from '../util/id.js';
 import { ContextComponent } from '../types/index.js';
 import type { Session, Task, CompiledPrompt, CompiledComponent } from '../types/index.js';
@@ -140,22 +142,21 @@ export async function compileContext(
   // REPOSITORY MAP
   add(C.REPOSITORY_MAP, 'Repository Map', api.renderRepositoryMap(12));
 
-  // PRIOR REASONING (replay) — keyword-relevant merged with file-locus-relevant.
+  // PRIOR REASONING (replay) — keyword-relevant merged with file-locus-relevant, plus verified procedural skills (EverOS).
+  const relevantSkills = Skills.findRelevant(session.repository.path, task.type, `${task.title} ${task.description}`, 3);
   const reasoning = mergeById(Reasoning.relevant(allKws, 12), Reasoning.byAffectedFiles(selectedPaths, 8));
-  if (reasoning.length) {
-    // The top three carry their detail. The summary alone is a label — the
-    // substance is in `detail`, which MemoryCompressorWorker pays an LLM call to
-    // compress and which, until now, no prompt read. Either include it or stop
-    // buying it; including it is the cheaper of the two.
-    const txt = reasoning
-      .map((r, i) => {
-        Reasoning.incrementReference(r.id);
-        const head = `- [${r.type}] ${r.summary} (confidence ${r.confidence.toFixed(2)})`;
-        const detail = i < 3 && r.detail && r.detail !== r.summary ? `\n  ${r.detail.slice(0, 400)}` : '';
-        return head + detail;
-      })
-      .join('\n');
-    add(C.PRIOR_REASONING, 'Prior Reasoning (relevant to this task)', txt);
+  if (reasoning.length || relevantSkills.length) {
+    const skillLines = relevantSkills.map(
+      (s) => `- [procedural_skill] ${s.name} (${s.success_count}x verified): ${s.steps.slice(0, 3).join(' -> ')}`,
+    );
+    const reasoningLines = reasoning.map((r, i) => {
+      Reasoning.incrementReference(r.id);
+      const head = `- [${r.type}] ${r.summary} (confidence ${r.confidence.toFixed(2)})`;
+      const detail = i < 3 && r.detail && r.detail !== r.summary ? `\n  ${r.detail.slice(0, 400)}` : '';
+      return head + detail;
+    });
+    const txt = [...skillLines, ...reasoningLines].join('\n');
+    add(C.PRIOR_REASONING, 'Prior Reasoning & Procedural Skills (relevant to this task)', txt);
   } else {
     omitted.push(C.PRIOR_REASONING);
   }
@@ -199,7 +200,8 @@ export async function compileContext(
   if (['debugging', 'review', 'implementation'].includes(profileName)) {
     const diff = await api.getWorkingDiff();
     if (diff.trim()) {
-      add(C.RECENT_CHANGES, 'Recent Changes', '```diff\n' + diff.slice(0, 8000) + '\n```');
+      const compacted = TokenJuice.compressDiff(diff).slice(0, 8000);
+      add(C.RECENT_CHANGES, 'Recent Changes', '```diff\n' + compacted + '\n```');
     } else {
       omitted.push(C.RECENT_CHANGES);
     }

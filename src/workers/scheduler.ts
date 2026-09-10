@@ -65,12 +65,22 @@ export function topoOrder(): string[] {
 export function nextReadyTask<T extends { id: string; status: string; dependencies: string[]; order?: number }>(
   tasks: T[],
 ): T | null {
+  return readyTasks(tasks)[0] ?? null;
+}
+
+/**
+ * All pending tasks whose dependencies are met, sorted by plan order.
+ * Enables parallel multi-lane execution across isolated git worktrees.
+ */
+export function readyTasks<T extends { id: string; status: string; dependencies: string[]; order?: number }>(
+  tasks: T[],
+): T[] {
   const byId = new Map(tasks.map((t) => [t.id, t]));
-  const ready = tasks
+  return tasks
     .filter((t) => t.status === 'pending')
     .filter((t) => t.dependencies.every((d) => byId.get(d)?.status === 'completed' || !byId.has(d)))
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  return ready[0] ?? null;
 }
 
 export { listWorkers };
+

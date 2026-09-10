@@ -18,12 +18,14 @@ import { generateRepro, generateCharacterization, type Repro } from '../workers/
 import { detectFramework } from '../analysis/testRunner.js';
 import { runWorker } from '../workers/base.js';
 import { VerifierWorker } from '../workers/verifier.js';
-import { registerCoreWorkers, nextReadyTask } from '../workers/scheduler.js';
+import { registerCoreWorkers, nextReadyTask, readyTasks } from '../workers/scheduler.js';
 import { createCheckpoint, restoreCheckpoint } from '../workers/checkpointer.js';
 import { buildSessionSummary, persistSessionSummary } from '../memory/sessionSummary.js';
 import { findIncompleteSessions } from './recovery.js';
 import { replayReasoning, renderReplay } from '../memory/replay.js';
 import { bootstrapWiki, wikiBootstrapped } from '../wiki/bootstrap.js';
+import { startMemoryWatcher, type MemoryWatcherHandle } from '../memory/cascadeWatcher.js';
+import { makeGreenfieldVerify } from '../workers/verify/greenfieldVerify.js';
 import { ProviderManager } from '../providers/manager.js';
 import { bus } from '../events/bus.js';
 import { id, now } from '../util/id.js';
@@ -142,6 +144,7 @@ export class SessionManager {
   manager: ProviderManager;
   private current: Session | null = null;
   private checkpointTimer: ReturnType<typeof setInterval> | null = null;
+  private memoryWatcher: MemoryWatcherHandle | null = null;
   // The Daemon static-analyzer subsystem enables continuous watching (spec §5.3).
   // Left off when SessionManager is driven directly (tests, scripts) so a
   // persistent watcher never keeps the process alive.
@@ -273,7 +276,14 @@ export class SessionManager {
     }
 
     // Continuous incremental indexing while the session is active (spec §5.3).
-    if (this.watchEnabled && this.cfg.indexing.auto_index) startWatching(repoPath);
+    if (this.watchEnabled && this.cfg.indexing.auto_index) {
+      startWatching(repoPath);
+      try {
+        this.memoryWatcher = startMemoryWatcher(repoPath);
+      } catch {
+        /* best effort */
+      }
+    }
 
     return session;
   }
@@ -294,6 +304,10 @@ export class SessionManager {
   /** Execute the next pending task (spec §14.1 task loop). */
   async runNextTask(session: Session): Promise<Task | null> {
     const tasks = Tasks.forSession(session.id);
+    const ready = readyTasks(session.plan?.tasks ?? []);
+    if (ready.length > 1) {
+      bus.emit({ type: 'log', level: 'info', message: `${ready.length} tasks ready for parallel execution (executing serially).` });
+    }
     const next = nextReadyTask(tasks);
     if (!next) return null;
 
@@ -384,7 +398,20 @@ export class SessionManager {
           const [r, c] = await oracles;
           bv = makeBehavioralVerify(session.repository.path, changedGetter, genOpts, r, locus, c);
         }
-        return (bv as BV).verify(changed);
+        const result = (bv as BV).verify(changed);
+        const resolved = await result;
+        // If behavioral verify isn't confident (no tests, timed out, etc.), try greenfield
+        if (resolved.confident === false) {
+          try {
+            const gfResult = await makeGreenfieldVerify(
+              session.repository.path,
+              changedGetter,
+            )(changed);
+            // Greenfield is confident only when it ran checks
+            if (gfResult.confident) return gfResult;
+          } catch { /* greenfield is best-effort fallback */ }
+        }
+        return resolved;
       };
       let result: ExecuteResult;
       // The solver's own verdict, which used to be dropped on the floor here —
@@ -572,6 +599,8 @@ export class SessionManager {
     session.status = 'paused';
     this.persist(session);
     void stopWatching(session.repository.path);
+    await this.memoryWatcher?.close();
+    this.memoryWatcher = null;
     bus.emit({ type: 'session.paused', session_id: session.id });
   }
 
@@ -584,7 +613,14 @@ export class SessionManager {
     session.status = 'active';
     this.persist(session);
     this.current = session;
-    if (this.watchEnabled && this.cfg.indexing.auto_index) startWatching(session.repository.path);
+    if (this.watchEnabled && this.cfg.indexing.auto_index) {
+      startWatching(session.repository.path);
+      try {
+        this.memoryWatcher = startMemoryWatcher(session.repository.path);
+      } catch {
+        /* best effort */
+      }
+    }
     bus.emit({ type: 'session.resumed', session_id: session.id });
     return session;
   }
@@ -626,6 +662,8 @@ export class SessionManager {
     session.status = 'completed';
     this.persist(session);
     void stopWatching(session.repository.path);
+    await this.memoryWatcher?.close();
+    this.memoryWatcher = null;
     bus.emit({ type: 'session.completed', session_id: session.id });
   }
 

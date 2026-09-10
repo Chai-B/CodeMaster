@@ -3,7 +3,9 @@
 import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import type { Patch, NewFile } from '../types/index.js';
+import type { Patch, NewFile, SymbolEdit } from '../types/index.js';
+import { findSymbolRange } from '../analysis/treesitter.js';
+import { languageOf } from '../analysis/extractors.js';
 
 export interface ApplyResult {
   applied: string[];
@@ -75,7 +77,13 @@ function refuseWrite(repoPath: string, rel: string, policy: WritePolicy): string
   return null;
 }
 
-export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFile[], policy: WritePolicy = {}): ApplyResult {
+export async function applyPatches(
+  repoPath: string,
+  patches: Patch[],
+  newFiles: NewFile[],
+  policy: WritePolicy = {},
+  symbolEdits: SymbolEdit[] = [],
+): Promise<ApplyResult> {
   const result: ApplyResult = { applied: [], created: [], failed: [], undo: [] };
   const capture = (rel: string, full: string): void => {
     if (result.undo.some((u) => u.path === rel)) return;
@@ -128,6 +136,220 @@ export function applyPatches(repoPath: string, patches: Patch[], newFiles: NewFi
     const ok = applyOne(repoPath, p);
     if (ok.success) result.applied.push(p.file);
     else result.failed.push({ file: p.file, reason: ok.reason });
+  }
+
+  if (symbolEdits.length > 0) {
+    const symRes = await applySymbolEdits(repoPath, symbolEdits, policy);
+    for (const f of symRes.applied) {
+      if (!result.applied.includes(f)) result.applied.push(f);
+    }
+    for (const f of symRes.failed) result.failed.push(f);
+    for (const u of symRes.undo) {
+      if (!result.undo.some((x) => x.path === u.path)) result.undo.push(u);
+    }
+  }
+
+  return result;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Locate the character start and end index of a symbol definition within file content.
+ * Supports Python (indentation + decorator tracking) and C-family languages (balanced brace matching).
+ */
+export async function findSymbolSpan(content: string, filePath: string, symbolName: string): Promise<{ start: number; end: number } | null> {
+  const lang = languageOf(filePath);
+  if (lang) {
+    const range = await findSymbolRange(content, lang, symbolName);
+    if (range) return { start: range.startIndex, end: range.endIndex };
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (ext === '.py') {
+    const lines = content.split('\n');
+    let defLineIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (new RegExp(`^[ \\t]*(?:async\\s+)?(?:def|class)\\s+${escapeRegex(symbolName)}\\b`).test(line)) {
+        defLineIdx = i;
+        break;
+      }
+    }
+    if (defLineIdx === -1) return null;
+    let startLineIdx = defLineIdx;
+    while (startLineIdx > 0 && /^[ \t]*@/.test(lines[startLineIdx - 1]!)) {
+      startLineIdx--;
+    }
+    const indent = lines[defLineIdx]!.match(/^[ \t]*/)?.[0].length ?? 0;
+    let endLineIdx = defLineIdx + 1;
+    while (endLineIdx < lines.length) {
+      const line = lines[endLineIdx]!;
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const curIndent = line.match(/^[ \t]*/)?.[0].length ?? 0;
+        if (curIndent <= indent) break;
+      }
+      endLineIdx++;
+    }
+    let charStart = 0;
+    for (let i = 0; i < startLineIdx; i++) charStart += lines[i]!.length + 1;
+    let charEnd = charStart;
+    for (let i = startLineIdx; i < endLineIdx; i++) charEnd += lines[i]!.length + 1;
+    return { start: charStart, end: Math.min(charEnd, content.length) };
+  }
+
+  const sym = escapeRegex(symbolName);
+  const symRegex = new RegExp(
+    `(^|\\n)([ \\t]*(?:/\\*\\*[\\s\\S]*?\\*/[ \\t]*\\n[ \\t]*)?(?:(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?(?:function\\*?|class|interface|type|enum|func|fn|pub\\s+fn)\\s+${sym}\\b|(?:(?:public|private|protected|static|async|get|set|readonly)\\s+)*${sym}\\s*(?:<[^>]*>)?\\s*(?:\\(|=>|:|=)))`,
+    'm',
+  );
+  const m = symRegex.exec(content);
+  if (!m) return null;
+  const start = m.index + (m[1]?.length ?? 0);
+  let searchFrom = start + (m[2]?.length ?? 0);
+
+  // If there is a parameter list `(...)` before the body, skip through it
+  // so braces inside type annotations (e.g. `items: Array<{ price: number }>`) aren't mistaken for the body.
+  const parenStart = content.indexOf('(', searchFrom);
+  const firstBrace = content.indexOf('{', searchFrom);
+  if (parenStart !== -1 && (firstBrace === -1 || parenStart < firstBrace)) {
+    let pDepth = 0;
+    for (let i = parenStart; i < content.length; i++) {
+      if (content[i] === '(') pDepth++;
+      else if (content[i] === ')') {
+        pDepth--;
+        if (pDepth === 0) {
+          searchFrom = i + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  let braceStart = -1;
+  let semiIndex = -1;
+  for (let i = searchFrom; i < content.length; i++) {
+    const ch = content[i];
+    if (ch === '{') {
+      braceStart = i;
+      break;
+    } else if (ch === ';') {
+      semiIndex = i;
+      break;
+    }
+  }
+  if (semiIndex !== -1 && (braceStart === -1 || semiIndex < braceStart)) {
+    return { start, end: semiIndex + 1 };
+  }
+  if (braceStart === -1) return null;
+
+  let depth = 0;
+  let inString: string | null = null;
+  let inComment = false;
+  let inLineComment = false;
+  let end = -1;
+  for (let i = braceStart; i < content.length; i++) {
+    const ch = content[i];
+    const next = content[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inComment) {
+      if (ch === '*' && next === '/') {
+        inComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') {
+        i++;
+      } else if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inString = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  if (end === -1) return null;
+  return { start, end };
+}
+
+export async function applySymbolEdits(
+  repoPath: string,
+  symbolEdits: SymbolEdit[],
+  policy: WritePolicy = {},
+): Promise<ApplyResult> {
+  const result: ApplyResult = { applied: [], created: [], failed: [], undo: [] };
+  const capture = (rel: string, full: string): void => {
+    if (result.undo.some((u) => u.path === rel)) return;
+    let before: string | null = null;
+    try {
+      before = fs.readFileSync(full, 'utf8');
+    } catch {
+      before = null;
+    }
+    result.undo.push({ path: rel, before });
+  };
+
+  for (const edit of symbolEdits) {
+    const full = resolveInRepo(repoPath, edit.file);
+    if (!full) {
+      result.failed.push({ file: edit.file, reason: 'path resolves outside the repository' });
+      continue;
+    }
+    const refusal = refuseWrite(repoPath, edit.file, policy);
+    if (refusal) {
+      result.failed.push({ file: edit.file, reason: refusal });
+      continue;
+    }
+    if (!fs.existsSync(full)) {
+      result.failed.push({ file: edit.file, reason: `target file ${edit.file} does not exist for symbol edit` });
+      continue;
+    }
+
+    try {
+      const content = fs.readFileSync(full, 'utf8');
+      const span = await findSymbolSpan(content, edit.file, edit.symbol);
+      if (!span) {
+        result.failed.push({ file: edit.file, reason: `symbol '${edit.symbol}' not found in ${edit.file}` });
+        continue;
+      }
+      capture(edit.file, full);
+      const replacement = edit.content.trimEnd() + '\n';
+      const newContent = content.slice(0, span.start) + replacement + content.slice(span.end).replace(/^\n/, '');
+      fs.writeFileSync(full, newContent, 'utf8');
+      result.applied.push(edit.file);
+    } catch (e) {
+      result.failed.push({ file: edit.file, reason: String(e) });
+    }
   }
 
   return result;

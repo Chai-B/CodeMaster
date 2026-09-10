@@ -5,6 +5,7 @@
 // context, iterating up to `maxIters`. This is the self-correction that lets a
 // deterministic-context engine handle multi-file fixes and edge cases.
 
+import { createHash } from 'node:crypto';
 import { executeTask, type Conversation, type ExecuteResult } from './taskExecutor.js';
 import { bus } from '../events/bus.js';
 import { Learning } from '../learning/reflector.js';
@@ -12,9 +13,26 @@ import { throwIfCancelled } from '../util/cancel.js';
 import { Failures } from '../storage/reasoning.js';
 import { applyWikiUpdate } from '../wiki/updater.js';
 import { id, now, uuid } from '../util/id.js';
+import { TokenJuice } from './tokenJuice.js';
+import { Skills } from '../memory/skills.js';
 import type { ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
 import type { Session, Task } from '../types/index.js';
+
+function patchFingerprint(result: ExecuteResult): string | null {
+  const patches = result.ir?.patches ?? [];
+  const symbolEdits = result.ir?.symbol_edits ?? [];
+  if (result.applied.length === 0 && result.created.length === 0 && patches.length === 0 && symbolEdits.length === 0) {
+    return null;
+  }
+  const parts: string[] = [
+    ...(result.applied ?? []),
+    ...(result.created ?? []),
+    ...patches.map((p) => `${p.file}:${p.diff}`),
+    ...symbolEdits.map((s) => `${s.file}:${s.symbol}:${s.content}`),
+  ];
+  return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16);
+}
 
 export interface VerifyResult {
   ok: boolean;
@@ -90,6 +108,7 @@ export async function solveWithVerification(
    *  old model, since the CLI's --resume path carries no --model flag. */
   let convTurn = 0;
   let freshConversation = false;
+  const patchHistory: string[] = [];
 
   for (let i = 0; i < Math.max(1, maxIters); i++) {
     throwIfCancelled();
@@ -100,6 +119,10 @@ export async function solveWithVerification(
     // current size — the first attempt never pays for a window it did not need.
     last = await exec(session, task, manager, cfg, start + i, conversation, escalatedTo || undefined);
     totalTokens += last.tokens;
+
+    const fp = patchFingerprint(last);
+    const patchCycled = fp !== null && patchHistory.includes(fp);
+    if (fp) patchHistory.push(fp);
 
     const changed = [...last.applied, ...last.created];
     const v = await verify(changed);
@@ -114,6 +137,13 @@ export async function solveWithVerification(
           ? { type: 'log', level: 'success', message: `Verification passed on iteration ${iterations}.` }
           : { type: 'log', level: 'warn', message: `Applied, but unverified: ${v.output}` },
       );
+      if (verified && last.ir) {
+        try {
+          Skills.recordTaskSuccess(session.repository.path, task, last.ir, changed);
+        } catch {
+          /* skill recording is best-effort */
+        }
+      }
       break;
     }
     // Record the non-working approach (spec §8.5) so it is retrievable as a
@@ -145,7 +175,7 @@ export async function solveWithVerification(
     // byte-identical failures. One rung up is the only thing left that can
     // change the answer, and routing across models is the layer's reason to
     // exist. Once per task, and never when the caller pinned the model.
-    if (v.output === lastFailure) {
+    if (v.output === lastFailure || patchCycled) {
       // Escalate from where this task actually stands: a session switched with
       // /model runs on `current_provider`, not on the global default, so reading
       // the default would step up from a model nobody was using.
@@ -156,9 +186,11 @@ export async function solveWithVerification(
         conversation.id = uuid();
         conversation.provider_id = undefined;
         freshConversation = true;
-        bus.emit({ type: 'log', level: 'warn', message: `Stuck on ${from}; escalating this task to ${stronger}.` });
+        const msg = patchCycled ? `Cycling patch on ${from}; escalating this task to ${stronger}.` : `Stuck on ${from}; escalating this task to ${stronger}.`;
+        bus.emit({ type: 'log', level: 'warn', message: msg });
       } else {
-        bus.emit({ type: 'log', level: 'warn', message: 'Same failure as the previous iteration; stopping instead of repeating it.' });
+        const msg = patchCycled ? 'Cycling patch detected from previous iteration; stopping instead of repeating it.' : 'Same failure as the previous iteration; stopping instead of repeating it.';
+        bus.emit({ type: 'log', level: 'warn', message: msg });
         break;
       }
     }
@@ -169,9 +201,10 @@ export async function solveWithVerification(
       // Feed the failure back so the next pass sees exactly what broke. The context
       // is recompiled from the now-modified working tree, so the model iterates on
       // its own changes (spec §14.1).
+      const failureTrace = TokenJuice.compressTestTrace(v.output).slice(0, 3500);
       task.description =
         `${origDesc}\n\n--- ITERATION ${iterations} DID NOT PASS VERIFICATION ---\n` +
-        `The current code produced this failure:\n${v.output.slice(0, 3500)}\n\n` +
+        `The current code produced this failure:\n${failureTrace}\n\n` +
         `Diagnose the root cause, then produce a MINIMAL unified-diff patch that changes only what is ` +
         `necessary to fix it (the fix may span multiple files). Do not reorganize imports, rename symbols, ` +
         `or rewrite unrelated code. Use only modules and names that already exist in this repository.`;
@@ -179,7 +212,7 @@ export async function solveWithVerification(
       // repository context from the opening turn, so only the new failure and
       // the standing instruction need to cross the wire.
       conversation.delta =
-        `Your previous patch did not pass verification.\n\n${v.output.slice(0, 3500)}\n\n` +
+        `Your previous patch did not pass verification.\n\n${failureTrace}\n\n` +
         `Diagnose the root cause, then produce a MINIMAL unified-diff patch that changes only what is ` +
         `necessary to fix it. Do not reorganize imports, rename symbols, or rewrite unrelated code. ` +
         `Use only modules and names that already exist in this repository. Respond in the same format as before.`;

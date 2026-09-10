@@ -138,6 +138,7 @@ export class CommandRouter {
       case '/checkpoints': return this.checkpoints(args);
       case '/tokens': return this.tokens(arg);
       case '/context': return this.context();
+      case '/bench': return this.bench(args);
       case '/stats': return this.stats();
       case '/health': return this.health();
       case '/doctor': return this.doctor();
@@ -1589,6 +1590,16 @@ export class CommandRouter {
       this.out('info', `${g.padEnd(12)}${cmds.map((c) => c.cmd).join(' ')}`);
     }
     this.out('dim', '/help <group> describes a group · /<command> --help shows one command · /doctor checks the setup.');
+  }
+
+  private async bench(args: string[]): Promise<void> {
+    const { runSmokeBenchmark, formatBenchmarkReport } = await import('../bench/runner.js');
+    this.out('info', 'Running CodeMaster smoke evaluation benchmark across 5 fixtures...');
+    const report = await runSmokeBenchmark();
+    const formatted = formatBenchmarkReport(report);
+    for (const line of formatted.split('\n')) {
+      this.out('info', line);
+    }
   }
 }
 

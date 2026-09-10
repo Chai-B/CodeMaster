@@ -71,10 +71,16 @@ export async function processIR(
   }
 
   // 4. Patch processing
-  const apply = applyPatches(repoPath, ir.patches, ir.files_created, {
-    locus: task.input_files.map((f) => f.path),
-    isTestTask: task.type === 'test',
-  });
+  const apply = await applyPatches(
+    repoPath,
+    ir.patches,
+    ir.files_created,
+    {
+      locus: task.input_files.map((f) => f.path),
+      isTestTask: task.type === 'test',
+    },
+    ir.symbol_edits ?? [],
+  );
   for (const f of apply.failed) {
     bus.emit({ type: 'log', level: 'warn', message: `Not applied — ${f.file}: ${f.reason}` });
   }

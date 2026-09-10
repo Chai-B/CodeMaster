@@ -162,8 +162,12 @@ let db: DatabaseSync | null = null;
 function conn(): DatabaseSync {
   if (db) return db;
   ensureDirs();
-  db = new DatabaseSync(path.join(DATA_DIR, 'quota.db'));
-  db.exec('PRAGMA journal_mode = WAL;');
+  try {
+    db = new DatabaseSync(path.join(DATA_DIR, 'quota.db'));
+    db.exec('PRAGMA journal_mode = WAL;');
+  } catch {
+    db = new DatabaseSync(':memory:');
+  }
   db.exec(SCHEMA);
   migrate(db);
   return db;

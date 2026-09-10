@@ -14,8 +14,7 @@ import type { ModelSpec, LlmRole, RoleRouting } from './types/index.js';
 
 const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 export const DATA_DIR = process.env.CODEMASTER_DATA_DIR || path.join(XDG_CONFIG, 'codemaster');
-/** Pre-0.1 location, shared with the abandoned Python v1 checkout. Migrated once. */
-export const LEGACY_DATA_DIR = path.join(os.homedir(), '.codemaster');
+export const LEGACY_DATA_DIR = process.env.CODEMASTER_LEGACY_DIR || path.join(os.homedir(), '.codemaster');
 
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.yaml');
 export const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');

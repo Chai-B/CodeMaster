@@ -37,4 +37,8 @@ export interface LongTermMemory {
   source_decision_id?: string;
   tags: string[];
   permanent: boolean;
+  status?: 'active' | 'superseded';
+  superseded_by?: string;
+  contradicts_id?: string;
+  evidence_refs?: string[];
 }

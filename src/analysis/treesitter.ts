@@ -221,6 +221,69 @@ export async function parseSource(content: string, lang: string): Promise<TsExtr
   }
 }
 
+/**
+ * Find the byte range of a named symbol definition using tree-sitter AST.
+ * Returns { startIndex, endIndex } in byte offsets, or null if not found.
+ */
+export async function findSymbolRange(
+  content: string,
+  lang: string,
+  symbolName: string
+): Promise<{ startIndex: number; endIndex: number } | null> {
+  if (!(await initTreeSitter()) || !parser) return null;
+  const language = await loadLanguage(lang);
+  if (!language) return null;
+  const querySrc = QUERIES[lang];
+  if (!querySrc) return null;
+
+  try {
+    parser.setLanguage(language);
+    const tree = parser.parse(content);
+    if (!tree) return null;
+
+    let query = compiledQueries.get(lang);
+    if (!query) {
+      query = language.query(querySrc);
+      compiledQueries.set(lang, query);
+    }
+
+    for (const match of query.matches(tree.rootNode)) {
+      const byName: Record<string, any> = {};
+      for (const c of match.captures) byName[c.name] = c.node;
+
+      const kindKey = Object.keys(byName).find((k) => k !== 'def' && k !== 'call' && k !== 'import');
+      if (kindKey && byName[kindKey]) {
+        const nameNode = byName[kindKey]!;
+        if (nameNode.text === symbolName) {
+          let defNode = byName.def ?? nameNode;
+
+          // Check for decorators
+          let p = defNode.parent;
+          if (p && (p.type === 'decorator' || p.type === 'decorated_definition')) {
+             defNode = p;
+          } else if (p && p.type === 'export_statement') {
+             // also grab export statement
+             let hasDecorator = false;
+             for (const child of p.children) {
+                 if (child.type === 'decorator') hasDecorator = true;
+             }
+             defNode = p;
+          }
+
+          const result = { startIndex: defNode.startIndex, endIndex: defNode.endIndex };
+          tree.delete();
+          return result;
+        }
+      }
+    }
+
+    tree.delete();
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Use tree-sitter when possible; fall back to regex (which yields no calls).
 export async function extractWithFallback(content: string, lang: string): Promise<TsExtraction> {
   const ts = await parseSource(content, lang);

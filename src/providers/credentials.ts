@@ -146,10 +146,15 @@ export const CredentialManager = {
   list(): string[] {
     ensureDirs();
     // Union of the id index and any legacy .enc files on disk.
-    const fromFiles = fs
-      .readdirSync(CREDENTIALS_DIR)
-      .filter((f) => f.endsWith('.enc'))
-      .map((f) => f.replace(/\.enc$/, ''));
+    let fromFiles: string[] = [];
+    try {
+      fromFiles = fs
+        .readdirSync(CREDENTIALS_DIR)
+        .filter((f) => f.endsWith('.enc'))
+        .map((f) => f.replace(/\.enc$/, ''));
+    } catch {
+      fromFiles = [];
+    }
     return [...new Set([...readIndex(), ...fromFiles])];
   },
 };

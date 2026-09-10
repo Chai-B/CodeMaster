@@ -27,6 +27,18 @@ export interface FileRename {
   to: string;
 }
 
+export interface ContextRequest {
+  type: 'symbol' | 'callers_of' | 'file' | 'grep';
+  target: string;
+  slice?: string;
+}
+
+export interface SymbolEdit {
+  file: string;
+  symbol: string;
+  content: string;
+}
+
 export interface TaskSpec {
   title: string;
   description?: string;
@@ -53,6 +65,8 @@ export interface IntermediateRepresentation {
   files_created: NewFile[];
   files_deleted: FileRef[];
   files_renamed: FileRename[];
+  context_requests?: ContextRequest[];
+  symbol_edits?: SymbolEdit[];
 
   decisions: Decision[];
   observations: Observation[];

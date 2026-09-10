@@ -5,11 +5,11 @@ import os from 'os';
 import path from 'path';
 import { applyPatches } from '../../src/workers/patchApplier.js';
 
-test('new files outside the repository are refused, not written', () => {
+test('new files outside the repository are refused, not written', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-apply-'));
   const outside = path.join(os.tmpdir(), `cm-escape-${process.pid}.txt`);
   try {
-    const res = applyPatches(repo, [], [
+    const res = await applyPatches(repo, [], [
       { path: 'src/ok.txt', content: 'ok' },
       { path: '../escape.txt', content: 'bad' },
       { path: outside, content: 'bad' },
@@ -27,13 +27,13 @@ test('new files outside the repository are refused, not written', () => {
   }
 });
 
-test('a task may not rewrite the oracle that judges it', () => {
+test('a task may not rewrite the oracle that judges it', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-policy-'));
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'tests/test_join.py'), 'def test_real(): assert False\n');
   fs.writeFileSync(path.join(repo, 'conftest.py'), '# fixtures\n');
   try {
-    const res = applyPatches(repo, [], [
+    const res = await applyPatches(repo, [], [
       { path: 'tests/test_join.py', content: 'def test_real(): assert True' },
       { path: 'conftest.py', content: 'collect_ignore = ["tests"]' },
       { path: 'src/fix.py', content: 'x = 1' },
@@ -49,13 +49,13 @@ test('a task may not rewrite the oracle that judges it', () => {
   }
 });
 
-test('a test task may write tests, and a named config file is still allowed', () => {
+test('a test task may write tests, and a named config file is still allowed', async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-policy2-'));
   fs.mkdirSync(path.join(repo, 'tests'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'tests/test_join.py'), 'old\n');
   fs.writeFileSync(path.join(repo, 'pyproject.toml'), '[project]\n');
   try {
-    const res = applyPatches(repo, [], [
+    const res = await applyPatches(repo, [], [
       { path: 'tests/test_join.py', content: 'def test_new(): pass' },
       { path: 'pyproject.toml', content: '[project]\nname = "x"' },
     ], { isTestTask: true, locus: ['pyproject.toml'] });

@@ -15,3 +15,5 @@ build/
 
 # Leaked E2E temp output (test writes a relative "var/folders/..." path)
 var/
+.tmp_*
+

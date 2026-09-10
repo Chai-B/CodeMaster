@@ -7,6 +7,7 @@ import { id, now } from '../util/id.js';
 import { staticAnalysis } from '../analysis/api.js';
 import { namedFiles } from '../context/fileSelector.js';
 import { tierFor, type ProviderManager } from '../providers/manager.js';
+import { Skills } from '../memory/skills.js';
 import type { Config } from '../config.js';
 import type { Session, Task, ExecutionPlan, TaskType, TaskSpec } from '../types/index.js';
 
@@ -141,10 +142,19 @@ export async function generatePlan(
 
   const planTier = tierFor({ role: 'plan', taskType: 'plan', files: planningTask.input_files.length });
   const primary = manager.select(manager.modelFor('plan', undefined, planTier), cfg.context.max_context_tokens);
+
+  const repoSkills = Skills.findRelevant(session.repository.path, undefined, session.objective, 3);
+  let taskInstructions = PLAN_INSTRUCTIONS;
+  if (repoSkills.length > 0) {
+    taskInstructions +=
+      `\n\nVerified procedural recipes previously established in this repository (use these patterns if relevant):\n` +
+      repoSkills.map((s) => `- ${s.name}: ${s.steps.slice(0, 3).join(' -> ')}`).join('\n');
+  }
+
   const compiled = await compileContext(session, planningTask, {
     maxContextTokens: primary.spec.context_size,
     fileCompressionThreshold: cfg.context.file_compression_threshold,
-    taskInstructions: PLAN_INSTRUCTIONS,
+    taskInstructions,
   });
 
   // Plan with automatic failover across healthy providers (spec §13, §26.7).

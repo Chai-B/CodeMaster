@@ -68,7 +68,7 @@ export const OutputParserWorker: Worker<
 
 export const PatchApplierWorker: Worker<
   { repoPath: string; patches: Parameters<typeof applyPatches>[1]; newFiles: Parameters<typeof applyPatches>[2] },
-  ReturnType<typeof applyPatches>
+  import('./patchApplier.js').ApplyResult
 > = {
   name: 'PatchApplier',
   version: '1.0.0',

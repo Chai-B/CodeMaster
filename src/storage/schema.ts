@@ -105,8 +105,34 @@ CREATE TABLE IF NOT EXISTS long_term_memory (
   permanent INTEGER NOT NULL DEFAULT 1,
   reference_count INTEGER DEFAULT 0,
   last_accessed_at TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  superseded_by TEXT,
+  contradicts_id TEXT,
+  evidence_refs_json TEXT,
   UNIQUE(namespace, key)
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS long_term_fts USING fts5(
+  memory_id UNINDEXED,
+  namespace,
+  key,
+  value_markdown,
+  tags,
+  tokenize = 'porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS procedural_skills (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  task_type TEXT NOT NULL,
+  repository_pattern TEXT,
+  description TEXT,
+  steps_json TEXT NOT NULL,
+  success_count INTEGER NOT NULL DEFAULT 1,
+  last_verified_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_procedural_skills_task_type ON procedural_skills(task_type);
 
 CREATE TABLE IF NOT EXISTS token_usage (
   id TEXT PRIMARY KEY,
@@ -393,6 +419,10 @@ const PRIMARY_MIGRATIONS = [
   'ALTER TABLE checkpoints ADD COLUMN tasks_remaining INTEGER',
   'ALTER TABLE tasks ADD COLUMN evidence_json TEXT',
   'ALTER TABLE token_usage ADD COLUMN role TEXT',
+  "ALTER TABLE long_term_memory ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+  'ALTER TABLE long_term_memory ADD COLUMN superseded_by TEXT',
+  'ALTER TABLE long_term_memory ADD COLUMN contradicts_id TEXT',
+  'ALTER TABLE long_term_memory ADD COLUMN evidence_refs_json TEXT',
 ];
 
 export function applyPrimarySchema(db: DatabaseSync): void {
@@ -403,6 +433,26 @@ export function applyPrimarySchema(db: DatabaseSync): void {
     } catch {
       /* column already exists */
     }
+  }
+
+  // Ensure long_term_fts synchronization triggers exist
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_ltm_ai AFTER INSERT ON long_term_memory BEGIN
+        INSERT INTO long_term_fts(memory_id, namespace, key, value_markdown, tags)
+        VALUES (new.id, new.namespace, new.key, COALESCE(new.value_markdown, ''), COALESCE(new.tags, ''));
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_ltm_ad AFTER DELETE ON long_term_memory BEGIN
+        DELETE FROM long_term_fts WHERE memory_id = old.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_ltm_au AFTER UPDATE ON long_term_memory BEGIN
+        DELETE FROM long_term_fts WHERE memory_id = old.id;
+        INSERT INTO long_term_fts(memory_id, namespace, key, value_markdown, tags)
+        VALUES (new.id, new.namespace, new.key, COALESCE(new.value_markdown, ''), COALESCE(new.tags, ''));
+      END;
+    `);
+  } catch {
+    /* triggers already exist */
   }
 }
 

@@ -11,7 +11,9 @@ import { Learning } from '../learning/reflector.js';
 import { throwIfCancelled } from '../util/cancel.js';
 import { invokeWithBackoff, tierFor, type ProviderManager } from '../providers/manager.js';
 import type { Config } from '../config.js';
-import { id, now } from '../util/id.js';
+import { id, now, uuid } from '../util/id.js';
+import { resolveContextRequests } from './contextResolver.js';
+import { WorktreeManager } from '../analysis/worktree.js';
 import type { Session, Task, IntermediateRepresentation, CompiledPrompt, ProviderResponse } from '../types/index.js';
 
 /** One vendor-side conversation, carried across a task's solver iterations.
@@ -97,6 +99,16 @@ export async function executeTask(
   throwIfCancelled();
   bus.emit({ type: 'task.started', task_id: task.id, title: task.title });
 
+  let worktreePath: string | null = null;
+  const effectiveRepoPath = session.repository.path;
+  try {
+    const wt = await WorktreeManager.create(session.repository.path, task.id);
+    if (wt) worktreePath = wt.path;
+  } catch { /* worktree creation is best-effort */ }
+  const repoPath = worktreePath ?? effectiveRepoPath;
+
+  try {
+
   // What this call will actually use, resolved ONCE: the same string sizes the
   // context, keys the prompt cache and goes to the vendor. They used to be three
   // different answers — `/model` changed the cache key and nothing else, so a
@@ -146,6 +158,13 @@ export async function executeTask(
     const rproc = await processIR(reused, session, task, cfg, manager);
     const rms = Date.now() - started;
     bus.emit({ type: 'task.completed', task_id: task.id, tokens: 0, ms: rms });
+    if (worktreePath) {
+      try {
+        const mergeResult = await WorktreeManager.merge(session.repository.path, task.id);
+        if (!mergeResult.success) bus.emit({ type: 'log', level: 'warn', message: `Worktree merge failed: ${mergeResult.error}` });
+      } catch {}
+      try { await WorktreeManager.remove(session.repository.path, task.id); } catch {}
+    }
     return {
       ir: reused,
       tokens: 0,
@@ -201,7 +220,7 @@ export async function executeTask(
     usage: response.usage,
     cost_usd: cost,
     components: compiled.included,
-    wasted_tokens: unreferencedTokens(compiled, response.text, session.repository.path),
+    wasted_tokens: unreferencedTokens(compiled, response.text, repoPath),
   });
 
   // Parse IR natively per provider; on failure, retry once with a format reminder (spec §15.3).
@@ -236,7 +255,57 @@ export async function executeTask(
 
   attachThinking(ir, response, session.id, task.id, sel.adapter.provider_id, sel.model);
 
-  Learning.recordComponents(session.repository.path, task.type, componentUse(compiled, response.text));
+  // Context feedback inner loop: intercept <context_request> and resolve deterministically (spec §5.4, §14.1)
+  const MAX_INNER_TURNS = 3;
+  let innerTurn = 0;
+  let innerTokens = 0;
+  let activeConv: Conversation = conversation ?? { id: uuid(), turn: 0, delta: '' };
+
+  while (ir.context_requests && ir.context_requests.length > 0 && innerTurn < MAX_INNER_TURNS) {
+    innerTurn++;
+    const res = await resolveContextRequests(repoPath, ir.context_requests);
+    bus.emit({
+      type: 'log',
+      level: 'info',
+      message: `Inner loop turn ${innerTurn}/${MAX_INNER_TURNS}: resolved ${res.resolvedCount} context request(s) deterministically (${res.missCount} misses).`,
+    });
+
+    activeConv.turn++;
+    activeConv.delta = res.xml;
+
+    const next = await manager.invokeWithFailover(
+      compiled,
+      cfg.context.max_context_tokens,
+      'solve',
+      {
+        model: requested,
+        tier: jobTier,
+        conversation: activeConv,
+        onConversation: (_id, providerId) => {
+          activeConv.provider_id = providerId;
+        },
+      },
+    );
+
+    const nextCost = manager.costOf(next.sel.spec, next.response.usage);
+    manager.recordUsage(next.sel.account, next.response.usage, nextCost, next.response.latency_ms);
+    Tokens.record({
+      session_id: session.id,
+      task_id: task.id,
+      role: 'solve',
+      provider_id: next.sel.adapter.provider_id,
+      account_id: next.sel.account.id,
+      model_id: next.sel.model,
+      usage: next.response.usage,
+      cost_usd: nextCost,
+      components: compiled.included,
+    });
+    innerTokens += next.response.usage.total_tokens;
+    ir = next.sel.adapter.parse_response(next.response, session.id, task.id);
+    attachThinking(ir, next.response, session.id, task.id, next.sel.adapter.provider_id, next.sel.model);
+  }
+
+  Learning.recordComponents(repoPath, task.type, componentUse(compiled, response.text));
 
   // Store the answer against the prompt that bought it, so an identical
   // question later is free. Only clean results are worth keeping.
@@ -251,9 +320,17 @@ export async function executeTask(
   }
 
   const ms = Date.now() - started;
-  const tokens = response.usage.total_tokens + retryTokens;
+  const tokens = response.usage.total_tokens + retryTokens + innerTokens;
   task.actual_tokens = (task.actual_tokens ?? 0) + tokens;
   bus.emit({ type: 'task.completed', task_id: task.id, tokens, ms });
+
+  if (worktreePath) {
+    try {
+      const mergeResult = await WorktreeManager.merge(session.repository.path, task.id);
+      if (!mergeResult.success) bus.emit({ type: 'log', level: 'warn', message: `Worktree merge failed: ${mergeResult.error}` });
+    } catch {}
+    try { await WorktreeManager.remove(session.repository.path, task.id); } catch {}
+  }
 
   return {
     ir,
@@ -265,6 +342,13 @@ export async function executeTask(
     reasoningStored: proc.reasoningStored,
     wikiUpdated: proc.wikiUpdated,
   };
+
+  } catch (e) {
+    if (worktreePath) {
+      try { await WorktreeManager.remove(session.repository.path, task.id); } catch {}
+    }
+    throw e;
+  }
 }
 
 /**

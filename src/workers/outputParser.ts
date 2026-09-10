@@ -15,6 +15,8 @@ import type {
   ProviderRef,
   TaskSpec,
   WikiUpdate,
+  ContextRequest,
+  SymbolEdit,
 } from '../types/index.js';
 
 export class ParseError extends Error {}
@@ -78,11 +80,39 @@ export function parseIR(
     .filter((b) => b.attrs.path)
     .map((b) => ({ path: b.attrs.path!, content: unescapeXml(b.body.replace(/^\n/, '').replace(/\n$/, '')) }));
 
+  const symbol_edits: SymbolEdit[] = tagBlocksWithAttrs(xml, 'symbol_edit')
+    .filter((b) => b.attrs.file && b.attrs.symbol)
+    .map((b) => ({
+      file: b.attrs.file!,
+      symbol: b.attrs.symbol!,
+      content: unescapeXml(b.body.replace(/^\n/, '').replace(/\n$/, '')),
+    }));
+
+  const context_requests: ContextRequest[] = [];
+  for (const block of tagBlocks(xml, 'context_request')) {
+    for (const b of tagBlocksWithAttrs(block, 'symbol')) {
+      if (b.attrs.name) context_requests.push({ type: 'symbol', target: b.attrs.name });
+    }
+    for (const b of tagBlocksWithAttrs(block, 'callers_of')) {
+      if (b.attrs.symbol) context_requests.push({ type: 'callers_of', target: b.attrs.symbol });
+    }
+    for (const b of tagBlocksWithAttrs(block, 'file')) {
+      if (b.attrs.path) context_requests.push({ type: 'file', target: b.attrs.path, slice: b.attrs.slice });
+    }
+    for (const b of tagBlocksWithAttrs(block, 'grep')) {
+      if (b.attrs.pattern) context_requests.push({ type: 'grep', target: b.attrs.pattern });
+    }
+  }
+
   // The code this reasoning is about. Reasoning.byAffectedFiles is the only
   // retrieval arm keyed on locus rather than prose, and it could never match a
   // row while this was hardcoded empty — every decision the model made was
   // findable only by keyword.
-  const touched: FileRef[] = [...patches.map((p) => p.file), ...files_created.map((f) => f.path)]
+  const touched: FileRef[] = [
+    ...patches.map((p) => p.file),
+    ...files_created.map((f) => f.path),
+    ...symbol_edits.map((s) => s.file),
+  ]
     .filter((f) => f && f !== 'unknown')
     .map((path) => ({ path }));
 
@@ -184,6 +214,8 @@ export function parseIR(
     files_created,
     files_deleted: [],
     files_renamed: [],
+    context_requests,
+    symbol_edits,
     decisions,
     observations,
     risks,

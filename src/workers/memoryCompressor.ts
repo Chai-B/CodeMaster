@@ -17,6 +17,10 @@ export interface CompressResult {
   compressed: number;
 }
 
+import fs from 'fs';
+import path from 'path';
+import { DATA_DIR } from '../config.js';
+
 const SYSTEM = 'Summarize this reasoning into <=200 tokens, preserving the conclusion and key evidence. Output plain text only.';
 
 export const MemoryCompressorWorker: Worker<CompressInput, CompressResult> = {
@@ -27,7 +31,26 @@ export const MemoryCompressorWorker: Worker<CompressInput, CompressResult> = {
   async execute(input) {
     let n = 0;
     const db = getDb();
+    const archiveDir = path.join(DATA_DIR, 'archive', 'reasoning');
+    try {
+      fs.mkdirSync(archiveDir, { recursive: true });
+    } catch {
+      /* best effort */
+    }
+
     for (const c of input.candidates) {
+      // Non-destructive compression: archive the full raw candidate first
+      try {
+        const archiveFile = path.join(archiveDir, `${c.id}.json`);
+        fs.writeFileSync(
+          archiveFile,
+          JSON.stringify({ id: c.id, summary: c.summary, detail: c.detail, archived_at: new Date().toISOString() }, null, 2),
+          'utf8',
+        );
+      } catch {
+        /* archiving is best-effort */
+      }
+
       const { text } = await callLlm(input.manager, input.cfg, {
         role: 'summarize',
         system: SYSTEM,

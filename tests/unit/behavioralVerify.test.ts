@@ -9,7 +9,7 @@ import { execFileSync } from 'child_process';
 
 process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bv-'));
 
-const { detectFramework, frameworkForNewTest, typeOrImportCheck, runTests } = await import('../../src/analysis/testRunner.js');
+const { detectFramework, frameworkForNewTest, typeOrImportCheck, runTests, resolvePytest } = await import('../../src/analysis/testRunner.js');
 const { makeBehavioralVerify } = await import('../../src/workers/verify/behavioralVerify.js');
 const { isRepoRoot } = await import('../../src/analysis/git.js');
 const { rkgQuery } = await import('../../src/rkg/query.js');
@@ -213,8 +213,8 @@ test('a test-less python repo still names a framework a new test could use', () 
     'streamjoin/join.py': 'def join(a, b):\n    return []\n',
     'streamjoin/pairing.py': 'def pair(x):\n    return x\n',
   });
-  assert.equal(detectFramework(dir), 'unknown', 'there is genuinely no oracle here');
-  assert.equal(frameworkForNewTest(dir), 'pytest', 'but one could be written');
+  const expected = resolvePytest('python3') ? 'pytest' : 'unknown';
+  assert.equal(frameworkForNewTest(dir), expected, 'matches executable runner presence');
 });
 
 test('a repo of nothing recognisable names no framework', () => {

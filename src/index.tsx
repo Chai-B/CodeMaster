@@ -642,6 +642,9 @@ if (argv[0] === 'mcp') {
   const portFlag = argv.indexOf('--port');
   const { runProxy } = await import('./proxy.js');
   await runProxy(repoArg, portFlag >= 0 ? Number(argv[portFlag + 1]) || 7433 : 7433);
+} else if (argv[0] === 'bench') {
+  const { runBenchCli } = await import('./bench/runner.js');
+  process.exitCode = await runBenchCli(argv.slice(1));
 } else if (argv.length > 0) {
   const { runHeadless } = await import('./commands/headless.js');
   process.exitCode = await runHeadless(argv);
