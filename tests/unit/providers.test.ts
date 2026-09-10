@@ -1,5 +1,4 @@
-// Contract tests (spec §24.1) — every ProviderAdapter normalizes its native
-// output format (XML / JSON / diff) to the same IR. invoke() is not called.
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

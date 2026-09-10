@@ -40,6 +40,8 @@ jobs:
 
       - name: Test
         run: npm test
+        env:
+          ANTHROPIC_API_KEY: test
 
   # The version in package.json must match the tag that will carry it.
   version:

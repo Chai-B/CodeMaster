@@ -12,6 +12,7 @@ import { execFileSync } from 'child_process';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cmd-'));
 const REPO = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cmdrepo-'));
 process.env.CODEMASTER_DATA_DIR = TMP;
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test';
 
 fs.writeFileSync(path.join(REPO, 'app.py'), 'def charge(user, amount):\n    return amount\n');
 execFileSync('git', ['init', '-q'], { cwd: REPO });
