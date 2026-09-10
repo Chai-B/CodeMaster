@@ -25,7 +25,7 @@ after(() => {
 
 test('create → pause → resume → complete lifecycle persists', async () => {
   const sm = new SessionManager();
-  const session = await sm.createSession('add a helper function', process.cwd());
+  const session = await sm.createSession('add a helper function', TMP);
   assert.equal(session.status, 'initializing');
   assert.ok(Sessions.get(session.id));
 
@@ -77,7 +77,7 @@ test('IR processing applies new files, persists reasoning, and checkpoints resto
 // high-importance decisions into the memory tier.
 test('an exhausted plan auto-completes and promotes decisions to long-term memory', async () => {
   const sm = new SessionManager();
-  const session = await sm.createSession('memory tier check', process.cwd());
+  const session = await sm.createSession('memory tier check', TMP);
 
   Reasoning.insert({
     id: id('reason'), session_id: session.id, task_id: 'task-none',

@@ -11,21 +11,33 @@ persistent layer they lack: structured session state, a knowledge wiki,
 deterministic repository intelligence, reasoning stored once and replayed
 forever, and provider-agnostic checkpointing.
 
-This repository provides the complete CodeMaster v2.0 runtime, CLI, TUI, and persistent reasoning engine.
+This file is the operational guide. [SPEC.md](SPEC.md) is the complete technical architecture and specification document.
 
 ---
 
-## Install
+## Single-Command Installation
+
+Install CodeMaster with a single command:
+
+```bash
+# Option 1: Direct one-line installer
+curl -fsSL https://raw.githubusercontent.com/Chai-B/CodeMaster/main/install.sh | bash
+```
+
+```bash
+# Option 2: Global npm package
+npm install -g codemaster
+```
+
+Or from a git clone:
 
 ```bash
 git clone https://github.com/Chai-B/CodeMaster
 cd CodeMaster
-npm install
-npm link            # puts `codemaster` on PATH; or run: node bin/codemaster.js
+./install.sh
 ```
 
-**Requires Node.js 22.5+** — CodeMaster uses the built-in `node:sqlite`, so
-there is no native module to compile.
+**Requires Node.js 22.5+** — CodeMaster uses built-in `node:sqlite`, requiring no native C++ modules or build tools to compile.
 
 Optional, each degrades gracefully if absent: `ripgrep` for faster search,
 `pyright` / `typescript-language-server` for LSP queries. The local embedding
