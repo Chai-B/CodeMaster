@@ -13,7 +13,7 @@ import type { BenchmarkCase } from './types.js';
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const fixturesDir = path.join(rootDir, '..', 'tests', 'fixtures');
 
-export function createSmokeSuite(): BenchmarkCase[] {
+export function createSmokeSuite(baseFixturesDir: string = fixturesDir): BenchmarkCase[] {
   const cases: BenchmarkCase[] = [
     {
       id: 'tiny-ts:definitions',
@@ -21,7 +21,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'tiny-ts',
       description: 'Zero-token structural definition retrieval for TypeScript symbols',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'tiny-ts');
+        const repoPath = path.join(baseFixturesDir, 'tiny-ts');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const alpha = api.findDefinition('alpha');
@@ -36,7 +36,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'tiny-ts',
       description: 'Tree-sitter AST symbol byte range retrieval without regex',
       run: async () => {
-        const filePath = path.join(fixturesDir, 'tiny-ts', 'index.ts');
+        const filePath = path.join(baseFixturesDir, 'tiny-ts', 'index.ts');
         const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : 'export function alpha(): number { return 42; }';
         const range = await findSymbolRange(content, 'typescript', 'alpha');
         const ok = range !== null && range.startIndex >= 0 && range.endIndex > range.startIndex;
@@ -49,7 +49,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'small-python',
       description: 'Static dependency extraction across relative Python imports',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'small-python');
+        const repoPath = path.join(baseFixturesDir, 'small-python');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const deps = api.getDependencies('app.py');
@@ -63,7 +63,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'legacy-codebase',
       description: 'Tarjan strongly connected components cycle detection',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'legacy-codebase');
+        const repoPath = path.join(baseFixturesDir, 'legacy-codebase');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const cycles = api.getCycles();
@@ -77,7 +77,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'medium-monorepo',
       description: 'Cross-language symbol indexing for TS, Python, and Go',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'medium-monorepo');
+        const repoPath = path.join(baseFixturesDir, 'medium-monorepo');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const stats = api.stats();
@@ -96,7 +96,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'medium-monorepo',
       description: '9-signal file selector recall with late-mentioned identifier',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'medium-monorepo');
+        const repoPath = path.join(baseFixturesDir, 'medium-monorepo');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const task: Task = {
@@ -126,7 +126,7 @@ export function createSmokeSuite(): BenchmarkCase[] {
       repo: 'react-tsx',
       description: 'TSX AST grammar parsing with component call graph construction',
       run: async () => {
-        const repoPath = path.join(fixturesDir, 'react-tsx');
+        const repoPath = path.join(baseFixturesDir, 'react-tsx');
         const api = new StaticAnalysisAPI(repoPath);
         await api.reindex({ embed: false });
         const button = api.findDefinition('Button');

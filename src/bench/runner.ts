@@ -1,16 +1,38 @@
 // Benchmark runner (spec §24).
 // Executes automated benchmark suites, computes pass@1, Succ/Mtok, apply rate, and formats receipts.
 
+import os from 'os';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { createSmokeSuite } from './smoke.js';
 import type { BenchmarkCaseResult, BenchmarkReport } from './types.js';
 
-export async function runSmokeBenchmark(): Promise<BenchmarkReport> {
-  const suite = createSmokeSuite();
-  const results: BenchmarkCaseResult[] = [];
-  let totalTokens = 0;
-  let totalApplied = 0;
-  let totalPatches = 0;
-  let totalDuration = 0;
+const defaultFixturesDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), '..', 'tests', 'fixtures');
+
+export function prepareEphemeralFixtures(sourceDir = defaultFixturesDir): string {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-bench-'));
+  const dirs = ['tiny-ts', 'small-python', 'legacy-codebase', 'medium-monorepo', 'react-tsx'];
+  for (const d of dirs) {
+    const src = path.join(sourceDir, d);
+    if (fs.existsSync(src)) {
+      const dst = path.join(tmpDir, d);
+      fs.cpSync(src, dst, { recursive: true });
+    }
+  }
+  return tmpDir;
+}
+
+export async function runSmokeBenchmark(targetFixturesDir?: string): Promise<BenchmarkReport> {
+  const isEphemeral = !targetFixturesDir;
+  const fixturesPath = targetFixturesDir ?? prepareEphemeralFixtures();
+  const suite = createSmokeSuite(fixturesPath);
+  try {
+    const results: BenchmarkCaseResult[] = [];
+    let totalTokens = 0;
+    let totalApplied = 0;
+    let totalPatches = 0;
+    let totalDuration = 0;
 
   for (const c of suite) {
     const start = performance.now();
@@ -58,19 +80,28 @@ export async function runSmokeBenchmark(): Promise<BenchmarkReport> {
   // Succ/Mtok: if tokens are 0 (deterministic suite), score as infinite/perfect
   const succPerMtok = totalTokens > 0 ? Math.round((passed / (totalTokens / 1_000_000))) : passed * 1_000_000;
 
-  return {
-    timestamp: new Date().toISOString(),
-    suite: 'smoke',
-    totalCases: results.length,
-    passedCases: passed,
-    failedCases: results.length - passed,
-    passAt1,
-    totalTokens,
-    succPerMtok,
-    avgApplyRate,
-    avgDurationMs,
-    results,
-  };
+    return {
+      timestamp: new Date().toISOString(),
+      suite: 'smoke',
+      totalCases: results.length,
+      passedCases: passed,
+      failedCases: results.length - passed,
+      passAt1,
+      totalTokens,
+      succPerMtok,
+      avgApplyRate,
+      avgDurationMs,
+      results,
+    };
+  } finally {
+    if (isEphemeral) {
+      try {
+        fs.rmSync(fixturesPath, { recursive: true, force: true });
+      } catch {
+        /* best effort cleanup */
+      }
+    }
+  }
 }
 
 export function formatBenchmarkReport(report: BenchmarkReport): string {
