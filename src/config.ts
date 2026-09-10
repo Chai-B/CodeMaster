@@ -16,6 +16,22 @@ const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.conf
 export const DATA_DIR = process.env.CODEMASTER_DATA_DIR || path.join(XDG_CONFIG, 'codemaster');
 export const LEGACY_DATA_DIR = process.env.CODEMASTER_LEGACY_DIR || path.join(os.homedir(), '.codemaster');
 
+export function getDataDir(): string {
+  return process.env.CODEMASTER_DATA_DIR || DATA_DIR;
+}
+export function getReposDir(): string {
+  return path.join(getDataDir(), 'repos');
+}
+export function getCredentialsDir(): string {
+  return path.join(getDataDir(), 'credentials');
+}
+export function getLogsDir(): string {
+  return path.join(getDataDir(), 'logs');
+}
+export function getConfigPath(): string {
+  return path.join(getDataDir(), 'config.yaml');
+}
+
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.yaml');
 export const CREDENTIALS_DIR = path.join(DATA_DIR, 'credentials');
 export const LOGS_DIR = path.join(DATA_DIR, 'logs');
@@ -39,7 +55,7 @@ export function repoSlug(repoPath: string = activeRepo): string {
   return `${name}-${hash}`;
 }
 export function repoDataDir(repoPath: string = activeRepo): string {
-  return path.join(REPOS_DIR, repoSlug(repoPath));
+  return path.join(getReposDir(), repoSlug(repoPath));
 }
 export function dbPath(repoPath: string = activeRepo): string {
   return path.join(repoDataDir(repoPath), 'state.db');
@@ -68,13 +84,13 @@ export interface Project {
 export function listProjects(): Project[] {
   let entries: string[];
   try {
-    entries = fs.readdirSync(REPOS_DIR);
+    entries = fs.readdirSync(getReposDir());
   } catch {
     return [];
   }
   const out: Project[] = [];
   for (const slug of entries) {
-    const dir = path.join(REPOS_DIR, slug);
+    const dir = path.join(getReposDir(), slug);
     try {
       const marker = JSON.parse(fs.readFileSync(path.join(dir, 'repo.json'), 'utf8')) as {
         repository_path?: string;
@@ -261,7 +277,7 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
 }
 
 export function ensureDirs(): void {
-  for (const d of [DATA_DIR, CREDENTIALS_DIR, LOGS_DIR, REPOS_DIR]) {
+  for (const d of [getDataDir(), getCredentialsDir(), getLogsDir(), getReposDir()]) {
     fs.mkdirSync(d, { recursive: true });
   }
 }
@@ -282,7 +298,7 @@ export function ensureRepoDirs(repoPath: string = activeRepo): string {
 export function loadConfig(): Config {
   ensureDirs();
   try {
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const raw = fs.readFileSync(getConfigPath(), 'utf8');
     const parsed = yaml.load(raw) as Partial<Config>;
     return deepMerge(DEFAULT_CONFIG, parsed ?? {});
   } catch {
@@ -292,7 +308,7 @@ export function loadConfig(): Config {
 
 export function saveConfig(cfg: Config): void {
   ensureDirs();
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(cfg), 'utf8');
+  fs.writeFileSync(getConfigPath(), yaml.dump(cfg), 'utf8');
 }
 
 export function allModels(cfg: Config): ModelSpec[] {

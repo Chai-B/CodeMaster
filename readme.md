@@ -11,7 +11,7 @@ persistent layer they lack: structured session state, a knowledge wiki,
 deterministic repository intelligence, reasoning stored once and replayed
 forever, and provider-agnostic checkpointing.
 
-This file is the operational guide. [SPEC.md](SPEC.md) is the design document.
+This repository provides the complete CodeMaster v2.0 runtime, CLI, TUI, and persistent reasoning engine.
 
 ---
 

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+
+process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-proc-skills-'));
+
 import { Skills, renderSkillMarkdown, parseSkillMarkdown } from '../../src/memory/skills.js';
 import type { Task, IntermediateRepresentation } from '../../src/types/index.js';
 import { now } from '../../src/util/id.js';

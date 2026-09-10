@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+
+process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-skills-data-'));
+
 import { Skills } from '../../src/memory/skills.js';
 import { id, now } from '../../src/util/id.js';
 

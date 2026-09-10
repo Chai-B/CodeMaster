@@ -1,5 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'os';
+import fs from 'fs';
+import path from 'path';
+
+process.env.CODEMASTER_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-hybrid-'));
+
 import { LongTerm, calibratedScore } from '../../src/storage/memory.js';
 import { id, now } from '../../src/util/id.js';
 
