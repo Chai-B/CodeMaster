@@ -19,7 +19,11 @@
     "readme.md"
   ],
   "bin": {
-    "codemaster": "./bin/codemaster.js"
+    "codemaster": "bin/codemaster.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chai-B/CodeMaster.git"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
